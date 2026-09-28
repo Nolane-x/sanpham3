@@ -1,4 +1,4 @@
-use peer_egress::{resolve_via_peer, serve_one, SystemResolver};
+use peer_egress::{relay_one, resolve_via_peer, serve_one, SystemResolver};
 use peer_lan::{LanDiscovery, PeerBeacon};
 use peer_session::{
     perform_client_handshake, perform_server_handshake, NonceReplayCache,
@@ -32,6 +32,7 @@ fn run() -> Result<(), String> {
     match args.get(1).map(String::as_str) {
         Some("server") => run_server(&args),
         Some("client") => run_client(&args),
+        Some("relay-server") => run_relay_server(&args),
         Some("advertise-server") => run_advertise_server(&args),
         Some("discover-client") => run_discover_client(&args),
         _ => Err(usage()),
@@ -80,6 +81,72 @@ fn run_client(args: &[String]) -> Result<(), String> {
     println!("authenticated egress peer node_id={peer_id}");
 
     print_peer_resolution(&mut session, &mut stream, hostname)
+}
+
+fn run_relay_server(args: &[String]) -> Result<(), String> {
+    if args.len() != 6 {
+        return Err(usage());
+    }
+
+    let bind_addr = &args[2];
+    let node_id = parse_node_id(&args[3])?;
+    let key = parse_key(&args[4])?;
+    let upstream_addr = args[5]
+        .parse::<SocketAddr>()
+        .map_err(|_| "upstream_addr must be a literal IP:port socket address".to_owned())?;
+
+    let listener = TcpListener::bind(bind_addr)
+        .map_err(|error| format!("bind relay {bind_addr}: {error}"))?;
+    let local_addr = listener
+        .local_addr()
+        .map_err(|error| format!("read relay local address: {error}"))?;
+
+    println!(
+        "relay node_id={node_id} listening on {local_addr}; upstream={upstream_addr}"
+    );
+
+    let mut upstream_stream = TcpStream::connect_timeout(
+        &upstream_addr,
+        CONNECT_TIMEOUT,
+    )
+    .map_err(|error| format!("connect upstream {upstream_addr}: {error}"))?;
+
+    let (upstream_id, mut upstream_session) =
+        perform_client_handshake(&mut upstream_stream, node_id, &key)
+            .map_err(|error| format!("upstream secure handshake: {error:?}"))?;
+
+    println!("authenticated upstream node_id={upstream_id}");
+
+    let (mut downstream_stream, downstream_addr) = listener
+        .accept()
+        .map_err(|error| format!("accept downstream peer: {error}"))?;
+
+    let mut replay_cache = NonceReplayCache::new(1024);
+    let (downstream_id, mut downstream_session) = perform_server_handshake(
+        &mut downstream_stream,
+        node_id,
+        &key,
+        &mut replay_cache,
+    )
+    .map_err(|error| format!("downstream secure handshake: {error:?}"))?;
+
+    println!(
+        "authenticated downstream node_id={downstream_id} addr={downstream_addr}"
+    );
+
+    relay_one(
+        &mut downstream_session,
+        &mut downstream_stream,
+        &mut upstream_session,
+        &mut upstream_stream,
+    )
+    .map_err(|error| format!("relay constrained egress request: {error:?}"))?;
+
+    println!(
+        "relayed one request downstream_node={downstream_id} via upstream_node={upstream_id}"
+    );
+
+    Ok(())
 }
 
 fn run_advertise_server(args: &[String]) -> Result<(), String> {
@@ -356,10 +423,14 @@ fn usage() -> String {
         "usage:",
         "  peer-egress-cli server <bind_addr> <node_id> <64_hex_psk>",
         "  peer-egress-cli client <peer_addr> <node_id> <64_hex_psk> <public_hostname>",
+        "  peer-egress-cli relay-server <bind_addr> <node_id> <64_hex_psk> <upstream_ip:port>",
         "  peer-egress-cli advertise-server <bind_addr> <discovery_port> <node_id> <64_hex_psk> <advertised_bps>",
         "  peer-egress-cli discover-client <discovery_port> <node_id> <64_hex_psk> <public_hostname>",
         "",
         "examples:",
+        "  peer-egress-cli server 0.0.0.0:45123 300 <psk>",
+        "  peer-egress-cli relay-server 0.0.0.0:45124 200 <psk> 192.168.1.30:45123",
+        "  peer-egress-cli client 192.168.1.20:45124 100 <psk> example.com",
         "  peer-egress-cli advertise-server 0.0.0.0:0 45122 200 <psk> 1000000",
         "  peer-egress-cli discover-client 45122 100 <psk> example.com",
     ]
