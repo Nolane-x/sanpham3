@@ -261,7 +261,7 @@ mod windows_impl {
 
         let family = u16::from_ne_bytes([bytes[0], bytes[1]]);
 
-        if family == AF_INET.0 as u16 {
+        if family == AF_INET.0 {
             if bytes.len() < 8 {
                 return None;
             }
@@ -271,7 +271,7 @@ mod windows_impl {
             )));
         }
 
-        if family == AF_INET6.0 as u16 {
+        if family == AF_INET6.0 {
             if bytes.len() < 24 {
                 return None;
             }
