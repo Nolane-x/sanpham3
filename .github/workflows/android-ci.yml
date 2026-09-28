@@ -5,12 +5,14 @@ on:
     paths:
       - "adapters/android-host/**"
       - "adapters/android-peer-session-jni/**"
+      - "crates/connectivity-core/**"
       - "crates/peer-session/**"
       - ".github/workflows/android-ci.yml"
   pull_request:
     paths:
       - "adapters/android-host/**"
       - "adapters/android-peer-session-jni/**"
+      - "crates/connectivity-core/**"
       - "crates/peer-session/**"
       - ".github/workflows/android-ci.yml"
 
