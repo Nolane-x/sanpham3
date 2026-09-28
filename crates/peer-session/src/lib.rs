@@ -2,7 +2,7 @@ use chacha20poly1305::{
     aead::{Aead, Key, KeyInit as AeadKeyInit, Payload},
     XChaCha20Poly1305, XNonce,
 };
-use hmac::{Hmac, KeyInit as HmacKeyInit, Mac};
+use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::collections::{HashSet, VecDeque};
 use std::io::{self, Read, Write};
