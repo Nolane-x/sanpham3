@@ -1,0 +1,7 @@
+[package]
+name = "path-probe-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+path-probe = { path = "../../crates/path-probe" }
