@@ -17,6 +17,19 @@ pub enum ProbeKind {
     Other,
 }
 
+impl ProbeKind {
+    pub fn proves_information_path(self) -> bool {
+        matches!(
+            self,
+            Self::Dns
+                | Self::Udp
+                | Self::Tcp
+                | Self::TinyHttps
+                | Self::LanPeer
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeStatus {
     Pending,
@@ -98,16 +111,17 @@ impl RecoveryLedger {
                 .all(|record| record.status.terminal())
     }
 
-    pub fn any_success(&self) -> bool {
-        self.records
-            .iter()
-            .any(|record| record.status == ProbeStatus::Succeeded)
+    pub fn any_information_path(&self) -> bool {
+        self.records.iter().any(|record| {
+            record.status == ProbeStatus::Succeeded
+                && record.kind.proves_information_path()
+        })
     }
 
     /// LOCAL_ONLY is a defensible conclusion only when every registered probe
     /// reached a terminal state and none found a usable information path.
     pub fn can_declare_local_only(&self) -> bool {
-        self.exhaustive_complete() && !self.any_success()
+        self.exhaustive_complete() && !self.any_information_path()
     }
 
     pub fn pending_count(&self) -> usize {
@@ -151,8 +165,22 @@ mod tests {
         assert!(ledger.can_declare_local_only());
     }
 
+
     #[test]
-    fn any_success_prevents_local_only() {
+    fn route_presence_alone_does_not_prevent_local_only() {
+        let mut ledger = RecoveryLedger::new();
+        ledger.register("wifi:ipv4", ProbeKind::Ipv4);
+        ledger.register("wifi:dns", ProbeKind::Dns);
+
+        ledger.set_status("wifi:ipv4", ProbeStatus::Succeeded, None);
+        ledger.set_status("wifi:dns", ProbeStatus::Failed, None);
+
+        assert!(ledger.exhaustive_complete());
+        assert!(ledger.can_declare_local_only());
+    }
+
+    #[test]
+    fn information_path_success_prevents_local_only() {
         let mut ledger = RecoveryLedger::new();
         ledger.register("wifi:udp", ProbeKind::Udp);
         ledger.register("wifi:tcp", ProbeKind::Tcp);

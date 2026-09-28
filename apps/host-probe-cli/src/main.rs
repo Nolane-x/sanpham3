@@ -8,9 +8,11 @@ fn main() {
 
         println!("platform={}", scanner.platform_name());
 
-        for capability in scanner.inventory() {
+        let capabilities = scanner.inventory();
+
+        for capability in &capabilities {
             println!(
-                "{} interface={:?} transport={:?} available={} scan={} connect={} relay={} bind_socket={} constraints={:?}",
+                "CAP {} interface={:?} transport={:?} available={} scan={} connect={} relay={} bind_socket={} constraints={:?}",
                 capability.name,
                 capability.interface,
                 capability.transport,
@@ -21,6 +23,34 @@ fn main() {
                 capability.can_bind_socket,
                 capability.constraints,
             );
+        }
+
+        println!();
+        println!("recovery_probe:");
+
+        match linux_host::LinuxRecoveryProbe::new().run(&capabilities) {
+            Ok(snapshot) => {
+                for record in snapshot.ledger.records() {
+                    println!(
+                        "PROBE id={} kind={:?} status={:?} detail={}",
+                        record.id,
+                        record.kind,
+                        record.status,
+                        record.detail.as_deref().unwrap_or("-"),
+                    );
+                }
+
+                println!(
+                    "SUMMARY pending={} information_path={} local_only={}",
+                    snapshot.ledger.pending_count(),
+                    snapshot.ledger.any_information_path(),
+                    snapshot.ledger.can_declare_local_only(),
+                );
+            }
+            Err(error) => {
+                eprintln!("recovery probe failed: {error}");
+                std::process::exit(2);
+            }
         }
     }
 
