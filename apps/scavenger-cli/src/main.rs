@@ -1,7 +1,7 @@
 use connectivity_core::{
     Bundle, BundlePriority, CapsuleKind, ConnectivityGraph, DtnQueue,
-    LinkObservation, LinkState, NodeProfile, Reachability, SemanticCapsule,
-    TrafficClass, Transport,
+    plan_recovery, LinkObservation, LinkState, NodeProfile, Reachability,
+    RecoveryPlan, RecoveryTask, SemanticCapsule, TrafficClass, Transport,
 };
 use std::time::{Duration, Instant};
 
@@ -40,7 +40,34 @@ fn main() {
 
     println!("route discovered: {:?}", route.nodes);
     println!("bottleneck: {} bit/s", route.bottleneck_bps);
-    println!("path cost: {:.2}\n", route.total_cost);
+    println!("effective: {} bit/s", route.estimated_effective_bps());
+    println!("worst loss: {} ppm", route.worst_loss_ppm);
+    println!("route RTT: {} ms", route.total_rtt.as_millis());
+    println!("path cost: {:.2}", route.total_cost);
+
+    let task = RecoveryTask::new(TrafficClass::TinySemantic, 232);
+    match plan_recovery(&graph, 1, &task) {
+        RecoveryPlan::Live(plan) => {
+            println!(
+                "adaptive plan: {:?} over {:?}, expected {} ms{}",
+                plan.mode,
+                plan.path_kind,
+                plan.expected_completion.as_millis(),
+                if plan.experimental {
+                    " (experimental)"
+                } else {
+                    ""
+                },
+            );
+        }
+        RecoveryPlan::DelayTolerant { reason, .. } => {
+            println!("adaptive plan: DTN queue ({reason:?})");
+        }
+        RecoveryPlan::LocalOnly { reason } => {
+            println!("adaptive plan: local only ({reason:?})");
+        }
+    }
+    println!();
 
     let query = SemanticCapsule {
         kind: CapsuleKind::Query,
