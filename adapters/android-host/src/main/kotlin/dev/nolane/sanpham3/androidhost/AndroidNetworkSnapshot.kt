@@ -2,6 +2,7 @@ package dev.nolane.sanpham3.androidhost
 
 enum class AndroidTransport {
     WIFI,
+    WIFI_DIRECT,
     CELLULAR,
     ETHERNET,
     VPN,
