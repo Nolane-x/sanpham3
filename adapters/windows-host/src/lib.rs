@@ -59,6 +59,7 @@ impl PlatformScanner for WindowsScanner {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn classify_if_type(if_type: u32) -> Transport {
     match if_type {
         // IANA / Windows interface type assignments.
