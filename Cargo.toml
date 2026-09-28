@@ -14,5 +14,6 @@ members = [
     "apps/path-probe-cli",
     "apps/peer-egress-cli",
     "apps/recovery-lab-cli",
+    "apps/weak-link-court-cli",
 ]
 resolver = "2"
