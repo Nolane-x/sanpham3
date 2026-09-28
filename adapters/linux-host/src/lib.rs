@@ -3,7 +3,7 @@ pub mod recovery;
 pub mod resolver;
 pub mod routes;
 
-pub use recovery::{DnsObservation, LinuxRecoveryProbe, LinuxRecoverySnapshot};
+pub use recovery::{DnsObservation, LinuxRecoveryProbe, LinuxRecoverySnapshot, TcpSeriesObservation};
 
 use connectivity_core::{Capability, PermissionState, PlatformScanner, Transport};
 use std::fs;

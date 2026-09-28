@@ -1,9 +1,7 @@
 [package]
-name = "linux-host"
+name = "path-probe-cli"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-connectivity-core = { path = "../../crates/connectivity-core" }
-
 path-probe = { path = "../../crates/path-probe" }

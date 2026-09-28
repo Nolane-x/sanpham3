@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 connectivity-core = { path = "../../crates/connectivity-core" }
+path-probe = { path = "../../crates/path-probe" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [
