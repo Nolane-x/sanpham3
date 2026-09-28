@@ -1,3 +1,8 @@
+pub mod recovery;
+pub use recovery::{
+    WindowsDnsObservation, WindowsRecoveryProbe, WindowsRecoverySnapshot,
+};
+
 use connectivity_core::{
     Capability, PermissionState, PlatformScanner, Transport,
 };
