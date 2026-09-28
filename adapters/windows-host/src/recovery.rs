@@ -1,9 +1,13 @@
-use connectivity_core::{
-    ProbeKind, ProbeStatus, RecoveryLedger, Transport,
-};
+use connectivity_core::{ProbeKind, ProbeStatus, RecoveryLedger};
+#[cfg(target_os = "windows")]
+use connectivity_core::Transport;
 use std::io;
-use std::net::{IpAddr, SocketAddr, UdpSocket};
-use std::time::{Duration, Instant};
+use std::net::IpAddr;
+#[cfg(target_os = "windows")]
+use std::net::{SocketAddr, UdpSocket};
+use std::time::Duration;
+#[cfg(target_os = "windows")]
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct WindowsDnsObservation {
@@ -168,6 +172,7 @@ impl WindowsRecoveryProbe {
     }
 }
 
+#[cfg(target_os = "windows")]
 #[derive(Debug)]
 struct DnsProbeSuccess {
     elapsed: Duration,
@@ -175,6 +180,7 @@ struct DnsProbeSuccess {
     rcode: u8,
 }
 
+#[cfg(target_os = "windows")]
 fn probe_dns_udp(
     source: SocketAddr,
     resolver: SocketAddr,
@@ -241,6 +247,7 @@ fn probe_dns_udp(
     })
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn root_a_query() -> [u8; 17] {
     [
         0x53, 0x50,
@@ -255,6 +262,7 @@ fn root_a_query() -> [u8; 17] {
     ]
 }
 
+#[cfg(target_os = "windows")]
 fn record_family_configuration(
     ledger: &mut RecoveryLedger,
     interface: &str,
@@ -284,6 +292,7 @@ fn record_family_configuration(
     );
 }
 
+#[cfg(target_os = "windows")]
 fn classify_probe_error(error: &io::Error) -> ProbeStatus {
     match error.kind() {
         io::ErrorKind::PermissionDenied => ProbeStatus::Blocked,
