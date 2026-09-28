@@ -318,7 +318,7 @@ internal fun validatePassphrase(passphrase: String) {
 }
 
 private fun requireSupported() {
-    require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        "Wi-Fi Aware requires Android 8.0+"
+    require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        "Wi-Fi Aware socket data paths require Android 10+"
     }
 }
