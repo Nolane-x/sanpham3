@@ -466,6 +466,20 @@ mod tests {
     }
 
     #[test]
+    fn one_bps_experimental_extension_eventually_completes() {
+        let result = run_resolve_court(
+            WeakLinkProfile::ladder(1),
+            &FixedResolver,
+            "example.com",
+        )
+        .unwrap();
+
+        assert!(result.succeeded());
+        assert!(result.accounting.elapsed > Duration::from_secs(1_000));
+        assert!(result.accounting.elapsed < Duration::from_secs(4_000));
+    }
+
+    #[test]
     fn loss_and_periodic_outage_increase_wire_cost_but_preserve_result() {
         let baseline = run_resolve_court(
             WeakLinkProfile::ladder(100),
