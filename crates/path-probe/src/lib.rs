@@ -600,9 +600,13 @@ mod tests {
         let destination = listener.local_addr().unwrap();
 
         let server = thread::spawn(move || {
+            let mut streams = Vec::new();
             for _ in 0..3 {
-                let _ = listener.accept().unwrap();
+                let (stream, _) = listener.accept().unwrap();
+                streams.push(stream);
             }
+            thread::sleep(Duration::from_millis(100));
+            drop(streams);
         });
 
         let samples = run_series(3, Duration::ZERO, || {

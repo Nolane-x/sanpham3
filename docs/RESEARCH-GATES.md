@@ -74,6 +74,24 @@ Demonstrate useful behavior under measured caps:
 10 bit/s
 ```
 
+Software evidence:
+
+- [x] deterministic virtual-time weak-link court;
+- [x] real authenticated handshake bytes cross the virtual carrier;
+- [x] real encrypted constrained request/response frames cross the carrier;
+- [x] 1000 / 100 / 30 / 10 bit/s ladder exercised in CI;
+- [x] deterministic loss, retransmission cost and periodic outage support;
+- [x] wire overhead and virtual task-completion time reported.
+
+Physical closure:
+
+- [ ] reproduce the ladder with a measured real link or controlled traffic shaper;
+- [ ] record actual loss, outage periods and transmitted bytes;
+- [ ] demonstrate useful remote task completion on physical devices;
+- [ ] preserve tested commit, binary hashes and topology evidence.
+
+Simulator success is explicitly not physical G7 closure.
+
 Below 10 bit/s is an experimental extension, not a promised product requirement.
 
 ## G8 — cross-platform mesh

@@ -1,0 +1,42 @@
+name: g7-weak-link-court
+
+on:
+  push:
+    paths:
+      - "crates/weak-link-court/**"
+      - "apps/weak-link-court-cli/**"
+      - "crates/peer-session/**"
+      - "crates/peer-egress/**"
+      - ".github/workflows/g7-weak-link-court.yml"
+  pull_request:
+    paths:
+      - "crates/weak-link-court/**"
+      - "apps/weak-link-court-cli/**"
+      - "crates/peer-session/**"
+      - "crates/peer-egress/**"
+      - ".github/workflows/g7-weak-link-court.yml"
+
+jobs:
+  software-court:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Unit court
+        run: cargo test -p weak-link-court
+
+      - name: Standard 1000/100/30/10 bit-per-second ladder
+        run: cargo run -p weak-link-court-cli -- ladder
+
+      - name: Loss and outage court
+        run: >
+          cargo run -p weak-link-court-cli --
+          profile 100 200000 300 8 15000 4000
+
+      - name: Experimental 1 bit-per-second extension
+        run: >
+          cargo run -p weak-link-court-cli --
+          profile 1 0 250 16 0 0

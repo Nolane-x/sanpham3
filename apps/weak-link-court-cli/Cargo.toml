@@ -1,0 +1,8 @@
+[package]
+name = "weak-link-court-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+peer-egress = { path = "../../crates/peer-egress" }
+weak-link-court = { path = "../../crates/weak-link-court" }
