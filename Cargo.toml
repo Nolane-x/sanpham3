@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/connectivity-core",
+    "adapters/linux-host",
     "apps/scavenger-cli",
+    "apps/host-probe-cli",
 ]
 resolver = "2"
