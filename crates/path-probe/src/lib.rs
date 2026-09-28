@@ -574,7 +574,12 @@ mod tests {
         let destination = listener.local_addr().unwrap();
 
         let server = thread::spawn(move || {
-            let (_stream, peer) = listener.accept().unwrap();
+            let (stream, peer) = listener.accept().unwrap();
+            // Keep the accepted socket alive long enough for Windows
+            // connect_timeout to observe CONNECTED rather than an immediate
+            // POLLHUP caused by this test thread dropping the stream.
+            thread::sleep(Duration::from_millis(100));
+            drop(stream);
             peer
         });
 
