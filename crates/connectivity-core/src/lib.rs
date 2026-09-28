@@ -17,7 +17,9 @@ pub use capsule::{CapsuleError, CapsuleKind, SemanticCapsule};
 pub use dtn::{Bundle, BundlePriority, DtnQueue};
 pub use graph::{ConnectivityGraph, Route};
 pub use model::{
-    LinkObservation, LinkState, NodeId, NodeProfile, Reachability, Transport,
+    conservative_transport_defaults, LinkObservation, LinkState,
+    MeasuredPathEvidence, NodeId, NodeProfile, Reachability, Transport,
+    TransportSchedulingDefaults,
 };
 pub use policy::{
     plan_recovery, DeliveryMode, LiveRecoveryPlan, PlanReason, RecoveryPathKind,
