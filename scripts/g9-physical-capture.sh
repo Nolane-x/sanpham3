@@ -39,7 +39,10 @@ if ! grep -q "MEASURED_PATHS none_verified_by_tiny_https" "$OUT_DIR/direct-path.
 fi
 
 echo "=== authenticated peer rescue ==="
-./target/release/peer-egress-cli client "$PEER_ADDR" "$NODE_ID" "$PSK" "$HOSTNAME"   | tee "$OUT_DIR/peer-rescue.log"
+export SP3_PEER_PSK_HEX="$PSK"
+./target/release/peer-egress-cli client "$PEER_ADDR" "$NODE_ID" - "$HOSTNAME" \
+  | tee "$OUT_DIR/peer-rescue.log"
+unset SP3_PEER_PSK_HEX
 
 grep -q "authenticated egress peer node_id=" "$OUT_DIR/peer-rescue.log"
 grep -q "resolved $HOSTNAME through peer:" "$OUT_DIR/peer-rescue.log"
