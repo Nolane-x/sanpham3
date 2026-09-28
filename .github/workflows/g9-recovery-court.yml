@@ -3,6 +3,10 @@ name: g9-recovery-court
 on:
   push:
     paths:
+      - "Cargo.toml"
+      - "apps/peer-egress-cli/**"
+      - "scripts/g9-physical-capture.sh"
+      - "scripts/g9-physical-capture.ps1"
       - "apps/g9-recovery-court/**"
       - "crates/connectivity-core/**"
       - "crates/peer-session/**"
@@ -10,6 +14,10 @@ on:
       - ".github/workflows/g9-recovery-court.yml"
   pull_request:
     paths:
+      - "Cargo.toml"
+      - "apps/peer-egress-cli/**"
+      - "scripts/g9-physical-capture.sh"
+      - "scripts/g9-physical-capture.ps1"
       - "apps/g9-recovery-court/**"
       - "crates/connectivity-core/**"
       - "crates/peer-session/**"
