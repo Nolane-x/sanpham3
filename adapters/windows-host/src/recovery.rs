@@ -1,5 +1,9 @@
 use crate::{inventory_adapter_paths, WindowsAdapterPath};
 use connectivity_core::{ProbeKind, ProbeStatus, RecoveryLedger};
+use path_probe::{
+    run_series, summarize, tcp_connect, AttemptMeasurement,
+    ProbeSeriesSummary,
+};
 use std::io;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
@@ -15,16 +19,30 @@ pub struct WindowsDnsObservation {
     pub response_bytes: Option<usize>,
 }
 
+#[derive(Debug, Clone)]
+pub struct WindowsTcpObservation {
+    pub interface: String,
+    pub source: IpAddr,
+    pub target: SocketAddr,
+    pub status: ProbeStatus,
+    pub detail: String,
+    pub summary: ProbeSeriesSummary,
+}
+
 #[derive(Debug)]
 pub struct WindowsRecoverySnapshot {
     pub ledger: RecoveryLedger,
     pub adapters: Vec<WindowsAdapterPath>,
     pub dns: Vec<WindowsDnsObservation>,
+    pub tcp: Vec<WindowsTcpObservation>,
 }
 
 #[derive(Debug, Clone)]
 pub struct WindowsRecoveryProbe {
     dns_timeout: Duration,
+    tcp_timeout: Duration,
+    tcp_attempts: usize,
+    tcp_pause: Duration,
 }
 
 impl Default for WindowsRecoveryProbe {
@@ -37,6 +55,9 @@ impl WindowsRecoveryProbe {
     pub fn new() -> Self {
         Self {
             dns_timeout: Duration::from_millis(900),
+            tcp_timeout: Duration::from_millis(900),
+            tcp_attempts: 3,
+            tcp_pause: Duration::from_millis(80),
         }
     }
 
@@ -45,10 +66,23 @@ impl WindowsRecoveryProbe {
         self
     }
 
+    pub fn tcp_policy(
+        mut self,
+        attempts: usize,
+        timeout: Duration,
+        pause: Duration,
+    ) -> Self {
+        self.tcp_attempts = attempts.max(1);
+        self.tcp_timeout = timeout;
+        self.tcp_pause = pause;
+        self
+    }
+
     pub fn run(&self) -> Result<WindowsRecoverySnapshot, String> {
         let adapters = inventory_adapter_paths()?;
         let mut ledger = RecoveryLedger::new();
         let mut dns = Vec::new();
+        let mut tcp = Vec::new();
 
         for adapter in adapters.iter().filter(|adapter| adapter.available) {
             record_address_family(
@@ -169,6 +203,46 @@ impl WindowsRecoveryProbe {
                         });
                     }
                 }
+
+                let target = SocketAddr::new(*resolver, 53);
+                let tcp_id = format!("{}:tcp:{target}", adapter.name);
+                ledger.register(&tcp_id, ProbeKind::Tcp);
+
+                let samples = run_series(
+                    self.tcp_attempts,
+                    self.tcp_pause,
+                    || {
+                        let result = tcp_connect(
+                            Some(source),
+                            target,
+                            self.tcp_timeout,
+                        )?;
+                        Ok(AttemptMeasurement {
+                            elapsed: result.elapsed,
+                            useful_bytes: 0,
+                        })
+                    },
+                );
+                let summary = summarize(&samples);
+                let status = if summary.successes > 0 {
+                    ProbeStatus::Succeeded
+                } else {
+                    ProbeStatus::Failed
+                };
+                let detail = format_series_detail(&summary);
+                ledger.set_status(
+                    &tcp_id,
+                    status,
+                    Some(detail.clone()),
+                );
+                tcp.push(WindowsTcpObservation {
+                    interface: adapter.name.clone(),
+                    source,
+                    target,
+                    status,
+                    detail,
+                    summary,
+                });
             }
         }
 
@@ -176,6 +250,7 @@ impl WindowsRecoveryProbe {
             ledger,
             adapters,
             dns,
+            tcp,
         })
     }
 }
@@ -185,6 +260,26 @@ struct DnsProbeSuccess {
     elapsed: Duration,
     response_bytes: usize,
     rcode: u8,
+}
+
+fn format_series_detail(summary: &ProbeSeriesSummary) -> String {
+    format!(
+        "attempts={} successes={} loss_ppm={} median_ms={} p95_ms={} longest_failure_run={} transitions={} intermittent={}",
+        summary.attempts,
+        summary.successes,
+        summary.loss_ppm,
+        summary
+            .median_rtt
+            .map(|value| value.as_millis().to_string())
+            .unwrap_or_else(|| "-".to_owned()),
+        summary
+            .p95_rtt
+            .map(|value| value.as_millis().to_string())
+            .unwrap_or_else(|| "-".to_owned()),
+        summary.longest_failure_run,
+        summary.state_transitions,
+        summary.intermittent,
+    )
 }
 
 fn record_address_family(
