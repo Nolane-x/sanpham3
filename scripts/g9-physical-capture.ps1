@@ -46,8 +46,10 @@ if (-not (Select-String -Path $directLog -SimpleMatch "MEASURED_PATHS none_verif
 }
 
 Write-Host "=== authenticated peer rescue ==="
-& .\target\release\peer-egress-cli.exe client $PeerAddr $NodeId $Psk $Hostname 2>&1 |
+$env:SP3_PEER_PSK_HEX = $Psk
+& .\target\release\peer-egress-cli.exe client $PeerAddr $NodeId - $Hostname 2>&1 |
     Tee-Object -FilePath $peerLog
+Remove-Item Env:SP3_PEER_PSK_HEX -ErrorAction SilentlyContinue
 if ($LASTEXITCODE -ne 0) {
     throw "peer-egress-cli failed"
 }
