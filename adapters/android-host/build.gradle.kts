@@ -1,6 +1,5 @@
 plugins {
     id("com.android.library") version "9.4.0"
-    id("org.jetbrains.kotlin.android") version "2.4.10"
 }
 
 android {
@@ -17,9 +16,6 @@ android {
     }
 }
 
-kotlin {
-    jvmToolchain(17)
-}
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
