@@ -1,0 +1,37 @@
+name: g9-recovery-court
+
+on:
+  push:
+    paths:
+      - "apps/g9-recovery-court/**"
+      - "crates/connectivity-core/**"
+      - "crates/peer-session/**"
+      - "crates/peer-egress/**"
+      - ".github/workflows/g9-recovery-court.yml"
+  pull_request:
+    paths:
+      - "apps/g9-recovery-court/**"
+      - "crates/connectivity-core/**"
+      - "crates/peer-session/**"
+      - "crates/peer-egress/**"
+      - ".github/workflows/g9-recovery-court.yml"
+
+jobs:
+  recovery-court:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Unit and full recovery court tests
+        run: cargo test -p g9-recovery-court
+
+      - name: Run recovery court binary
+        run: cargo run -p g9-recovery-court
