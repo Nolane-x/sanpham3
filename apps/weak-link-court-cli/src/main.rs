@@ -113,9 +113,10 @@ fn print_result(profile: WeakLinkProfile) -> Result<(), String> {
         result.accounting.outage_wait.as_millis(),
     );
     println!(
-        "PAYLOAD request={} response={} encrypted_request={} encrypted_response={} useful_efficiency_ppm={}",
+        "PAYLOAD request={} response={} handshake_wire={} encrypted_request={} encrypted_response={} useful_efficiency_ppm={}",
         result.request_payload_bytes,
         result.response_payload_bytes,
+        result.handshake_wire_bytes,
         result.encrypted_request_frame_bytes,
         result.encrypted_response_frame_bytes,
         result.useful_efficiency_ppm(),
