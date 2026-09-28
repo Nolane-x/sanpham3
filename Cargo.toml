@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/connectivity-core",
+    "crates/peer-lan",
     "adapters/linux-host",
     "apps/scavenger-cli",
     "apps/host-probe-cli",
