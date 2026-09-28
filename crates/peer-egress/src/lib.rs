@@ -716,6 +716,106 @@ mod tests {
         server.join().unwrap();
     }
 
+
+    #[test]
+    fn encrypted_three_node_multihop_relay_reaches_egress() {
+        use peer_session::{
+            perform_client_handshake, perform_server_handshake,
+            NonceReplayCache, PeerKey,
+        };
+        use std::net::{TcpListener, TcpStream};
+        use std::thread;
+
+        let egress_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let egress_addr = egress_listener.local_addr().unwrap();
+
+        let relay_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let relay_addr = relay_listener.local_addr().unwrap();
+
+        let egress = thread::spawn(move || {
+            let (mut relay_stream, _) = egress_listener.accept().unwrap();
+            let key = PeerKey::new([0x55; 32]);
+            let mut replay = NonceReplayCache::new(16);
+            let (_, mut egress_session) = perform_server_handshake(
+                &mut relay_stream,
+                300,
+                &key,
+                &mut replay,
+            )
+            .unwrap();
+
+            let resolver = FakeResolver {
+                result: Ok(vec![
+                    "192.168.1.9".parse().unwrap(),
+                    "8.8.4.4".parse().unwrap(),
+                ]),
+            };
+
+            serve_one(
+                &mut egress_session,
+                &mut relay_stream,
+                &resolver,
+            )
+            .unwrap();
+        });
+
+        let relay = thread::spawn(move || {
+            let (mut downstream_stream, _) = relay_listener.accept().unwrap();
+
+            let downstream_key = PeerKey::new([0x55; 32]);
+            let mut downstream_replay = NonceReplayCache::new(16);
+            let (_, mut downstream_session) = perform_server_handshake(
+                &mut downstream_stream,
+                200,
+                &downstream_key,
+                &mut downstream_replay,
+            )
+            .unwrap();
+
+            let mut upstream_stream = TcpStream::connect(egress_addr).unwrap();
+            let upstream_key = PeerKey::new([0x55; 32]);
+            let (egress_id, mut upstream_session) =
+                perform_client_handshake(
+                    &mut upstream_stream,
+                    200,
+                    &upstream_key,
+                )
+                .unwrap();
+            assert_eq!(egress_id, 300);
+
+            relay_one(
+                &mut downstream_session,
+                &mut downstream_stream,
+                &mut upstream_session,
+                &mut upstream_stream,
+            )
+            .unwrap();
+        });
+
+        let mut client_stream = TcpStream::connect(relay_addr).unwrap();
+        let key = PeerKey::new([0x55; 32]);
+        let (relay_id, mut client_session) =
+            perform_client_handshake(&mut client_stream, 100, &key).unwrap();
+        assert_eq!(relay_id, 200);
+
+        let addresses = resolve_via_peer_with_budget(
+            &mut client_session,
+            &mut client_stream,
+            88,
+            1,
+            "example.com",
+        )
+        .unwrap();
+
+        assert_eq!(
+            addresses,
+            vec!["8.8.4.4".parse::<IpAddr>().unwrap()]
+        );
+
+        relay.join().unwrap();
+        egress.join().unwrap();
+    }
+
     #[test]
     fn resolution_failure_is_explicit() {
         let resolver = FakeResolver {
