@@ -517,7 +517,9 @@ fn percentile(values: &[Duration], percentile: usize) -> Option<Duration> {
         return None;
     }
 
-    let rank = ((values.len() - 1) * percentile).div_ceil(100);
+    let rank = (values.len() * percentile)
+        .div_ceil(100)
+        .saturating_sub(1);
     values.get(rank.min(values.len() - 1)).copied()
 }
 
