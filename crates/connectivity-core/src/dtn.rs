@@ -38,6 +38,27 @@ impl DtnQueue {
         self.bundles.push_back(bundle);
     }
 
+    /// Inserts a bundle only when its ID is not already present.
+    ///
+    /// Bundle IDs are the DTN deduplication key. Returning false means the
+    /// queue already has custody of an equivalent logical bundle ID.
+    pub fn push_unique(&mut self, bundle: Bundle) -> bool {
+        if self.contains(bundle.id) {
+            return false;
+        }
+
+        self.bundles.push_back(bundle);
+        true
+    }
+
+    pub fn contains(&self, id: u64) -> bool {
+        self.bundles.iter().any(|bundle| bundle.id == id)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Bundle> {
+        self.bundles.iter()
+    }
+
     pub fn len(&self) -> usize {
         self.bundles.len()
     }
@@ -107,6 +128,35 @@ mod tests {
         });
 
         assert_eq!(queue.next_for_send(now).unwrap().id, 2);
+    }
+
+
+    #[test]
+    fn duplicate_bundle_id_is_rejected_by_unique_insert() {
+        let now = Instant::now();
+        let mut queue = DtnQueue::new();
+
+        let first = Bundle {
+            id: 44,
+            priority: BundlePriority::Normal,
+            created_at: now,
+            ttl: Duration::from_secs(60),
+            payload: vec![1, 2, 3],
+            attempts: 0,
+        };
+        let duplicate = Bundle {
+            id: 44,
+            priority: BundlePriority::Urgent,
+            created_at: now,
+            ttl: Duration::from_secs(120),
+            payload: vec![9],
+            attempts: 0,
+        };
+
+        assert!(queue.push_unique(first));
+        assert!(!queue.push_unique(duplicate));
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.iter().next().unwrap().payload, vec![1, 2, 3]);
     }
 
     #[test]
