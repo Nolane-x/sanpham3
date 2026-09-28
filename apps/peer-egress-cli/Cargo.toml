@@ -1,0 +1,8 @@
+[package]
+name = "peer-egress-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+peer-egress = { path = "../../crates/peer-egress" }
+peer-session = { path = "../../crates/peer-session" }
