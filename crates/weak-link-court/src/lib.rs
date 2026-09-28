@@ -171,7 +171,6 @@ impl VirtualReliableLink {
 
         for chunk in bytes.chunks(self.profile.chunk_bytes) {
             loop {
-                self.wait_until_link_up()?;
                 self.account_attempt(chunk.len())?;
 
                 self.loss_accumulator = self
@@ -225,18 +224,15 @@ impl VirtualReliableLink {
             .div_ceil(self.profile.bitrate_bps as u128);
         let latency_ns = self.profile.one_way_latency.as_nanos();
 
-        self.serialization_ns = self
-            .serialization_ns
-            .checked_add(serialization_ns)
-            .ok_or(CourtError::ArithmeticOverflow)?;
+        self.consume_serialization(serialization_ns)?;
+
         self.propagation_ns = self
             .propagation_ns
             .checked_add(latency_ns)
             .ok_or(CourtError::ArithmeticOverflow)?;
         self.elapsed_ns = self
             .elapsed_ns
-            .checked_add(serialization_ns)
-            .and_then(|value| value.checked_add(latency_ns))
+            .checked_add(latency_ns)
             .ok_or(CourtError::ArithmeticOverflow)?;
         self.attempted_bytes = self
             .attempted_bytes
@@ -245,28 +241,55 @@ impl VirtualReliableLink {
         Ok(())
     }
 
-    fn wait_until_link_up(&mut self) -> Result<(), CourtError> {
-        let Some(outage) = self.profile.outage else {
-            return Ok(());
-        };
+    fn consume_serialization(
+        &mut self,
+        mut remaining_ns: u128,
+    ) -> Result<(), CourtError> {
+        while remaining_ns > 0 {
+            let Some(outage) = self.profile.outage else {
+                self.serialization_ns = self
+                    .serialization_ns
+                    .checked_add(remaining_ns)
+                    .ok_or(CourtError::ArithmeticOverflow)?;
+                self.elapsed_ns = self
+                    .elapsed_ns
+                    .checked_add(remaining_ns)
+                    .ok_or(CourtError::ArithmeticOverflow)?;
+                return Ok(());
+            };
 
-        let period_ns = outage.period.as_nanos();
-        let down_ns = outage.down_for.as_nanos();
-        let up_ns = period_ns
-            .checked_sub(down_ns)
-            .ok_or(CourtError::ArithmeticOverflow)?;
-        let phase = self.elapsed_ns % period_ns;
+            let period_ns = outage.period.as_nanos();
+            let down_ns = outage.down_for.as_nanos();
+            let up_ns = period_ns
+                .checked_sub(down_ns)
+                .ok_or(CourtError::ArithmeticOverflow)?;
+            let phase = self.elapsed_ns % period_ns;
 
-        if phase >= up_ns {
-            let wait_ns = period_ns - phase;
+            if phase >= up_ns {
+                let wait_ns = period_ns - phase;
+                self.elapsed_ns = self
+                    .elapsed_ns
+                    .checked_add(wait_ns)
+                    .ok_or(CourtError::ArithmeticOverflow)?;
+                self.outage_wait_ns = self
+                    .outage_wait_ns
+                    .checked_add(wait_ns)
+                    .ok_or(CourtError::ArithmeticOverflow)?;
+                continue;
+            }
+
+            let usable_ns = up_ns - phase;
+            let step_ns = remaining_ns.min(usable_ns);
+
+            self.serialization_ns = self
+                .serialization_ns
+                .checked_add(step_ns)
+                .ok_or(CourtError::ArithmeticOverflow)?;
             self.elapsed_ns = self
                 .elapsed_ns
-                .checked_add(wait_ns)
+                .checked_add(step_ns)
                 .ok_or(CourtError::ArithmeticOverflow)?;
-            self.outage_wait_ns = self
-                .outage_wait_ns
-                .checked_add(wait_ns)
-                .ok_or(CourtError::ArithmeticOverflow)?;
+            remaining_ns -= step_ns;
         }
 
         Ok(())
@@ -472,6 +495,29 @@ mod tests {
         assert!(harsh.accounting.lost_chunk_attempts > 0);
         assert!(harsh.accounting.retransmitted_bytes > 0);
         assert!(harsh.accounting.outage_wait > Duration::ZERO);
+    }
+
+    #[test]
+    fn outage_pauses_serialization_even_when_it_starts_mid_chunk() {
+        let mut link = VirtualReliableLink::new(WeakLinkProfile {
+            bitrate_bps: 8,
+            chunk_bytes: 2,
+            one_way_latency: Duration::ZERO,
+            loss_ppm: 0,
+            outage: Some(PeriodicOutage {
+                period: Duration::from_secs(3),
+                down_for: Duration::from_secs(1),
+            }),
+        })
+        .unwrap();
+
+        let delivered = link.transmit(&[1, 2, 3, 4]).unwrap();
+        assert_eq!(delivered, vec![1, 2, 3, 4]);
+
+        let accounting = link.accounting().unwrap();
+        assert_eq!(accounting.serialization_time, Duration::from_secs(4));
+        assert_eq!(accounting.outage_wait, Duration::from_secs(1));
+        assert_eq!(accounting.elapsed, Duration::from_secs(5));
     }
 
     #[test]
