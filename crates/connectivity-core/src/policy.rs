@@ -1,5 +1,5 @@
 use crate::graph::{ConnectivityGraph, Route};
-use crate::model::{NodeId, Reachability};
+use crate::model::NodeId;
 use crate::scoring::TrafficClass;
 use std::time::Duration;
 
@@ -219,7 +219,7 @@ fn duration_from_nanos_saturating(nanos: u128) -> Duration {
 mod tests {
     use super::*;
     use crate::{
-        LinkObservation, LinkState, NodeProfile, Transport,
+        LinkObservation, LinkState, NodeProfile, Reachability, Transport,
     };
 
     fn link(
@@ -269,6 +269,28 @@ mod tests {
         assert_eq!(plan.mode, DeliveryMode::Full);
         assert_eq!(plan.path_kind, RecoveryPathKind::DirectInternet);
         assert!(!plan.experimental);
+    }
+
+    #[test]
+    fn one_hop_peer_egress_is_not_mislabeled_as_direct_internet() {
+        let mut graph = ConnectivityGraph::new();
+        graph.upsert_node(NodeProfile::local(1));
+        graph.upsert_node(NodeProfile::egress(2, false));
+        graph.observe_link(link(
+            1,
+            2,
+            Reachability::PeerOnly,
+            1_000_000,
+            0,
+            LinkState::Up,
+        ));
+
+        let task = RecoveryTask::new(TrafficClass::TinySemantic, 232);
+        let RecoveryPlan::Live(plan) = plan_recovery(&graph, 1, &task) else {
+            panic!("expected live plan");
+        };
+
+        assert_eq!(plan.path_kind, RecoveryPathKind::PeerEgress);
     }
 
     #[test]
