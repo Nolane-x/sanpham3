@@ -45,22 +45,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          NDK_DIR="$(
-            find "$ANDROID_SDK_ROOT/ndk"               -mindepth 1 -maxdepth 1 -type d 2>/dev/null               | sort -V               | tail -n 1
-          )"
-
+          NDK_DIR=""
+          if [ -d "$ANDROID_SDK_ROOT/ndk" ]; then
+            NDK_DIR="$(find "$ANDROID_SDK_ROOT/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          fi
           if [ -z "$NDK_DIR" ]; then
-            NDK_PACKAGE="$(
-              sdkmanager --list                 | sed -n 's/^[[:space:]]*\(ndk;[0-9][^[:space:]]*\).*/\1/p'                 | sort -V                 | tail -n 1
-            )"
+            NDK_PACKAGE="$(sdkmanager --list | sed -n 's/^[[:space:]]*\(ndk;[0-9][^[:space:]]*\).*/\1/p' | sort -V | tail -n 1)"
             test -n "$NDK_PACKAGE"
             sdkmanager "$NDK_PACKAGE"
-            NDK_DIR="$(
-              find "$ANDROID_SDK_ROOT/ndk"                 -mindepth 1 -maxdepth 1 -type d                 | sort -V                 | tail -n 1
-            )"
+            NDK_DIR="$(find "$ANDROID_SDK_ROOT/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
           fi
-
           test -d "$NDK_DIR"
           echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$NDK_DIR" >> "$GITHUB_ENV"
@@ -69,8 +63,7 @@ jobs:
       - name: Build Rust peer-session JNI libraries
         run: |
           rm -rf adapters/android-host/src/main/jniLibs
-          cargo ndk             -t arm64-v8a             -t x86_64             -o adapters/android-host/src/main/jniLibs             build -p android-peer-session-jni --release
-
+          cargo ndk -t arm64-v8a -t x86_64 -o adapters/android-host/src/main/jniLibs build -p android-peer-session-jni --release
           test -f adapters/android-host/src/main/jniLibs/arm64-v8a/libsp3_android_peer_session.so
           test -f adapters/android-host/src/main/jniLibs/x86_64/libsp3_android_peer_session.so
 
