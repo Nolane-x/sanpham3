@@ -2,8 +2,8 @@ use crate::dns_probe::{probe_dns_udp, DnsProbeSuccess};
 use crate::resolver::read_resolvers;
 use crate::routes::{read_route_snapshot, RouteSnapshot};
 use connectivity_core::{
-    Capability, PermissionState, ProbeKind, ProbeStatus, RecoveryLedger,
-    Transport,
+    Capability, LinkObservation, MeasuredPathEvidence, NodeId, PermissionState,
+    ProbeKind, ProbeStatus, Reachability, RecoveryLedger, Transport,
 };
 use std::io;
 use path_probe::{
@@ -35,6 +35,7 @@ pub struct TcpSeriesObservation {
 #[derive(Debug, Clone)]
 pub struct HttpsSeriesObservation {
     pub interface: String,
+    pub transport: Transport,
     pub target: HttpsProbeTarget,
     pub status: ProbeStatus,
     pub detail: String,
@@ -49,6 +50,44 @@ pub struct LinuxRecoverySnapshot {
     pub dns: Vec<DnsObservation>,
     pub tcp: Vec<TcpSeriesObservation>,
     pub https: Vec<HttpsSeriesObservation>,
+}
+
+impl HttpsSeriesObservation {
+    pub fn to_link_observation(
+        &self,
+        from: NodeId,
+        to: NodeId,
+        last_success_age: Duration,
+    ) -> LinkObservation {
+        series_to_link(
+            &self.summary,
+            self.status,
+            from,
+            to,
+            self.transport,
+            last_success_age,
+        )
+    }
+}
+
+impl LinuxRecoverySnapshot {
+    pub fn internet_link_observations(
+        &self,
+        from: NodeId,
+        to: NodeId,
+        last_success_age: Duration,
+    ) -> Vec<LinkObservation> {
+        self.https
+            .iter()
+            .map(|observation| {
+                observation.to_link_observation(
+                    from,
+                    to,
+                    last_success_age,
+                )
+            })
+            .collect()
+    }
 }
 
 pub struct LinuxRecoveryProbe {
@@ -233,6 +272,7 @@ impl LinuxRecoveryProbe {
                     );
                     https.push(HttpsSeriesObservation {
                         interface: interface.to_owned(),
+                        transport: capability.transport,
                         target: target.clone(),
                         status,
                         detail,
@@ -363,6 +403,39 @@ impl LinuxRecoveryProbe {
             https,
         })
     }
+}
+
+fn series_to_link(
+    summary: &ProbeSeriesSummary,
+    status: ProbeStatus,
+    from: NodeId,
+    to: NodeId,
+    transport: Transport,
+    last_success_age: Duration,
+) -> LinkObservation {
+    let succeeded =
+        status == ProbeStatus::Succeeded && summary.successes > 0;
+    let rtt = summary
+        .p95_rtt
+        .or(summary.median_rtt)
+        .or(summary.min_rtt)
+        .unwrap_or(Duration::ZERO);
+
+    MeasuredPathEvidence {
+        estimated_bitrate_bps: summary.observed_useful_bitrate_bps,
+        loss_ppm: summary.loss_ppm,
+        rtt,
+        intermittent:
+            summary.intermittent || summary.loss_ppm >= 300_000,
+        succeeded,
+    }
+    .into_link_observation(
+        from,
+        to,
+        transport,
+        Reachability::Internet,
+        last_success_age,
+    )
 }
 
 fn format_series_detail(summary: &ProbeSeriesSummary) -> String {
