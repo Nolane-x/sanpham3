@@ -24,7 +24,18 @@ fn run_linux() {
     println!();
     println!("recovery_probe:");
 
-    match linux_host::LinuxRecoveryProbe::new().run(&capabilities) {
+    let https_targets = match configured_https_targets() {
+        Ok(targets) => targets,
+        Err(error) => {
+            eprintln!("invalid HTTPS probe configuration: {error}");
+            std::process::exit(2);
+        }
+    };
+
+    match linux_host::LinuxRecoveryProbe::new()
+        .https_targets(https_targets)
+        .run(&capabilities)
+    {
         Ok(snapshot) => {
             for record in snapshot.ledger.records() {
                 println!(
@@ -62,7 +73,18 @@ fn run_windows() {
     println!();
     println!("recovery_probe:");
 
-    match windows_host::WindowsRecoveryProbe::new().run() {
+    let https_targets = match configured_https_targets() {
+        Ok(targets) => targets,
+        Err(error) => {
+            eprintln!("invalid HTTPS probe configuration: {error}");
+            std::process::exit(2);
+        }
+    };
+
+    match windows_host::WindowsRecoveryProbe::new()
+        .https_targets(https_targets)
+        .run()
+    {
         Ok(snapshot) => {
             for adapter in &snapshot.adapters {
                 println!(
@@ -119,5 +141,47 @@ fn print_capabilities(capabilities: &[Capability]) {
             capability.can_bind_socket,
             capability.constraints,
         );
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn configured_https_targets() -> Result<Vec<path_probe::HttpsProbeTarget>, String> {
+    let address = std::env::var("SP3_HTTPS_PROBE_ADDR").ok();
+    let server_name = std::env::var("SP3_HTTPS_PROBE_NAME").ok();
+
+    match (address, server_name) {
+        (None, None) => Ok(Vec::new()),
+        (Some(_), None) | (None, Some(_)) => Err(
+            "SP3_HTTPS_PROBE_ADDR and SP3_HTTPS_PROBE_NAME must be set together"
+                .to_owned(),
+        ),
+        (Some(address), Some(server_name)) => {
+            let address = address.parse().map_err(|_| {
+                "SP3_HTTPS_PROBE_ADDR must be a literal IP:port".to_owned()
+            })?;
+            let path = std::env::var("SP3_HTTPS_PROBE_PATH")
+                .unwrap_or_else(|_| "/".to_owned());
+            let max_response_bytes = std::env::var(
+                "SP3_HTTPS_PROBE_MAX_BYTES",
+            )
+            .ok()
+            .map(|value| {
+                value.parse::<usize>().map_err(|_| {
+                    "SP3_HTTPS_PROBE_MAX_BYTES must be a positive integer"
+                        .to_owned()
+                })
+            })
+            .transpose()?
+            .unwrap_or(1024);
+
+            path_probe::HttpsProbeTarget::new(
+                address,
+                server_name,
+                path,
+                max_response_bytes,
+            )
+            .map(|target| vec![target])
+            .map_err(|error| error.to_string())
+        }
     }
 }
