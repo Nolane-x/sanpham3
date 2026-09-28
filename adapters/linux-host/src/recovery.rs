@@ -175,6 +175,8 @@ impl LinuxRecoveryProbe {
                     ),
                 );
             }
+
+            register_remaining_probe_obligations(&mut ledger, interface);
         }
 
         Ok(LinuxRecoverySnapshot {
@@ -183,6 +185,26 @@ impl LinuxRecoveryProbe {
             resolvers,
             dns,
         })
+    }
+}
+
+fn register_remaining_probe_obligations(
+    ledger: &mut RecoveryLedger,
+    interface: &str,
+) {
+    for (suffix, kind) in [
+        ("udp", ProbeKind::Udp),
+        ("tcp", ProbeKind::Tcp),
+        ("tiny-https", ProbeKind::TinyHttps),
+        ("lan-peer", ProbeKind::LanPeer),
+    ] {
+        let id = format!("{interface}:{suffix}:pending");
+        ledger.register(&id, kind);
+        ledger.set_status(
+            &id,
+            ProbeStatus::Pending,
+            Some("probe obligation has not been executed yet".to_owned()),
+        );
     }
 }
 
@@ -277,7 +299,8 @@ wlan0 00000000 0102A8C0 0003 0 0 600 00000000 0 0 0\n",
         let probe = LinuxRecoveryProbe::with_paths(v4, v6, resolv);
         let result = probe.run(&[capability("wlan0")]).unwrap();
 
-        assert_eq!(result.ledger.pending_count(), 0);
+        assert_eq!(result.ledger.pending_count(), 4);
+        assert!(!result.ledger.can_declare_local_only());
         assert!(result
             .ledger
             .records()
