@@ -116,7 +116,7 @@ impl MeasuredPathEvidence {
                 0
             },
             loss_ppm: if self.succeeded {
-                self.loss_ppm.min(999_999)
+                self.loss_ppm.min(1_000_000)
             } else {
                 1_000_000
             },
