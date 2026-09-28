@@ -35,3 +35,8 @@ jobs:
         run: >
           cargo run -p weak-link-court-cli --
           profile 100 200000 300 8 15000 4000
+
+      - name: Experimental 1 bit-per-second extension
+        run: >
+          cargo run -p weak-link-court-cli --
+          profile 1 0 250 16 0 0
