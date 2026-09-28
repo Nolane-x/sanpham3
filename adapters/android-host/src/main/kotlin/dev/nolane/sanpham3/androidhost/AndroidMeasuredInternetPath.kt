@@ -80,6 +80,7 @@ private fun AndroidNetworkSnapshot.preferredTransport(): AndroidTransport {
     val priority = listOf(
         AndroidTransport.ETHERNET,
         AndroidTransport.WIFI,
+        AndroidTransport.WIFI_DIRECT,
         AndroidTransport.CELLULAR,
         AndroidTransport.SATELLITE,
         AndroidTransport.VPN,
