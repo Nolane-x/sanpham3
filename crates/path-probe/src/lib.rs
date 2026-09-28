@@ -251,13 +251,15 @@ pub fn tiny_https_head(
 
     tiny_https_on_stream(
         stream,
-        destination,
-        server_name,
-        path,
-        timeout,
-        max_response_bytes,
-        tcp_connect_elapsed,
-        started,
+        HttpsStreamProbe {
+            destination,
+            server_name,
+            path,
+            timeout,
+            max_response_bytes,
+            tcp_connect_elapsed,
+            started,
+        },
     )
 }
 
@@ -268,9 +270,9 @@ pub fn tiny_https_head_device(
     server_name: &str,
     path: &str,
     timeout: Duration,
-    max_response_bytes: usize,
+    probe.max_response_bytes: usize,
 ) -> io::Result<TinyHttpsResult> {
-    validate_https_args(path, max_response_bytes)?;
+    validate_https_args(path, probe.max_response_bytes)?;
 
     let started = Instant::now();
     let tcp_started = Instant::now();
@@ -279,13 +281,15 @@ pub fn tiny_https_head_device(
 
     tiny_https_on_stream(
         stream,
-        destination,
-        server_name,
-        path,
-        timeout,
-        max_response_bytes,
-        tcp_connect_elapsed,
-        started,
+        HttpsStreamProbe {
+            destination,
+            server_name,
+            path,
+            timeout,
+            max_response_bytes,
+            tcp_connect_elapsed,
+            started,
+        },
     )
 }
 
@@ -296,7 +300,7 @@ pub fn tiny_https_head_device(
     _server_name: &str,
     _path: &str,
     _timeout: Duration,
-    _max_response_bytes: usize,
+    _probe.max_response_bytes: usize,
 ) -> io::Result<TinyHttpsResult> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -306,12 +310,12 @@ pub fn tiny_https_head_device(
 
 fn validate_https_args(
     path: &str,
-    max_response_bytes: usize,
+    probe.max_response_bytes: usize,
 ) -> io::Result<()> {
-    if max_response_bytes < 16 {
+    if probe.max_response_bytes < 16 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "max_response_bytes must be at least 16",
+            "probe.max_response_bytes must be at least 16",
         ));
     }
     if !path.starts_with('/') {
@@ -324,19 +328,23 @@ fn validate_https_args(
     Ok(())
 }
 
-fn tiny_https_on_stream(
-    stream: TcpStream,
+struct HttpsStreamProbe<'a> {
     destination: SocketAddr,
-    server_name: &str,
-    path: &str,
+    server_name: &'a str,
+    path: &'a str,
     timeout: Duration,
-    max_response_bytes: usize,
+    probe.max_response_bytes: usize,
     tcp_connect_elapsed: Duration,
     started: Instant,
+}
+
+fn tiny_https_on_stream(
+    stream: TcpStream,
+    probe: HttpsStreamProbe<'_>,
 ) -> io::Result<TinyHttpsResult> {
     let source = stream.local_addr()?;
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
+    stream.set_read_timeout(Some(probe.timeout))?;
+    stream.set_write_timeout(Some(probe.timeout))?;
 
     let roots = RootCertStore::from_iter(
         webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
@@ -344,7 +352,7 @@ fn tiny_https_on_stream(
     let config = ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    let server_name_text = server_name.to_owned();
+    let server_name_text = probe.server_name.to_owned();
     let server_name = ServerName::try_from(server_name_text.clone()).map_err(
         |_| {
             io::Error::new(
@@ -359,16 +367,17 @@ fn tiny_https_on_stream(
 
     let request = format!(
         "HEAD {path} HTTP/1.1\r\nHost: {server_name}\r\nUser-Agent: sanpham3-path-probe/0\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+        path = probe.path,
         server_name = server_name_text,
     );
     tls.write_all(request.as_bytes())?;
     tls.flush()?;
 
-    let mut received = Vec::with_capacity(max_response_bytes.min(4096));
+    let mut received = Vec::with_capacity(probe.max_response_bytes.min(4096));
     let mut chunk = [0_u8; 512];
 
-    while received.len() < max_response_bytes {
-        let remaining = max_response_bytes - received.len();
+    while received.len() < probe.max_response_bytes {
+        let remaining = probe.max_response_bytes - received.len();
         let read_len = remaining.min(chunk.len());
 
         match tls.read(&mut chunk[..read_len]) {
@@ -392,12 +401,12 @@ fn tiny_https_on_stream(
     }
 
     let status_code = parse_http_status(&received)?;
-    let total_elapsed = started.elapsed();
+    let total_elapsed = probe.started.elapsed();
 
     Ok(TinyHttpsResult {
-        destination,
+        destination: probe.destination,
         source,
-        tcp_connect_elapsed,
+        tcp_connect_elapsed: probe.tcp_connect_elapsed,
         total_elapsed,
         status_code,
         response_bytes: received.len(),
