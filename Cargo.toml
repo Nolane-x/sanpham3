@@ -10,5 +10,6 @@ members = [
     "apps/scavenger-cli",
     "apps/host-probe-cli",
     "apps/peer-egress-cli",
+    "apps/recovery-lab-cli",
 ]
 resolver = "2"

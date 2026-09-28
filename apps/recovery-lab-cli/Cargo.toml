@@ -1,0 +1,10 @@
+[package]
+name = "recovery-lab-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+connectivity-core = { path = "../../crates/connectivity-core" }
+peer-egress = { path = "../../crates/peer-egress" }
+peer-session = { path = "../../crates/peer-session" }
+recovery-runtime = { path = "../../crates/recovery-runtime" }
