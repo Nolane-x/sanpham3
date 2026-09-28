@@ -1,3 +1,5 @@
+mod planner;
+
 use jni::objects::{JByteArray, JObject};
 use jni::sys::{jbyteArray, jint, jlong};
 use jni::JNIEnv;
