@@ -17,7 +17,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 data class AndroidWifiAwarePeer(
     val peerHandle: PeerHandle,
+    val discoverySession: SubscribeDiscoverySession,
     val serviceSpecificInfo: ByteArray,
+)
+
+data class AndroidWifiAwareInboundPeer(
+    val peerHandle: PeerHandle,
+    val discoverySession: PublishDiscoverySession,
+    val message: ByteArray,
 )
 
 sealed interface AndroidWifiAwareEvent {
@@ -27,6 +34,10 @@ sealed interface AndroidWifiAwareEvent {
 
     data class PeerDiscovered(
         val peer: AndroidWifiAwarePeer,
+    ) : AndroidWifiAwareEvent
+
+    data class InboundPeerMessage(
+        val peer: AndroidWifiAwareInboundPeer,
     ) : AndroidWifiAwareEvent
 
     data class Failed(
@@ -46,6 +57,8 @@ class AndroidWifiAwareDiscovery(
     companion object {
         private const val SERVICE_NAME = "sp3-connectivity-v0"
         private const val MAX_DISCOVERY_INFO_BYTES = 64
+        private const val HELLO_MESSAGE_ID = 1
+        private val HELLO_MESSAGE = "SP3H".encodeToByteArray()
     }
 
     private val appContext = context.applicationContext
@@ -144,6 +157,22 @@ class AndroidWifiAwareDiscovery(
                     listener?.invoke(AndroidWifiAwareEvent.Advertising)
                 }
 
+                override fun onMessageReceived(
+                    peerHandle: PeerHandle,
+                    message: ByteArray,
+                ) {
+                    val currentSession = publishSession ?: return
+                    listener?.invoke(
+                        AndroidWifiAwareEvent.InboundPeerMessage(
+                            AndroidWifiAwareInboundPeer(
+                                peerHandle = peerHandle,
+                                discoverySession = currentSession,
+                                message = message.copyOf(),
+                            ),
+                        ),
+                    )
+                }
+
                 override fun onSessionConfigFailed() {
                     listener?.invoke(
                         AndroidWifiAwareEvent.Failed(
@@ -180,15 +209,33 @@ class AndroidWifiAwareDiscovery(
                     serviceSpecificInfo: ByteArray,
                     matchFilter: List<ByteArray>,
                 ) {
+                    val currentSession = subscribeSession ?: return
+
                     listener?.invoke(
                         AndroidWifiAwareEvent.PeerDiscovered(
                             AndroidWifiAwarePeer(
                                 peerHandle = peerHandle,
+                                discoverySession = currentSession,
                                 serviceSpecificInfo =
                                     serviceSpecificInfo.copyOf(),
                             ),
                         ),
                     )
+
+                    try {
+                        currentSession.sendMessage(
+                            peerHandle,
+                            HELLO_MESSAGE_ID,
+                            HELLO_MESSAGE,
+                        )
+                    } catch (error: RuntimeException) {
+                        listener?.invoke(
+                            AndroidWifiAwareEvent.Failed(
+                                error.message
+                                    ?: "Wi-Fi Aware hello message failed",
+                            ),
+                        )
+                    }
                 }
 
                 override fun onSessionConfigFailed() {
