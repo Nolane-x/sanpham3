@@ -96,12 +96,25 @@ Below 10 bit/s is an experimental extension, not a promised product requirement.
 
 ## G8 — cross-platform mesh
 
-Required pairs:
+Software evidence:
 
-- Android <-> Android
-- Android <-> Windows
-- Android <-> Linux
-- Windows <-> Linux
+- [x] Windows/Linux use the shared Rust peer-session implementation;
+- [x] Android uses the same Rust peer-session through JNI;
+- [x] Android Wi-Fi Direct/Aware sockets can be upgraded directly into authenticated peer sessions;
+- [x] shared G8 challenge/ACK wire court defined across Android/Windows/Linux;
+- [x] Windows/Linux loopback court verifies authenticated peer IDs and encrypted bidirectional challenge/ACK;
+- [x] Android wire-format tests lock the same challenge kind, ACK kind, magic and payload length;
+- [x] Android AAR packages arm64-v8a and x86_64 Rust peer-session native libraries.
+
+Required physical pairs:
+
+- [ ] Android <-> Android
+- [ ] Android <-> Windows
+- [ ] Android <-> Linux
+- [ ] Windows <-> Linux
+
+Physical evidence must follow `docs/G8-PHYSICAL-PAIR-COURT.md`.
+Loopback, emulator and unit-test success do not close a physical pair.
 
 ## G9 — recovery benchmark
 
