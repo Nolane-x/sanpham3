@@ -1,40 +1,40 @@
 package dev.nolane.sanpham3.androidhost
 
-import java.net.InetAddress
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class AndroidBoundHttpsProbeTest {
-    private val address = InetAddress.getByAddress(
-        byteArrayOf(
-            203.toByte(),
-            0,
-            113,
-            10,
-        ),
-    )
-
     @Test
     fun targetValidationRejectsInvalidConfiguration() {
         assertThrows(IllegalArgumentException::class.java) {
-            AndroidHttpsProbeTarget(
-                address = address,
+            AndroidHttpsProbeTarget.fromLiteralAddress(
+                literalAddress = "203.0.113.10",
                 port = 0,
                 serverName = "example.com",
             )
         }
         assertThrows(IllegalArgumentException::class.java) {
-            AndroidHttpsProbeTarget(
-                address = address,
+            AndroidHttpsProbeTarget.fromLiteralAddress(
+                literalAddress = "203.0.113.10",
                 serverName = "",
             )
         }
         assertThrows(IllegalArgumentException::class.java) {
-            AndroidHttpsProbeTarget(
-                address = address,
+            AndroidHttpsProbeTarget.fromLiteralAddress(
+                literalAddress = "203.0.113.10",
                 serverName = "example.com",
                 path = "not-absolute",
+            )
+        }
+    }
+
+    @Test
+    fun rejectsHostnamesAsProbeAddresses() {
+        assertThrows(IllegalArgumentException::class.java) {
+            AndroidHttpsProbeTarget.fromLiteralAddress(
+                literalAddress = "example.com",
+                serverName = "example.com",
             )
         }
     }
