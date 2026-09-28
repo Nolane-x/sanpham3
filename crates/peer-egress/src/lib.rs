@@ -6,10 +6,13 @@ pub const KIND_RESOLVE_REQUEST: u8 = 0x20;
 pub const KIND_RESOLVE_RESPONSE: u8 = 0x21;
 pub const MAX_HOSTNAME_LEN: usize = 253;
 pub const MAX_RESULT_ADDRESSES: usize = 8;
+pub const DEFAULT_RELAY_BUDGET: u8 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolveRequest {
     pub request_id: u32,
+    /// Number of application-level relays still allowed before final egress.
+    pub relays_remaining: u8,
     pub hostname: String,
 }
 
@@ -21,6 +24,7 @@ pub enum ResolveStatus {
     ResolutionFailed = 2,
     NoPublicAddress = 3,
     ProtocolError = 4,
+    HopLimitExceeded = 5,
 }
 
 impl TryFrom<u8> for ResolveStatus {
@@ -33,6 +37,7 @@ impl TryFrom<u8> for ResolveStatus {
             2 => Ok(Self::ResolutionFailed),
             3 => Ok(Self::NoPublicAddress),
             4 => Ok(Self::ProtocolError),
+            5 => Ok(Self::HopLimitExceeded),
             _ => Err(ProtocolError::InvalidStatus(value)),
         }
     }
@@ -105,8 +110,25 @@ pub fn resolve_via_peer<S: Read + Write>(
     request_id: u32,
     hostname: &str,
 ) -> Result<Vec<IpAddr>, PeerEgressError> {
+    resolve_via_peer_with_budget(
+        session,
+        stream,
+        request_id,
+        DEFAULT_RELAY_BUDGET,
+        hostname,
+    )
+}
+
+pub fn resolve_via_peer_with_budget<S: Read + Write>(
+    session: &mut SecureSession,
+    stream: &mut S,
+    request_id: u32,
+    relays_remaining: u8,
+    hostname: &str,
+) -> Result<Vec<IpAddr>, PeerEgressError> {
     let request = ResolveRequest {
         request_id,
+        relays_remaining,
         hostname: hostname.to_owned(),
     };
     let payload = encode_request(&request)?;
@@ -130,6 +152,66 @@ pub fn resolve_via_peer<S: Read + Write>(
     }
 
     Ok(response.addresses)
+}
+
+pub fn relay_one<DS: Read + Write, US: Read + Write>(
+    downstream_session: &mut SecureSession,
+    downstream_stream: &mut DS,
+    upstream_session: &mut SecureSession,
+    upstream_stream: &mut US,
+) -> Result<(), PeerEgressError> {
+    let (kind, payload) = downstream_session.receive(downstream_stream)?;
+    if kind != KIND_RESOLVE_REQUEST {
+        return Err(PeerEgressError::UnexpectedFrameKind(kind));
+    }
+
+    let mut request = decode_request(&payload)?;
+
+    if request.relays_remaining == 0 {
+        let response = ResolveResponse {
+            request_id: request.request_id,
+            status: ResolveStatus::HopLimitExceeded,
+            addresses: Vec::new(),
+        };
+        let payload = encode_response(&response)?;
+        downstream_session.send(
+            downstream_stream,
+            KIND_RESOLVE_RESPONSE,
+            &payload,
+        )?;
+        return Ok(());
+    }
+
+    request.relays_remaining -= 1;
+    let request_id = request.request_id;
+    let upstream_payload = encode_request(&request)?;
+    upstream_session.send(
+        upstream_stream,
+        KIND_RESOLVE_REQUEST,
+        &upstream_payload,
+    )?;
+
+    let (upstream_kind, response_payload) =
+        upstream_session.receive(upstream_stream)?;
+    if upstream_kind != KIND_RESOLVE_RESPONSE {
+        return Err(PeerEgressError::UnexpectedFrameKind(upstream_kind));
+    }
+
+    let response = decode_response(&response_payload)?;
+    if response.request_id != request_id {
+        return Err(PeerEgressError::RequestIdMismatch {
+            expected: request_id,
+            got: response.request_id,
+        });
+    }
+
+    downstream_session.send(
+        downstream_stream,
+        KIND_RESOLVE_RESPONSE,
+        &response_payload,
+    )?;
+
+    Ok(())
 }
 
 pub fn serve_one<S: Read + Write, R: Resolver>(
@@ -223,15 +305,16 @@ pub fn encode_request(
         return Err(ProtocolError::InvalidHostname);
     }
 
-    let mut out = Vec::with_capacity(5 + hostname.len());
+    let mut out = Vec::with_capacity(6 + hostname.len());
     out.extend_from_slice(&request.request_id.to_be_bytes());
+    out.push(request.relays_remaining);
     out.push(hostname.len() as u8);
     out.extend_from_slice(hostname);
     Ok(out)
 }
 
 pub fn decode_request(bytes: &[u8]) -> Result<ResolveRequest, ProtocolError> {
-    if bytes.len() < 5 {
+    if bytes.len() < 6 {
         return Err(ProtocolError::Truncated);
     }
 
@@ -240,13 +323,14 @@ pub fn decode_request(bytes: &[u8]) -> Result<ResolveRequest, ProtocolError> {
             .try_into()
             .map_err(|_| ProtocolError::Truncated)?,
     );
-    let hostname_len = bytes[4] as usize;
+    let relays_remaining = bytes[4];
+    let hostname_len = bytes[5] as usize;
 
-    if bytes.len() != 5 + hostname_len {
+    if bytes.len() != 6 + hostname_len {
         return Err(ProtocolError::Truncated);
     }
 
-    let hostname = std::str::from_utf8(&bytes[5..])
+    let hostname = std::str::from_utf8(&bytes[6..])
         .map_err(|_| ProtocolError::InvalidUtf8)?
         .to_owned();
 
@@ -254,6 +338,7 @@ pub fn decode_request(bytes: &[u8]) -> Result<ResolveRequest, ProtocolError> {
 
     Ok(ResolveRequest {
         request_id,
+        relays_remaining,
         hostname,
     })
 }
@@ -482,6 +567,7 @@ mod tests {
     fn request_roundtrip() {
         let request = ResolveRequest {
             request_id: 42,
+            relays_remaining: DEFAULT_RELAY_BUDGET,
             hostname: "example.com".to_owned(),
         };
 
@@ -543,6 +629,7 @@ mod tests {
         let response = handle_request(
             ResolveRequest {
                 request_id: 1,
+                relays_remaining: DEFAULT_RELAY_BUDGET,
                 hostname: "example.com".to_owned(),
             },
             &resolver,
@@ -567,6 +654,7 @@ mod tests {
         let response = handle_request(
             ResolveRequest {
                 request_id: 5,
+                relays_remaining: DEFAULT_RELAY_BUDGET,
                 hostname: "example.com".to_owned(),
             },
             &resolver,
@@ -640,6 +728,7 @@ mod tests {
         let response = handle_request(
             ResolveRequest {
                 request_id: 7,
+                relays_remaining: DEFAULT_RELAY_BUDGET,
                 hostname: "example.com".to_owned(),
             },
             &resolver,
