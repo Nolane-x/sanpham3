@@ -6,8 +6,6 @@ use peer_egress::{
 use peer_session::{
     ClientHello, PeerKey, SecureSession, ServerHello, SessionRole,
 };
-use std::io;
-use std::net::IpAddr;
 use std::time::Duration;
 
 const LOSS_SCALE: u32 = 1_000_000;
@@ -394,6 +392,8 @@ fn duration_from_ns(value: u128) -> Result<Duration, CourtError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
+    use std::net::IpAddr;
 
     struct FixedResolver;
 
