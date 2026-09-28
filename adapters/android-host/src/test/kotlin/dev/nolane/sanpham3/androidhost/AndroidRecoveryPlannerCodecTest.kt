@@ -45,12 +45,12 @@ class AndroidRecoveryPlannerCodecTest {
             '3'.code.toByte(),
             'R'.code.toByte(),
         ))
-        buffer.put(0)
+        buffer.put(0.toByte())
         buffer.put(kind.toByte())
         buffer.put(mode.toByte())
         buffer.put(pathKind.toByte())
         buffer.put(reason.toByte())
-        buffer.put(if (experimental) 1 else 0)
+        buffer.put((if (experimental) 1 else 0).toByte())
         buffer.putShort(selectedIndex.toShort())
         buffer.putLong(externalId)
         buffer.putLong(effectiveBps)
