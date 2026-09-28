@@ -1,3 +1,7 @@
+pub mod path;
+
+pub use path::{inventory_adapter_paths, WindowsAdapterPath};
+
 use connectivity_core::{
     Capability, PermissionState, PlatformScanner, Transport,
 };
