@@ -353,7 +353,7 @@ fn connect_bound_device(
     let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
     socket.bind_device(Some(interface.as_bytes()))?;
     socket.connect_timeout(&SockAddr::from(destination), timeout)?;
-    socket.set_nodelay(true)?;
+    socket.set_tcp_nodelay(true)?;
 
     Ok(socket.into())
 }
@@ -378,7 +378,7 @@ fn connect_bound(
     }
 
     socket.connect_timeout(&SockAddr::from(destination), timeout)?;
-    socket.set_nodelay(true)?;
+    socket.set_tcp_nodelay(true)?;
 
     Ok(socket.into())
 }
