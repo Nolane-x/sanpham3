@@ -576,6 +576,58 @@ mod tests {
         assert!(response.addresses.is_empty());
     }
 
+
+    #[test]
+    fn encrypted_tcp_peer_resolves_through_mock_egress() {
+        use peer_session::{
+            perform_client_handshake, perform_server_handshake,
+            NonceReplayCache, PeerKey,
+        };
+        use std::net::{TcpListener, TcpStream};
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let key = PeerKey::new([0x77; 32]);
+            let mut replay = NonceReplayCache::new(16);
+            let (_, mut session) =
+                perform_server_handshake(&mut stream, 200, &key, &mut replay)
+                    .unwrap();
+
+            let resolver = FakeResolver {
+                result: Ok(vec![
+                    "10.0.0.7".parse().unwrap(),
+                    "93.184.216.34".parse().unwrap(),
+                ]),
+            };
+
+            serve_one(&mut session, &mut stream, &resolver).unwrap();
+        });
+
+        let mut stream = TcpStream::connect(address).unwrap();
+        let key = PeerKey::new([0x77; 32]);
+        let (_, mut session) =
+            perform_client_handshake(&mut stream, 100, &key).unwrap();
+
+        let addresses = resolve_via_peer(
+            &mut session,
+            &mut stream,
+            1234,
+            "example.com",
+        )
+        .unwrap();
+
+        assert_eq!(
+            addresses,
+            vec!["93.184.216.34".parse::<IpAddr>().unwrap()]
+        );
+
+        server.join().unwrap();
+    }
+
     #[test]
     fn resolution_failure_is_explicit() {
         let resolver = FakeResolver {
