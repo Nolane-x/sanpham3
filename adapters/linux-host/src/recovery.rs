@@ -40,6 +40,7 @@ pub struct HttpsSeriesObservation {
     pub status: ProbeStatus,
     pub detail: String,
     pub summary: ProbeSeriesSummary,
+    pub tcp_connect_p95: Option<Duration>,
 }
 
 #[derive(Debug)]
@@ -61,6 +62,7 @@ impl HttpsSeriesObservation {
     ) -> LinkObservation {
         series_to_link(
             &self.summary,
+            self.tcp_connect_p95,
             self.status,
             from,
             to,
@@ -239,6 +241,7 @@ impl LinuxRecoveryProbe {
                     );
                     ledger.register(&id, ProbeKind::TinyHttps);
 
+                    let mut tcp_connect_times = Vec::new();
                     let samples = run_series(
                         self.https_attempts,
                         self.https_pause,
@@ -251,6 +254,7 @@ impl LinuxRecoveryProbe {
                                 self.https_timeout,
                                 target.max_response_bytes,
                             )?;
+                            tcp_connect_times.push(result.tcp_connect_elapsed);
 
                             Ok(AttemptMeasurement {
                                 elapsed: result.total_elapsed,
@@ -259,6 +263,8 @@ impl LinuxRecoveryProbe {
                         },
                     );
                     let summary = summarize(&samples);
+                    let tcp_connect_p95 =
+                        duration_percentile(&mut tcp_connect_times, 95);
                     let status = if summary.successes > 0 {
                         ProbeStatus::Succeeded
                     } else {
@@ -277,6 +283,7 @@ impl LinuxRecoveryProbe {
                         status,
                         detail,
                         summary,
+                        tcp_connect_p95,
                     });
                 }
             }
@@ -407,6 +414,7 @@ impl LinuxRecoveryProbe {
 
 fn series_to_link(
     summary: &ProbeSeriesSummary,
+    tcp_connect_p95: Option<Duration>,
     status: ProbeStatus,
     from: NodeId,
     to: NodeId,
@@ -415,11 +423,7 @@ fn series_to_link(
 ) -> LinkObservation {
     let succeeded =
         status == ProbeStatus::Succeeded && summary.successes > 0;
-    let rtt = summary
-        .p95_rtt
-        .or(summary.median_rtt)
-        .or(summary.min_rtt)
-        .unwrap_or(Duration::ZERO);
+    let rtt = tcp_connect_p95.unwrap_or(Duration::ZERO);
 
     MeasuredPathEvidence {
         estimated_bitrate_bps: summary.observed_useful_bitrate_bps,
@@ -436,6 +440,22 @@ fn series_to_link(
         Reachability::Internet,
         last_success_age,
     )
+}
+
+fn duration_percentile(
+    values: &mut [Duration],
+    percentile: usize,
+) -> Option<Duration> {
+    if values.is_empty() {
+        return None;
+    }
+
+    values.sort_unstable();
+    let rank = (values.len() * percentile)
+        .div_ceil(100)
+        .saturating_sub(1)
+        .min(values.len() - 1);
+    values.get(rank).copied()
 }
 
 fn format_series_detail(summary: &ProbeSeriesSummary) -> String {
@@ -558,6 +578,7 @@ mod tests {
                 state_transitions: 2,
                 intermittent: true,
             },
+            tcp_connect_p95: Some(Duration::from_millis(40)),
         };
 
         let link = observation.to_link_observation(
@@ -570,7 +591,7 @@ mod tests {
         assert_eq!(link.state, connectivity_core::LinkState::Intermittent);
         assert_eq!(link.estimated_bitrate_bps, 4_000);
         assert_eq!(link.loss_ppm, 333_333);
-        assert_eq!(link.rtt, Duration::from_millis(120));
+        assert_eq!(link.rtt, Duration::from_millis(40));
         assert_eq!(link.reachability, Reachability::Internet);
     }
 
