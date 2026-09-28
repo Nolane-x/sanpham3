@@ -166,6 +166,11 @@ impl WindowsRecoveryProbe {
                     ),
                 );
             }
+
+            register_remaining_probe_obligations(
+                &mut ledger,
+                &interface.name,
+            );
         }
 
         Ok(WindowsRecoverySnapshot { ledger, dns })
@@ -260,6 +265,27 @@ fn root_a_query() -> [u8; 17] {
         0x00, 0x01,
         0x00, 0x01,
     ]
+}
+
+#[cfg(target_os = "windows")]
+fn register_remaining_probe_obligations(
+    ledger: &mut RecoveryLedger,
+    interface: &str,
+) {
+    for (suffix, kind) in [
+        ("udp", ProbeKind::Udp),
+        ("tcp", ProbeKind::Tcp),
+        ("tiny-https", ProbeKind::TinyHttps),
+        ("lan-peer", ProbeKind::LanPeer),
+    ] {
+        let id = format!("{interface}:{suffix}:pending");
+        ledger.register(&id, kind);
+        ledger.set_status(
+            &id,
+            ProbeStatus::Pending,
+            Some("probe obligation has not been executed yet".to_owned()),
+        );
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -604,10 +630,7 @@ mod tests {
             .run()
             .unwrap();
 
-        assert!(snapshot
-            .ledger
-            .records()
-            .iter()
-            .all(|record| record.status.terminal()));
+        assert!(snapshot.ledger.pending_count() >= 4);
+        assert!(!snapshot.ledger.can_declare_local_only());
     }
 }
