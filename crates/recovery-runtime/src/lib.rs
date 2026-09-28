@@ -1,3 +1,7 @@
+pub mod spool;
+
+pub use spool::{decode_queue, load_queue, save_queue, SpoolError};
+
 use connectivity_core::{
     Bundle, BundlePriority, DtnQueue,
 };
@@ -18,6 +22,7 @@ pub enum RuntimeError {
     UnexpectedFrameKind(u8),
     RequestIdMismatch { expected: u32, got: u32 },
     CorruptQueuedBundle,
+    DuplicateBundle(u64),
 }
 
 impl From<ProtocolError> for RuntimeError {
@@ -67,7 +72,7 @@ pub fn enqueue_resolve(
     };
     let payload = encode_request(&request)?;
 
-    queue.push(Bundle {
+    let inserted = queue.push_unique(Bundle {
         id: bundle_id,
         priority,
         created_at: now,
@@ -75,6 +80,10 @@ pub fn enqueue_resolve(
         payload,
         attempts: 0,
     });
+
+    if !inserted {
+        return Err(RuntimeError::DuplicateBundle(bundle_id));
+    }
 
     Ok(())
 }
@@ -162,6 +171,40 @@ mod tests {
         fn resolve(&self, _hostname: &str) -> io::Result<Vec<IpAddr>> {
             Ok(self.addresses.clone())
         }
+    }
+
+
+    #[test]
+    fn duplicate_bundle_id_is_rejected_at_runtime_boundary() {
+        let now = Instant::now();
+        let mut queue = DtnQueue::new();
+
+        enqueue_resolve(
+            &mut queue,
+            500,
+            1,
+            "example.com",
+            BundlePriority::Normal,
+            Duration::from_secs(60),
+            now,
+        )
+        .unwrap();
+
+        let duplicate = enqueue_resolve(
+            &mut queue,
+            500,
+            2,
+            "example.org",
+            BundlePriority::Urgent,
+            Duration::from_secs(60),
+            now,
+        );
+
+        assert!(matches!(
+            duplicate,
+            Err(RuntimeError::DuplicateBundle(500))
+        ));
+        assert_eq!(queue.len(), 1);
     }
 
     #[test]
