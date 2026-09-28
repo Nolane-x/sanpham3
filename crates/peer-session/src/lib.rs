@@ -17,7 +17,7 @@ pub use compact::{
 };
 pub use resume::{
     perform_resume_client_handshake, perform_resume_server_handshake,
-    ResumeClientHello, ResumeReplayCache, ResumeServerHello,
+    resume_key_id, ResumeClientHello, ResumeReplayCache, ResumeServerHello,
     RESUME_CLIENT_HELLO_LEN, RESUME_SERVER_HELLO_LEN,
 };
 
