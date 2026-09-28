@@ -236,7 +236,7 @@ class AndroidWifiDirectDataPath(
 
     fun currentEndpoint(): AndroidWifiDirectEndpoint? =
         latestInfo
-            ?.takeIf(WifiP2pInfo::groupFormed)
+            ?.takeIf { info -> info.groupFormed }
             ?.let { info ->
                 AndroidWifiDirectEndpoint(
                     groupOwner = info.isGroupOwner,
