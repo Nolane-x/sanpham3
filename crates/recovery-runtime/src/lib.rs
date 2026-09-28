@@ -1,5 +1,10 @@
+pub mod custody;
 pub mod spool;
 
+pub use custody::{
+    offer_next_bundle, receive_one_bundle, CustodyError, CustodySendOutcome,
+    CustodyStatus, KIND_CUSTODY_ACK, KIND_CUSTODY_OFFER,
+};
 pub use spool::{decode_queue, load_queue, save_queue, SpoolError};
 
 use connectivity_core::{
