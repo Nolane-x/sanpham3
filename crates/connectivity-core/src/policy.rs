@@ -68,6 +68,8 @@ pub struct RecoveryTask {
     /// Estimated complete on-wire bytes for the task, including protocol
     /// overhead. Callers should use measured baselines when available.
     pub estimated_wire_bytes: u64,
+    /// Expected request/response round trips for the chosen protocol profile.
+    pub estimated_round_trips: u16,
     pub allow_metered: bool,
     pub allow_delay_tolerant: bool,
     /// Optional policy bound for how long the app is willing to occupy a live
@@ -80,6 +82,7 @@ impl RecoveryTask {
         Self {
             class,
             estimated_wire_bytes,
+            estimated_round_trips: 2,
             allow_metered: true,
             allow_delay_tolerant: true,
             max_live_wait: None,
@@ -141,8 +144,12 @@ pub fn plan_recovery(
         return fallback(task, PlanReason::TrafficTooHeavyForPath);
     }
 
-    let expected_completion =
-        estimate_completion(task.estimated_wire_bytes, effective_bps, &route);
+    let expected_completion = estimate_completion(
+        task.estimated_wire_bytes,
+        task.estimated_round_trips,
+        effective_bps,
+        &route,
+    );
 
     if task
         .max_live_wait
@@ -190,11 +197,16 @@ fn classify_path(route: &Route) -> RecoveryPathKind {
 
 fn estimate_completion(
     wire_bytes: u64,
+    round_trips: u16,
     effective_bps: u64,
     route: &Route,
 ) -> Duration {
+    let latency = route
+        .total_rtt
+        .saturating_mul(u32::from(round_trips.max(1)));
+
     if effective_bps == u64::MAX {
-        return route.total_rtt;
+        return latency;
     }
 
     let bits = u128::from(wire_bytes).saturating_mul(8);
@@ -203,7 +215,7 @@ fn estimate_completion(
         .div_ceil(u128::from(effective_bps.max(1)));
     let serialization = duration_from_nanos_saturating(nanos);
 
-    route.total_rtt.saturating_add(serialization)
+    latency.saturating_add(serialization)
 }
 
 fn duration_from_nanos_saturating(nanos: u128) -> Duration {
@@ -405,6 +417,26 @@ mod tests {
 
         assert_eq!(plan.effective_bps, 30);
         assert_eq!(plan.mode, DeliveryMode::TinySemantic);
+    }
+
+    #[test]
+    fn completion_estimate_accounts_for_protocol_round_trips() {
+        let route = Route {
+            nodes: vec![1, 2],
+            total_cost: 1.0,
+            bottleneck_bps: 1_000,
+            worst_loss_ppm: 0,
+            total_rtt: Duration::from_secs(1),
+            intermittent_hops: 0,
+            metered_hops: 0,
+            peer_only_hops: 0,
+        };
+
+        let one = estimate_completion(125, 1, 1_000, &route);
+        let three = estimate_completion(125, 3, 1_000, &route);
+
+        assert_eq!(one, Duration::from_secs(2));
+        assert_eq!(three, Duration::from_secs(4));
     }
 
     #[test]
