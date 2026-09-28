@@ -8,6 +8,7 @@ pub mod capsule;
 pub mod dtn;
 pub mod graph;
 pub mod model;
+pub mod policy;
 pub mod probe;
 pub mod recovery;
 pub mod scoring;
@@ -17,6 +18,10 @@ pub use dtn::{Bundle, BundlePriority, DtnQueue};
 pub use graph::{ConnectivityGraph, Route};
 pub use model::{
     LinkObservation, LinkState, NodeId, NodeProfile, Reachability, Transport,
+};
+pub use policy::{
+    plan_recovery, DeliveryMode, LiveRecoveryPlan, PlanReason, RecoveryPathKind,
+    RecoveryPlan, RecoveryTask,
 };
 pub use probe::{Capability, PermissionState, PlatformScanner};
 pub use recovery::{ProbeKind, ProbeRecord, ProbeStatus, RecoveryLedger};
