@@ -1,0 +1,8 @@
+[package]
+name = "g8-pair-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+getrandom = "0.4"
+peer-session = { path = "../../crates/peer-session" }
