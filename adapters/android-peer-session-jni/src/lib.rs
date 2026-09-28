@@ -18,7 +18,6 @@ enum BridgeError {
     InvalidNodeId,
     InvalidHandle(u64),
     InvalidKind(i32),
-    InvalidPackage,
     Session(String),
     Poisoned,
 }
@@ -36,7 +35,6 @@ impl fmt::Display for BridgeError {
             Self::InvalidKind(kind) => {
                 write!(f, "frame kind must be in 0..=255, got {kind}")
             }
-            Self::InvalidPackage => write!(f, "invalid peer-session JNI package"),
             Self::Session(detail) => write!(f, "peer-session error: {detail}"),
             Self::Poisoned => write!(f, "peer-session bridge state is poisoned"),
         }
@@ -245,13 +243,12 @@ fn frame_kind(value: jint) -> Result<u8, BridgeError> {
     u8::try_from(value).map_err(|_| BridgeError::InvalidKind(value))
 }
 
-fn package_handle(bytes: &[u8]) -> Result<u64, BridgeError> {
-    let prefix: [u8; HANDLE_PREFIX_LEN] = bytes
-        .get(..HANDLE_PREFIX_LEN)
-        .ok_or(BridgeError::InvalidPackage)?
+#[cfg(test)]
+fn package_handle(bytes: &[u8]) -> u64 {
+    let prefix: [u8; HANDLE_PREFIX_LEN] = bytes[..HANDLE_PREFIX_LEN]
         .try_into()
-        .map_err(|_| BridgeError::InvalidPackage)?;
-    Ok(u64::from_be_bytes(prefix))
+        .expect("test package must contain handle prefix");
+    u64::from_be_bytes(prefix)
 }
 
 fn jni_bytes(
@@ -456,13 +453,13 @@ mod tests {
         let mut server_bridge = BridgeState::default();
 
         let client_package = client_bridge.client_begin(100, &key()).unwrap();
-        let pending_handle = package_handle(&client_package).unwrap();
+        let pending_handle = package_handle(&client_package);
         let client_hello = &client_package[HANDLE_PREFIX_LEN..];
 
         let server_package = server_bridge
             .server_accept(200, &key(), client_hello)
             .unwrap();
-        let server_handle = package_handle(&server_package).unwrap();
+        let server_handle = package_handle(&server_package);
         let server_peer_id = u64::from_be_bytes(
             server_package[8..16].try_into().unwrap(),
         );
@@ -514,7 +511,7 @@ mod tests {
         let mut server_bridge = BridgeState::default();
 
         let client_package = client_bridge.client_begin(1, &key()).unwrap();
-        let pending_handle = package_handle(&client_package).unwrap();
+        let pending_handle = package_handle(&client_package);
         let server_package = server_bridge
             .server_accept(
                 2,
