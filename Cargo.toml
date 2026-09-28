@@ -2,8 +2,11 @@
 members = [
     "crates/connectivity-core",
     "crates/peer-lan",
+    "crates/peer-session",
+    "crates/peer-egress",
     "adapters/linux-host",
     "apps/scavenger-cli",
     "apps/host-probe-cli",
+    "apps/peer-egress-cli",
 ]
 resolver = "2"
