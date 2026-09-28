@@ -30,7 +30,7 @@ impl PeerBeacon {
 
         let mut flags = 0_u8;
         if self.relay_allowed {
-            flags |= 1 << 0;
+            flags |= 1;
         }
         if self.internet_egress {
             flags |= 1 << 1;
@@ -73,7 +73,7 @@ impl PeerBeacon {
 
         Ok(Self {
             node_id,
-            relay_allowed: flags & (1 << 0) != 0,
+            relay_allowed: flags & 1 != 0,
             internet_egress: flags & (1 << 1) != 0,
             listen_port,
             advertised_bps,
