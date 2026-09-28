@@ -9,6 +9,18 @@ use std::io::{self, Read, Write};
 
 type HmacSha256 = Hmac<Sha256>;
 
+mod compact;
+mod resume;
+
+pub use compact::{
+    COMPACT_FRAME_HEADER_LEN, MAX_COMPACT_PLAINTEXT_LEN,
+};
+pub use resume::{
+    perform_resume_client_handshake, perform_resume_server_handshake,
+    ResumeClientHello, ResumeReplayCache, ResumeServerHello,
+    RESUME_CLIENT_HELLO_LEN, RESUME_SERVER_HELLO_LEN,
+};
+
 const MAGIC: [u8; 4] = *b"SP3S";
 const VERSION: u8 = 0;
 const CLIENT_HELLO_KIND: u8 = 1;
@@ -248,6 +260,13 @@ impl SecureSession {
         server.verify(client, key)?;
 
         let session_key = derive_session_key(key, client, server);
+        Ok(Self::from_session_key(role, session_key))
+    }
+
+    fn from_session_key(
+        role: SessionRole,
+        session_key: [u8; 32],
+    ) -> Self {
         let c2s = derive_prefix(&session_key, b"SP3/c2s/v0");
         let s2c = derive_prefix(&session_key, b"SP3/s2c/v0");
 
@@ -259,13 +278,13 @@ impl SecureSession {
             SessionRole::Server => (s2c, c2s),
         };
 
-        Ok(Self {
+        Self {
             cipher,
             send_prefix,
             recv_prefix,
             send_counter: 0,
             recv_counter: 0,
-        })
+        }
     }
 
     pub fn seal(
