@@ -1,5 +1,9 @@
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-use connectivity_core::{Capability, PlatformScanner};
+use connectivity_core::{
+    install_measured_internet_path, plan_recovery, Capability,
+    ConnectivityGraph, MeasuredInternetPath, NodeProfile, PlatformScanner,
+    RecoveryPlan, RecoveryTask, TrafficClass,
+};
 
 fn main() {
     #[cfg(target_os = "linux")]
@@ -53,6 +57,9 @@ fn run_linux() {
                 snapshot.ledger.any_information_path(),
                 snapshot.ledger.can_declare_local_only(),
             );
+
+            let measured = snapshot.measured_internet_paths(&capabilities);
+            print_adaptive_plan(&measured);
         }
         Err(error) => {
             eprintln!("recovery probe failed: {error}");
@@ -118,10 +125,71 @@ fn run_windows() {
                 snapshot.ledger.any_information_path(),
                 snapshot.ledger.can_declare_local_only(),
             );
+
+            let measured = snapshot.measured_internet_paths();
+            print_adaptive_plan(&measured);
         }
         Err(error) => {
             eprintln!("Windows recovery probe failed: {error}");
             std::process::exit(2);
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn print_adaptive_plan(paths: &[MeasuredInternetPath]) {
+    println!();
+    println!("adaptive_recovery:");
+
+    if paths.is_empty() {
+        println!("MEASURED_PATHS none_verified_by_tiny_https");
+        return;
+    }
+
+    let mut graph = ConnectivityGraph::new();
+    const LOCAL_NODE: u64 = 1;
+    const FIRST_EGRESS_NODE: u64 = 10_000;
+    graph.upsert_node(NodeProfile::local(LOCAL_NODE));
+
+    for (index, path) in paths.iter().enumerate() {
+        let egress_node = FIRST_EGRESS_NODE + index as u64;
+        install_measured_internet_path(
+            &mut graph,
+            LOCAL_NODE,
+            egress_node,
+            path,
+        );
+
+        println!(
+            "MEASURED_PATH id={} transport={:?} state={:?} useful_bps={} loss_ppm={} latency_ms={} metered={}",
+            path.path_id,
+            path.transport,
+            path.state,
+            path.estimated_bitrate_bps,
+            path.loss_ppm,
+            path.rtt.as_millis(),
+            path.metered,
+        );
+    }
+
+    let task = RecoveryTask::new(TrafficClass::TinySemantic, 232);
+    match plan_recovery(&graph, LOCAL_NODE, &task) {
+        RecoveryPlan::Live(plan) => {
+            println!(
+                "PLAN live mode={:?} path={:?} route={:?} effective_bps={} expected_ms={} experimental={}",
+                plan.mode,
+                plan.path_kind,
+                plan.route_nodes,
+                plan.effective_bps,
+                plan.expected_completion.as_millis(),
+                plan.experimental,
+            );
+        }
+        RecoveryPlan::DelayTolerant { reason, .. } => {
+            println!("PLAN dtn reason={reason:?}");
+        }
+        RecoveryPlan::LocalOnly { reason } => {
+            println!("PLAN local_only reason={reason:?}");
         }
     }
 }
