@@ -6,6 +6,7 @@ members = [
     "crates/peer-session",
     "crates/peer-egress",
     "crates/recovery-runtime",
+    "crates/weak-link-court",
     "adapters/linux-host",
     "adapters/windows-host",
     "apps/scavenger-cli",
