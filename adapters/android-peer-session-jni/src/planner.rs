@@ -35,6 +35,7 @@ enum PlannerError {
     InvalidState(u8),
     InvalidBoolean(u8),
     InvalidLoss(u32),
+    InvalidJvmUnsigned(&'static str, u64),
     PathNodeOverflow,
     Jni(String),
 }
@@ -73,6 +74,12 @@ impl fmt::Display for PlannerError {
             }
             Self::InvalidLoss(value) => {
                 write!(f, "invalid Android planner loss_ppm {value}")
+            }
+            Self::InvalidJvmUnsigned(name, value) => {
+                write!(
+                    f,
+                    "Android planner {name} {value} exceeds non-negative JVM Long range"
+                )
             }
             Self::PathNodeOverflow => write!(f, "Android planner path node overflow"),
             Self::Jni(detail) => write!(f, "Android planner JNI error: {detail}"),
@@ -223,13 +230,13 @@ fn decode_request(bytes: &[u8]) -> Result<PlannerRequest, PlannerError> {
             value => return Err(PlannerError::InvalidState(value)),
         };
         let metered = decode_bool(cursor.u8()?)?;
-        let external_id = cursor.u64()?;
-        let bitrate_bps = cursor.u64()?.max(1);
+        let external_id = jvm_unsigned("external_id", cursor.u64()?)?;
+        let bitrate_bps = jvm_unsigned("bitrate_bps", cursor.u64()?)?.max(1);
         let loss_ppm = cursor.u32()?;
         if loss_ppm > 1_000_000 {
             return Err(PlannerError::InvalidLoss(loss_ppm));
         }
-        let rtt_ms = cursor.u64()?;
+        let rtt_ms = jvm_unsigned("rtt_ms", cursor.u64()?)?;
 
         paths.push(PlanningPath {
             kind,
@@ -268,6 +275,16 @@ fn decode_transport(value: u8) -> Result<Transport, PlannerError> {
         7 | 8 => Ok(Transport::Other),
         other => Err(PlannerError::InvalidTransport(other)),
     }
+}
+
+fn jvm_unsigned(
+    name: &'static str,
+    value: u64,
+) -> Result<u64, PlannerError> {
+    if value > i64::MAX as u64 {
+        return Err(PlannerError::InvalidJvmUnsigned(name, value));
+    }
+    Ok(value)
 }
 
 fn decode_bool(value: u8) -> Result<bool, PlannerError> {
@@ -357,12 +374,14 @@ fn encode_response(
 
             out.extend_from_slice(&path_index.to_be_bytes());
             out.extend_from_slice(&external_id.to_be_bytes());
-            out.extend_from_slice(&plan.effective_bps.to_be_bytes());
             out.extend_from_slice(
-                &duration_millis_u64(plan.expected_completion).to_be_bytes(),
+                &jvm_u64(plan.effective_bps).to_be_bytes(),
+            );
+            out.extend_from_slice(
+                &duration_millis_jvm(plan.expected_completion).to_be_bytes(),
             );
             out.extend_from_slice(&plan.worst_loss_ppm.to_be_bytes());
-            out.extend_from_slice(&duration_millis_u64(plan.total_rtt).to_be_bytes());
+            out.extend_from_slice(&duration_millis_jvm(plan.total_rtt).to_be_bytes());
             out.extend_from_slice(&plan.intermittent_hops.to_be_bytes());
             out.extend_from_slice(&plan.metered_hops.to_be_bytes());
         }
@@ -406,8 +425,14 @@ fn reason_code(reason: PlanReason) -> u8 {
     }
 }
 
-fn duration_millis_u64(duration: Duration) -> u64 {
-    duration.as_millis().min(u128::from(u64::MAX)) as u64
+fn jvm_u64(value: u64) -> u64 {
+    value.min(i64::MAX as u64)
+}
+
+fn duration_millis_jvm(duration: Duration) -> u64 {
+    duration
+        .as_millis()
+        .min(i64::MAX as u128) as u64
 }
 
 fn java_bytes(
