@@ -92,6 +92,49 @@ Examples of suitable returned information:
 
 Avoid relying on a static fixture for the physical claim.
 
+## Capture harnesses
+
+Linux:
+
+```bash
+scripts/g9-physical-capture.sh \
+  <peer_ip:port> \
+  <local_node_id> \
+  <64_hex_psk> \
+  <hostname> \
+  <https_probe_ip:port> \
+  <https_server_name> \
+  [evidence_dir]
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\g9-physical-capture.ps1 `
+  -PeerAddr <peer_ip:port> `
+  -NodeId <local_node_id> `
+  -Psk <64_hex_psk> `
+  -Hostname <hostname> `
+  -HttpsAddr <https_probe_ip:port> `
+  -HttpsServerName <https_server_name> `
+  -EvidenceDir <folder>
+```
+
+The harness deliberately refuses to print a candidate PASS if the direct
+tiny-HTTPS probe still produces a verified Internet path.
+
+On success it saves:
+
+- raw direct-path probe output;
+- raw authenticated peer-rescue output;
+- git commit;
+- UTC timestamp;
+- OS/machine metadata;
+- SHA-256 hashes of both raw logs.
+
+The generated `evidence.txt` is a **PASS candidate**, not automatic gate
+closure. Topology and freshness still require human review.
+
 ## Required physical evidence
 
 Record:
