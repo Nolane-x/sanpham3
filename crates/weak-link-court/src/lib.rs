@@ -99,6 +99,7 @@ pub struct CourtResult {
     pub request_payload_bytes: usize,
     pub response_payload_bytes: usize,
     pub useful_payload_bytes: usize,
+    pub handshake_wire_bytes: usize,
     pub encrypted_request_frame_bytes: usize,
     pub encrypted_response_frame_bytes: usize,
     pub accounting: LinkAccounting,
@@ -315,7 +316,8 @@ pub fn run_resolve_court<R: Resolver>(
 
     // Phase 1: authenticated handshake travels through the constrained link.
     let client_hello = ClientHello::from_nonce(100, [0x11; 24], &key);
-    let client_wire = link.transmit(&client_hello.encode())?;
+    let client_hello_bytes = client_hello.encode();
+    let client_wire = link.transmit(&client_hello_bytes)?;
     let server_seen = ClientHello::decode(&client_wire)
         .map_err(|error| CourtError::Session(format!("{error:?}")))?;
     server_seen
@@ -324,7 +326,8 @@ pub fn run_resolve_court<R: Resolver>(
 
     let server_hello =
         ServerHello::from_nonce(200, [0x22; 24], &server_seen, &key);
-    let server_wire = link.transmit(&server_hello.encode())?;
+    let server_hello_bytes = server_hello.encode();
+    let server_wire = link.transmit(&server_hello_bytes)?;
     let client_seen = ServerHello::decode(&server_wire)
         .map_err(|error| CourtError::Session(format!("{error:?}")))?;
     client_seen
@@ -398,6 +401,8 @@ pub fn run_resolve_court<R: Resolver>(
         request_payload_bytes,
         response_payload_bytes,
         useful_payload_bytes: request_payload_bytes + response_payload_bytes,
+        handshake_wire_bytes:
+            client_hello_bytes.len() + server_hello_bytes.len(),
         encrypted_request_frame_bytes: request_frame_bytes,
         encrypted_response_frame_bytes: response_frame_bytes,
         accounting: link.accounting()?,
@@ -461,8 +466,13 @@ mod tests {
         .unwrap();
 
         assert!(result.succeeded());
-        assert!(result.accounting.elapsed > Duration::from_secs(60));
-        assert!(result.accounting.elapsed < Duration::from_secs(600));
+        assert_eq!(result.handshake_wire_bytes, 140);
+        assert_eq!(result.encrypted_request_frame_bytes, 49);
+        assert_eq!(result.encrypted_response_frame_bytes, 43);
+        assert_eq!(result.accounting.delivered_bytes, 232);
+        assert!(result.useful_efficiency_ppm() >= 120_000);
+        assert!(result.accounting.elapsed > Duration::from_secs(180));
+        assert!(result.accounting.elapsed <= Duration::from_secs(190));
     }
 
     #[test]
