@@ -73,6 +73,49 @@ pub struct TinyHttpsResult {
     pub response_bytes: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpsProbeTarget {
+    pub address: SocketAddr,
+    pub server_name: String,
+    pub path: String,
+    pub max_response_bytes: usize,
+}
+
+impl HttpsProbeTarget {
+    pub fn new(
+        address: SocketAddr,
+        server_name: impl Into<String>,
+        path: impl Into<String>,
+        max_response_bytes: usize,
+    ) -> io::Result<Self> {
+        let server_name = server_name.into();
+        let path = path.into();
+
+        validate_https_args(&path, max_response_bytes)?;
+
+        if server_name.trim().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "server_name must not be empty",
+            ));
+        }
+
+        if address.port() == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "HTTPS probe target port must be non-zero",
+            ));
+        }
+
+        Ok(Self {
+            address,
+            server_name,
+            path,
+            max_response_bytes,
+        })
+    }
+}
+
 pub fn summarize(samples: &[AttemptSample]) -> ProbeSeriesSummary {
     if samples.is_empty() {
         return ProbeSeriesSummary {
@@ -629,6 +672,36 @@ mod tests {
         assert!(!summary.intermittent);
 
         server.join().unwrap();
+    }
+
+    #[test]
+    fn https_probe_target_validates_configuration() {
+        let target = HttpsProbeTarget::new(
+            "203.0.113.10:443".parse().unwrap(),
+            "example.com",
+            "/",
+            1024,
+        )
+        .unwrap();
+
+        assert_eq!(target.server_name, "example.com");
+        assert_eq!(target.path, "/");
+        assert_eq!(target.max_response_bytes, 1024);
+
+        assert!(HttpsProbeTarget::new(
+            "203.0.113.10:0".parse().unwrap(),
+            "example.com",
+            "/",
+            1024,
+        )
+        .is_err());
+        assert!(HttpsProbeTarget::new(
+            "203.0.113.10:443".parse().unwrap(),
+            "",
+            "/",
+            1024,
+        )
+        .is_err());
     }
 
     #[test]
