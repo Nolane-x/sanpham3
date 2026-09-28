@@ -393,6 +393,21 @@ fn parse_u32(value: &str, name: &str) -> Result<u32, String> {
 }
 
 fn parse_key(value: &str) -> Result<PeerKey, String> {
+    if value == "-" {
+        let secret = env::var("SP3_PEER_PSK_HEX")
+            .map_err(|_| {
+                "PSK '-' requires SP3_PEER_PSK_HEX in the environment"
+                    .to_owned()
+            })?;
+        if secret == "-" {
+            return Err(
+                "SP3_PEER_PSK_HEX must contain hexadecimal key material"
+                    .to_owned(),
+            );
+        }
+        return parse_key(&secret);
+    }
+
     if value.len() != 64 {
         return Err("PSK must be exactly 64 hexadecimal characters".to_owned());
     }
@@ -421,11 +436,11 @@ fn hex_nibble(value: u8) -> Result<u8, String> {
 fn usage() -> String {
     [
         "usage:",
-        "  peer-egress-cli server <bind_addr> <node_id> <64_hex_psk>",
-        "  peer-egress-cli client <peer_addr> <node_id> <64_hex_psk> <public_hostname>",
-        "  peer-egress-cli relay-server <bind_addr> <node_id> <64_hex_psk> <upstream_ip:port>",
-        "  peer-egress-cli advertise-server <bind_addr> <discovery_port> <node_id> <64_hex_psk> <advertised_bps>",
-        "  peer-egress-cli discover-client <discovery_port> <node_id> <64_hex_psk> <public_hostname>",
+        "  peer-egress-cli server <bind_addr> <node_id> <64_hex_psk|->",
+        "  peer-egress-cli client <peer_addr> <node_id> <64_hex_psk|-> <public_hostname>",
+        "  peer-egress-cli relay-server <bind_addr> <node_id> <64_hex_psk|-> <upstream_ip:port>",
+        "  peer-egress-cli advertise-server <bind_addr> <discovery_port> <node_id> <64_hex_psk|-> <advertised_bps>",
+        "  peer-egress-cli discover-client <discovery_port> <node_id> <64_hex_psk|-> <public_hostname>",
         "",
         "examples:",
         "  peer-egress-cli server 0.0.0.0:45123 300 <psk>",
