@@ -537,7 +537,7 @@ mod windows_impl {
             ])
         };
 
-        if family == AF_INET.0 as u16 && length >= 16 {
+        if family == AF_INET.0 && length >= 16 {
             let octets = unsafe {
                 [
                     *pointer.add(4),
@@ -552,7 +552,7 @@ mod windows_impl {
             )));
         }
 
-        if family == AF_INET6.0 as u16 && length >= 28 {
+        if family == AF_INET6.0 && length >= 28 {
             let mut octets = [0_u8; 16];
             // SAFETY: sockaddr_in6 address occupies bytes 8..24.
             unsafe {
