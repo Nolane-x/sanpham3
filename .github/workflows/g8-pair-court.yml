@@ -1,0 +1,84 @@
+name: g8-pair-court
+
+on:
+  push:
+    paths:
+      - "apps/g8-pair-cli/**"
+      - "crates/peer-session/**"
+      - "adapters/android-host/**"
+      - "adapters/android-peer-session-jni/**"
+      - ".github/workflows/g8-pair-court.yml"
+  pull_request:
+    paths:
+      - "apps/g8-pair-cli/**"
+      - "crates/peer-session/**"
+      - "adapters/android-host/**"
+      - "adapters/android-peer-session-jni/**"
+      - ".github/workflows/g8-pair-court.yml"
+
+jobs:
+  rust-pair:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Pair court unit/integration tests
+        run: cargo test -p g8-pair-cli
+
+      - name: Build pair court binary
+        run: cargo build -p g8-pair-cli --release
+
+  cli-roundtrip:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build court binary
+        run: cargo build -p g8-pair-cli --release
+
+      - name: Run real CLI server/client roundtrip
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEY=5555555555555555555555555555555555555555555555555555555555555555
+          PORT=39080
+
+          ./target/release/g8-pair-cli server "127.0.0.1:$PORT" 200 "$KEY" >server.log 2>&1 &
+          SERVER_PID=$!
+
+          cleanup() {
+            kill "$SERVER_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 50); do
+            if grep -q "G8_PAIR_LISTEN" server.log 2>/dev/null; then
+              break
+            fi
+            sleep 0.1
+          done
+
+          grep -q "G8_PAIR_LISTEN" server.log
+          ./target/release/g8-pair-cli client "127.0.0.1:$PORT" 100 "$KEY" | tee client.log
+          wait "$SERVER_PID"
+          trap - EXIT
+
+          cat server.log
+          grep -q "G8_PAIR_PASS role=client local_node=100 peer_node=200" client.log
+          grep -q "G8_PAIR_PASS role=server local_node=200 peer_node=100" server.log
+
+          CLIENT_CHALLENGE="$(sed -n 's/.*challenge=//p' client.log | tail -n 1)"
+          SERVER_CHALLENGE="$(sed -n 's/.*challenge=//p' server.log | tail -n 1)"
+          test -n "$CLIENT_CHALLENGE"
+          test "$CLIENT_CHALLENGE" = "$SERVER_CHALLENGE"
