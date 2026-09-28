@@ -51,6 +51,33 @@ Every tier must return a fresh structured result successfully.
 The 10 bit/s case is expected to be slow in virtual time. The important claim is
 task completion, not normal web-page throughput.
 
+## Baseline v0 wire budget
+
+The first encrypted resolve court establishes this pre-optimization baseline:
+
+| Link rate | Virtual completion time |
+| ---: | ---: |
+| 1000 bit/s | 6.106 s |
+| 100 bit/s | 22.810 s |
+| 30 bit/s | 66.116 s |
+| 10 bit/s | 189.850 s |
+| 1 bit/s *(experimental)* | 1,860.250 s (~31 min) |
+
+The logical task carries 28 bytes of compact request/response payload, while
+the complete exchange currently costs 232 delivered wire bytes:
+
+```text
+140 bytes  authenticated two-message handshake
+ 49 bytes  encrypted request frame
+ 43 bytes  encrypted response frame
+----------------------------------------
+232 bytes  total delivered wire bytes
+```
+
+This is intentionally recorded as a regression/optimization baseline. A later
+compact or resumed session must show its savings against the same task rather
+than changing the benchmark.
+
 ## Adversarial profile
 
 Example:
