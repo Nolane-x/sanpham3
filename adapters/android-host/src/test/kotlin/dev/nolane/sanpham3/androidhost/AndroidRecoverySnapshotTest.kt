@@ -23,6 +23,23 @@ class AndroidRecoverySnapshotTest {
     }
 
     @Test
+    fun successfulTinyHttpsExchangeIsInformationPathEvidence() {
+        val snapshot = AndroidRecoverySnapshot(
+            networks = emptyList(),
+            probes = listOf(
+                AndroidProbeRecord(
+                    id = "1:https:example.com",
+                    kind = AndroidProbeKind.TINY_HTTPS,
+                    status = AndroidProbeStatus.SUCCEEDED,
+                    detail = "useful_bytes=128",
+                ),
+            ),
+        )
+
+        assertTrue(snapshot.informationPathFound)
+    }
+
+    @Test
     fun successfulDnsExchangeIsInformationPathEvidence() {
         val snapshot = AndroidRecoverySnapshot(
             networks = emptyList(),
