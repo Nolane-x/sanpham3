@@ -44,6 +44,16 @@ impl From<SessionError> for RuntimeError {
 }
 
 #[derive(Debug, Clone)]
+pub struct ResolveScheduleRequest<'a> {
+    pub bundle_id: u64,
+    pub request_id: u32,
+    pub hostname: &'a str,
+    pub priority: BundlePriority,
+    pub ttl: Duration,
+    pub now: Instant,
+}
+
+#[derive(Debug, Clone)]
 pub enum ScheduleResolveOutcome {
     Live(LiveRecoveryPlan),
     Queued {
@@ -75,34 +85,28 @@ pub enum DispatchOutcome {
 /// Live-capable tasks return a concrete plan to the caller. Tasks that should
 /// wait for a better/contact path are inserted into the durable DTN queue.
 /// LocalOnly is returned only when the task explicitly disables DTN fallback.
-#[allow(clippy::too_many_arguments)]
 pub fn schedule_resolve(
     graph: &ConnectivityGraph,
     start: NodeId,
     task: &RecoveryTask,
     queue: &mut DtnQueue,
-    bundle_id: u64,
-    request_id: u32,
-    hostname: &str,
-    priority: BundlePriority,
-    ttl: Duration,
-    now: Instant,
+    request: ResolveScheduleRequest<'_>,
 ) -> Result<ScheduleResolveOutcome, RuntimeError> {
     match plan_recovery(graph, start, task) {
         RecoveryPlan::Live(plan) => Ok(ScheduleResolveOutcome::Live(plan)),
         RecoveryPlan::DelayTolerant { reason, .. } => {
             enqueue_resolve(
                 queue,
-                bundle_id,
-                request_id,
-                hostname,
-                priority,
-                ttl,
-                now,
+                request.bundle_id,
+                request.request_id,
+                request.hostname,
+                request.priority,
+                request.ttl,
+                request.now,
             )?;
 
             Ok(ScheduleResolveOutcome::Queued {
-                bundle_id,
+                bundle_id: request.bundle_id,
                 reason,
             })
         }
@@ -272,12 +276,14 @@ mod tests {
             1,
             &task,
             &mut queue,
-            700,
-            70,
-            "example.com",
-            BundlePriority::Urgent,
-            Duration::from_secs(3600),
-            Instant::now(),
+            ResolveScheduleRequest {
+                bundle_id: 700,
+                request_id: 70,
+                hostname: "example.com",
+                priority: BundlePriority::Urgent,
+                ttl: Duration::from_secs(3600),
+                now: Instant::now(),
+            },
         )
         .unwrap();
 
@@ -307,12 +313,14 @@ mod tests {
             1,
             &task,
             &mut queue,
-            701,
-            71,
-            "example.com",
-            BundlePriority::Normal,
-            Duration::from_secs(3600),
-            Instant::now(),
+            ResolveScheduleRequest {
+                bundle_id: 701,
+                request_id: 71,
+                hostname: "example.com",
+                priority: BundlePriority::Normal,
+                ttl: Duration::from_secs(3600),
+                now: Instant::now(),
+            },
         )
         .unwrap();
 
@@ -342,12 +350,14 @@ mod tests {
             1,
             &task,
             &mut queue,
-            702,
-            72,
-            "example.com",
-            BundlePriority::Urgent,
-            Duration::from_secs(60),
-            Instant::now(),
+            ResolveScheduleRequest {
+                bundle_id: 702,
+                request_id: 72,
+                hostname: "example.com",
+                priority: BundlePriority::Urgent,
+                ttl: Duration::from_secs(60),
+                now: Instant::now(),
+            },
         )
         .unwrap();
 
