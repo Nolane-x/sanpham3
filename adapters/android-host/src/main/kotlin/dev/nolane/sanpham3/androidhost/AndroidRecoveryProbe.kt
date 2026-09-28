@@ -24,6 +24,8 @@ data class AndroidProbeRecord(
     val kind: AndroidProbeKind,
     val status: AndroidProbeStatus,
     val detail: String,
+    val networkHandle: Long? = null,
+    val seriesSummary: AndroidProbeSeriesSummary? = null,
 )
 
 data class AndroidRecoverySnapshot(
@@ -82,6 +84,7 @@ class AndroidRecoveryProbe(
                     AndroidProbeStatus.FAILED
                 },
                 detail = "configured=$ipv4 interface=${snapshot.interfaceName}",
+                networkHandle = snapshot.networkHandle,
             )
             records += AndroidProbeRecord(
                 id = "${snapshot.networkHandle}:ipv6:configured",
@@ -92,6 +95,7 @@ class AndroidRecoveryProbe(
                     AndroidProbeStatus.FAILED
                 },
                 detail = "configured=$ipv6 interface=${snapshot.interfaceName}",
+                networkHandle = snapshot.networkHandle,
             )
 
             if (httpsTargets.isEmpty()) {
@@ -100,6 +104,7 @@ class AndroidRecoveryProbe(
                     kind = AndroidProbeKind.TINY_HTTPS,
                     status = AndroidProbeStatus.UNSUPPORTED,
                     detail = "no HTTPS probe target configured",
+                    networkHandle = snapshot.networkHandle,
                 )
             } else {
                 for (target in httpsTargets) {
@@ -114,6 +119,7 @@ class AndroidRecoveryProbe(
                     kind = AndroidProbeKind.DNS,
                     status = AndroidProbeStatus.UNSUPPORTED,
                     detail = "network exposes no DNS server",
+                    networkHandle = snapshot.networkHandle,
                 )
                 continue
             }
@@ -151,6 +157,7 @@ class AndroidRecoveryProbe(
                     append(" rcode=")
                     append(result.rcode)
                 },
+                networkHandle = network.networkHandle,
             )
         } catch (error: SecurityException) {
             AndroidProbeRecord(
@@ -158,6 +165,7 @@ class AndroidRecoveryProbe(
                 kind = AndroidProbeKind.DNS,
                 status = AndroidProbeStatus.BLOCKED,
                 detail = error.message ?: error.javaClass.simpleName,
+                networkHandle = network.networkHandle,
             )
         } catch (error: UnsupportedOperationException) {
             AndroidProbeRecord(
@@ -165,6 +173,7 @@ class AndroidRecoveryProbe(
                 kind = AndroidProbeKind.DNS,
                 status = AndroidProbeStatus.UNSUPPORTED,
                 detail = error.message ?: error.javaClass.simpleName,
+                networkHandle = network.networkHandle,
             )
         } catch (error: Exception) {
             AndroidProbeRecord(
@@ -172,6 +181,7 @@ class AndroidRecoveryProbe(
                 kind = AndroidProbeKind.DNS,
                 status = AndroidProbeStatus.FAILED,
                 detail = error.message ?: error.javaClass.simpleName,
+                networkHandle = network.networkHandle,
             )
         }
     }
@@ -275,6 +285,8 @@ class AndroidRecoveryProbe(
                     append(firstFailure)
                 }
             },
+            networkHandle = network.networkHandle,
+            seriesSummary = summary,
         )
     }
 
