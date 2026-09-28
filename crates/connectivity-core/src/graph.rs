@@ -1,4 +1,4 @@
-use crate::model::{LinkObservation, NodeId, NodeProfile};
+use crate::model::{LinkObservation, NodeId, NodeProfile, Reachability};
 use crate::scoring::{score_link, TrafficClass};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
@@ -13,6 +13,7 @@ pub struct Route {
     pub total_rtt: Duration,
     pub intermittent_hops: u16,
     pub metered_hops: u16,
+    pub peer_only_hops: u16,
 }
 
 impl Route {
@@ -65,6 +66,7 @@ struct PreviousHop {
     rtt: Duration,
     intermittent: bool,
     metered: bool,
+    peer_only: bool,
 }
 
 impl PartialEq for Candidate {
@@ -135,6 +137,7 @@ impl ConnectivityGraph {
                 total_rtt: Duration::ZERO,
                 intermittent_hops: 0,
                 metered_hops: 0,
+                peer_only_hops: 0,
             });
         }
 
@@ -199,6 +202,8 @@ impl ConnectivityGraph {
                             intermittent:
                                 link.state == crate::model::LinkState::Intermittent,
                             metered: link.metered,
+                            peer_only:
+                                link.reachability == Reachability::PeerOnly,
                         },
                     );
                     heap.push(Candidate {
@@ -217,6 +222,7 @@ impl ConnectivityGraph {
         let mut total_rtt = Duration::ZERO;
         let mut intermittent_hops = 0_u16;
         let mut metered_hops = 0_u16;
+        let mut peer_only_hops = 0_u16;
 
         while cursor != start {
             let hop = *prev.get(&cursor)?;
@@ -227,6 +233,8 @@ impl ConnectivityGraph {
                 .saturating_add(u16::from(hop.intermittent));
             metered_hops =
                 metered_hops.saturating_add(u16::from(hop.metered));
+            peer_only_hops =
+                peer_only_hops.saturating_add(u16::from(hop.peer_only));
             cursor = hop.parent;
             nodes.push(cursor);
         }
@@ -241,6 +249,7 @@ impl ConnectivityGraph {
             total_rtt,
             intermittent_hops,
             metered_hops,
+            peer_only_hops,
         })
     }
 }
@@ -318,6 +327,7 @@ mod tests {
         assert_eq!(route.total_rtt, Duration::from_millis(340));
         assert_eq!(route.intermittent_hops, 1);
         assert_eq!(route.metered_hops, 1);
+        assert_eq!(route.peer_only_hops, 2);
         assert_eq!(route.estimated_effective_bps(), 30);
     }
 
