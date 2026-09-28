@@ -9,6 +9,7 @@ pub mod dtn;
 pub mod graph;
 pub mod model;
 pub mod probe;
+pub mod recovery;
 pub mod scoring;
 
 pub use capsule::{CapsuleError, CapsuleKind, SemanticCapsule};
@@ -18,4 +19,5 @@ pub use model::{
     LinkObservation, LinkState, NodeId, NodeProfile, Reachability, Transport,
 };
 pub use probe::{Capability, PermissionState, PlatformScanner};
+pub use recovery::{ProbeKind, ProbeRecord, ProbeStatus, RecoveryLedger};
 pub use scoring::{score_link, TrafficClass};
