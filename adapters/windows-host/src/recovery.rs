@@ -1,8 +1,8 @@
 use crate::{inventory_adapter_paths, WindowsAdapterPath};
 use connectivity_core::{ProbeKind, ProbeStatus, RecoveryLedger};
 use path_probe::{
-    run_series, summarize, tcp_connect, AttemptMeasurement,
-    ProbeSeriesSummary,
+    run_series, summarize, tcp_connect, tiny_https_head, AttemptMeasurement,
+    HttpsProbeTarget, ProbeSeriesSummary,
 };
 use std::io;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket};
@@ -29,12 +29,23 @@ pub struct WindowsTcpObservation {
     pub summary: ProbeSeriesSummary,
 }
 
+#[derive(Debug, Clone)]
+pub struct WindowsHttpsObservation {
+    pub interface: String,
+    pub source: Option<IpAddr>,
+    pub target: HttpsProbeTarget,
+    pub status: ProbeStatus,
+    pub detail: String,
+    pub summary: ProbeSeriesSummary,
+}
+
 #[derive(Debug)]
 pub struct WindowsRecoverySnapshot {
     pub ledger: RecoveryLedger,
     pub adapters: Vec<WindowsAdapterPath>,
     pub dns: Vec<WindowsDnsObservation>,
     pub tcp: Vec<WindowsTcpObservation>,
+    pub https: Vec<WindowsHttpsObservation>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +54,10 @@ pub struct WindowsRecoveryProbe {
     tcp_timeout: Duration,
     tcp_attempts: usize,
     tcp_pause: Duration,
+    https_targets: Vec<HttpsProbeTarget>,
+    https_timeout: Duration,
+    https_attempts: usize,
+    https_pause: Duration,
 }
 
 impl Default for WindowsRecoveryProbe {
@@ -58,6 +73,10 @@ impl WindowsRecoveryProbe {
             tcp_timeout: Duration::from_millis(900),
             tcp_attempts: 3,
             tcp_pause: Duration::from_millis(80),
+            https_targets: Vec::new(),
+            https_timeout: Duration::from_millis(1500),
+            https_attempts: 2,
+            https_pause: Duration::from_millis(120),
         }
     }
 
@@ -78,11 +97,32 @@ impl WindowsRecoveryProbe {
         self
     }
 
+    pub fn https_targets(
+        mut self,
+        targets: impl IntoIterator<Item = HttpsProbeTarget>,
+    ) -> Self {
+        self.https_targets = targets.into_iter().collect();
+        self
+    }
+
+    pub fn https_policy(
+        mut self,
+        attempts: usize,
+        timeout: Duration,
+        pause: Duration,
+    ) -> Self {
+        self.https_attempts = attempts.max(1);
+        self.https_timeout = timeout;
+        self.https_pause = pause;
+        self
+    }
+
     pub fn run(&self) -> Result<WindowsRecoverySnapshot, String> {
         let adapters = inventory_adapter_paths()?;
         let mut ledger = RecoveryLedger::new();
         let mut dns = Vec::new();
         let mut tcp = Vec::new();
+        let mut https = Vec::new();
 
         for adapter in adapters.iter().filter(|adapter| adapter.available) {
             record_address_family(
@@ -97,6 +137,87 @@ impl WindowsRecoveryProbe {
                 ProbeKind::Ipv6,
                 adapter.unicast.iter().any(IpAddr::is_ipv6),
             );
+
+            if self.https_targets.is_empty() {
+                let id = format!("{}:https", adapter.name);
+                ledger.register(&id, ProbeKind::TinyHttps);
+                ledger.set_status(
+                    &id,
+                    ProbeStatus::Unsupported,
+                    Some("no HTTPS probe target configured".to_owned()),
+                );
+            } else {
+                for target in &self.https_targets {
+                    let id = format!(
+                        "{}:https:{}:{}",
+                        adapter.name,
+                        target.server_name,
+                        target.address,
+                    );
+                    ledger.register(&id, ProbeKind::TinyHttps);
+
+                    let source = select_source(adapter, target.address.ip());
+                    let Some(source) = source else {
+                        let detail =
+                            "no usable local source address matches HTTPS target family"
+                                .to_owned();
+                        ledger.set_status(
+                            &id,
+                            ProbeStatus::Unsupported,
+                            Some(detail.clone()),
+                        );
+                        https.push(WindowsHttpsObservation {
+                            interface: adapter.name.clone(),
+                            source: None,
+                            target: target.clone(),
+                            status: ProbeStatus::Unsupported,
+                            detail,
+                            summary: summarize(&[]),
+                        });
+                        continue;
+                    };
+
+                    let samples = run_series(
+                        self.https_attempts,
+                        self.https_pause,
+                        || {
+                            let result = tiny_https_head(
+                                Some(source),
+                                target.address,
+                                &target.server_name,
+                                &target.path,
+                                self.https_timeout,
+                                target.max_response_bytes,
+                            )?;
+
+                            Ok(AttemptMeasurement {
+                                elapsed: result.total_elapsed,
+                                useful_bytes: result.response_bytes,
+                            })
+                        },
+                    );
+                    let summary = summarize(&samples);
+                    let status = if summary.successes > 0 {
+                        ProbeStatus::Succeeded
+                    } else {
+                        ProbeStatus::Failed
+                    };
+                    let detail = format_series_detail(&summary);
+                    ledger.set_status(
+                        &id,
+                        status,
+                        Some(detail.clone()),
+                    );
+                    https.push(WindowsHttpsObservation {
+                        interface: adapter.name.clone(),
+                        source: Some(source),
+                        target: target.clone(),
+                        status,
+                        detail,
+                        summary,
+                    });
+                }
+            }
 
             if adapter.dns_servers.is_empty() {
                 let id = format!("{}:dns", adapter.name);
@@ -251,6 +372,7 @@ impl WindowsRecoveryProbe {
             adapters,
             dns,
             tcp,
+            https,
         })
     }
 }
