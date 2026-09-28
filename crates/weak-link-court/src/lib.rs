@@ -1,0 +1,503 @@
+use peer_egress::{
+    decode_request, decode_response, encode_request, encode_response,
+    handle_request, ResolveRequest, ResolveResponse, ResolveStatus, Resolver,
+    KIND_RESOLVE_REQUEST, KIND_RESOLVE_RESPONSE,
+};
+use peer_session::{
+    ClientHello, PeerKey, SecureSession, ServerHello, SessionRole,
+};
+use std::io;
+use std::net::IpAddr;
+use std::time::Duration;
+
+const LOSS_SCALE: u32 = 1_000_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeriodicOutage {
+    /// Full up+down cycle.
+    pub period: Duration,
+    /// Down time at the end of each cycle.
+    pub down_for: Duration,
+}
+
+impl PeriodicOutage {
+    pub fn validate(self) -> Result<(), CourtError> {
+        if self.period.is_zero() || self.down_for >= self.period {
+            return Err(CourtError::InvalidProfile(
+                "outage requires 0 < down_for < period",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeakLinkProfile {
+    pub bitrate_bps: u64,
+    pub chunk_bytes: usize,
+    pub one_way_latency: Duration,
+    /// Deterministic lower-layer attempt loss in parts per million.
+    ///
+    /// Lost chunks are retransmitted by the virtual reliable carrier. This
+    /// models wire cost and completion time without corrupting the byte stream.
+    pub loss_ppm: u32,
+    pub outage: Option<PeriodicOutage>,
+}
+
+impl WeakLinkProfile {
+    pub fn validate(self) -> Result<(), CourtError> {
+        if self.bitrate_bps == 0 {
+            return Err(CourtError::InvalidProfile(
+                "bitrate_bps must be greater than zero",
+            ));
+        }
+        if self.chunk_bytes == 0 {
+            return Err(CourtError::InvalidProfile(
+                "chunk_bytes must be greater than zero",
+            ));
+        }
+        if self.loss_ppm >= LOSS_SCALE {
+            return Err(CourtError::InvalidProfile(
+                "loss_ppm must be below 1_000_000",
+            ));
+        }
+        if let Some(outage) = self.outage {
+            outage.validate()?;
+        }
+        Ok(())
+    }
+
+    pub fn ladder(bitrate_bps: u64) -> Self {
+        Self {
+            bitrate_bps,
+            chunk_bytes: 16,
+            one_way_latency: Duration::from_millis(250),
+            loss_ppm: 0,
+            outage: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkAccounting {
+    pub elapsed: Duration,
+    pub logical_messages: u64,
+    pub delivered_chunks: u64,
+    pub lost_chunk_attempts: u64,
+    pub delivered_bytes: u64,
+    pub attempted_bytes: u64,
+    pub retransmitted_bytes: u64,
+    pub outage_wait: Duration,
+    pub serialization_time: Duration,
+    pub propagation_time: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CourtResult {
+    pub profile: WeakLinkProfile,
+    pub request_id: u32,
+    pub hostname: String,
+    pub response: ResolveResponse,
+    pub request_payload_bytes: usize,
+    pub response_payload_bytes: usize,
+    pub useful_payload_bytes: usize,
+    pub encrypted_request_frame_bytes: usize,
+    pub encrypted_response_frame_bytes: usize,
+    pub accounting: LinkAccounting,
+}
+
+impl CourtResult {
+    pub fn succeeded(&self) -> bool {
+        self.response.status == ResolveStatus::Ok
+            && !self.response.addresses.is_empty()
+    }
+
+    pub fn useful_efficiency_ppm(&self) -> u32 {
+        if self.accounting.attempted_bytes == 0 {
+            return 0;
+        }
+
+        ((self.useful_payload_bytes as u128 * LOSS_SCALE as u128)
+            / self.accounting.attempted_bytes as u128)
+            .min(LOSS_SCALE as u128) as u32
+    }
+}
+
+#[derive(Debug)]
+pub enum CourtError {
+    InvalidProfile(&'static str),
+    Protocol(String),
+    Session(String),
+    UnexpectedFrameKind(u8),
+    ArithmeticOverflow,
+}
+
+pub struct VirtualReliableLink {
+    profile: WeakLinkProfile,
+    elapsed_ns: u128,
+    logical_messages: u64,
+    delivered_chunks: u64,
+    lost_chunk_attempts: u64,
+    delivered_bytes: u64,
+    attempted_bytes: u64,
+    retransmitted_bytes: u64,
+    outage_wait_ns: u128,
+    serialization_ns: u128,
+    propagation_ns: u128,
+    loss_accumulator: u32,
+}
+
+impl VirtualReliableLink {
+    pub fn new(profile: WeakLinkProfile) -> Result<Self, CourtError> {
+        profile.validate()?;
+
+        Ok(Self {
+            profile,
+            elapsed_ns: 0,
+            logical_messages: 0,
+            delivered_chunks: 0,
+            lost_chunk_attempts: 0,
+            delivered_bytes: 0,
+            attempted_bytes: 0,
+            retransmitted_bytes: 0,
+            outage_wait_ns: 0,
+            serialization_ns: 0,
+            propagation_ns: 0,
+            loss_accumulator: 0,
+        })
+    }
+
+    pub fn transmit(&mut self, bytes: &[u8]) -> Result<Vec<u8>, CourtError> {
+        self.logical_messages = self.logical_messages.saturating_add(1);
+        let mut delivered = Vec::with_capacity(bytes.len());
+
+        for chunk in bytes.chunks(self.profile.chunk_bytes) {
+            loop {
+                self.wait_until_link_up()?;
+                self.account_attempt(chunk.len())?;
+
+                self.loss_accumulator = self
+                    .loss_accumulator
+                    .saturating_add(self.profile.loss_ppm);
+
+                if self.loss_accumulator >= LOSS_SCALE {
+                    self.loss_accumulator -= LOSS_SCALE;
+                    self.lost_chunk_attempts =
+                        self.lost_chunk_attempts.saturating_add(1);
+                    self.retransmitted_bytes = self
+                        .retransmitted_bytes
+                        .saturating_add(chunk.len() as u64);
+                    continue;
+                }
+
+                delivered.extend_from_slice(chunk);
+                self.delivered_chunks = self.delivered_chunks.saturating_add(1);
+                self.delivered_bytes = self
+                    .delivered_bytes
+                    .saturating_add(chunk.len() as u64);
+                break;
+            }
+        }
+
+        Ok(delivered)
+    }
+
+    pub fn accounting(&self) -> Result<LinkAccounting, CourtError> {
+        Ok(LinkAccounting {
+            elapsed: duration_from_ns(self.elapsed_ns)?,
+            logical_messages: self.logical_messages,
+            delivered_chunks: self.delivered_chunks,
+            lost_chunk_attempts: self.lost_chunk_attempts,
+            delivered_bytes: self.delivered_bytes,
+            attempted_bytes: self.attempted_bytes,
+            retransmitted_bytes: self.retransmitted_bytes,
+            outage_wait: duration_from_ns(self.outage_wait_ns)?,
+            serialization_time: duration_from_ns(self.serialization_ns)?,
+            propagation_time: duration_from_ns(self.propagation_ns)?,
+        })
+    }
+
+    fn account_attempt(&mut self, bytes: usize) -> Result<(), CourtError> {
+        let bits = (bytes as u128)
+            .checked_mul(8)
+            .ok_or(CourtError::ArithmeticOverflow)?;
+        let serialization_ns = bits
+            .checked_mul(1_000_000_000)
+            .ok_or(CourtError::ArithmeticOverflow)?
+            .div_ceil(self.profile.bitrate_bps as u128);
+        let latency_ns = self.profile.one_way_latency.as_nanos();
+
+        self.serialization_ns = self
+            .serialization_ns
+            .checked_add(serialization_ns)
+            .ok_or(CourtError::ArithmeticOverflow)?;
+        self.propagation_ns = self
+            .propagation_ns
+            .checked_add(latency_ns)
+            .ok_or(CourtError::ArithmeticOverflow)?;
+        self.elapsed_ns = self
+            .elapsed_ns
+            .checked_add(serialization_ns)
+            .and_then(|value| value.checked_add(latency_ns))
+            .ok_or(CourtError::ArithmeticOverflow)?;
+        self.attempted_bytes = self
+            .attempted_bytes
+            .saturating_add(bytes as u64);
+
+        Ok(())
+    }
+
+    fn wait_until_link_up(&mut self) -> Result<(), CourtError> {
+        let Some(outage) = self.profile.outage else {
+            return Ok(());
+        };
+
+        let period_ns = outage.period.as_nanos();
+        let down_ns = outage.down_for.as_nanos();
+        let up_ns = period_ns
+            .checked_sub(down_ns)
+            .ok_or(CourtError::ArithmeticOverflow)?;
+        let phase = self.elapsed_ns % period_ns;
+
+        if phase >= up_ns {
+            let wait_ns = period_ns - phase;
+            self.elapsed_ns = self
+                .elapsed_ns
+                .checked_add(wait_ns)
+                .ok_or(CourtError::ArithmeticOverflow)?;
+            self.outage_wait_ns = self
+                .outage_wait_ns
+                .checked_add(wait_ns)
+                .ok_or(CourtError::ArithmeticOverflow)?;
+        }
+
+        Ok(())
+    }
+}
+
+pub fn standard_ladder() -> [WeakLinkProfile; 4] {
+    [
+        WeakLinkProfile::ladder(1_000),
+        WeakLinkProfile::ladder(100),
+        WeakLinkProfile::ladder(30),
+        WeakLinkProfile::ladder(10),
+    ]
+}
+
+pub fn run_resolve_court<R: Resolver>(
+    profile: WeakLinkProfile,
+    resolver: &R,
+    hostname: &str,
+) -> Result<CourtResult, CourtError> {
+    let mut link = VirtualReliableLink::new(profile)?;
+    let key = PeerKey::new([0x47; 32]);
+
+    // Phase 1: authenticated handshake travels through the constrained link.
+    let client_hello = ClientHello::from_nonce(100, [0x11; 24], &key);
+    let client_wire = link.transmit(&client_hello.encode())?;
+    let server_seen = ClientHello::decode(&client_wire)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+    server_seen
+        .verify(&key)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+
+    let server_hello =
+        ServerHello::from_nonce(200, [0x22; 24], &server_seen, &key);
+    let server_wire = link.transmit(&server_hello.encode())?;
+    let client_seen = ServerHello::decode(&server_wire)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+    client_seen
+        .verify(&client_hello, &key)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+
+    let mut client_session = SecureSession::from_handshake(
+        SessionRole::Client,
+        &key,
+        &client_hello,
+        &client_seen,
+    )
+    .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+    let mut server_session = SecureSession::from_handshake(
+        SessionRole::Server,
+        &key,
+        &server_seen,
+        &server_hello,
+    )
+    .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+
+    // Phase 2: a compact Internet task crosses as a real encrypted frame.
+    let request = ResolveRequest {
+        request_id: 501,
+        relays_remaining: 1,
+        hostname: hostname.to_owned(),
+    };
+    let request_payload = encode_request(&request)
+        .map_err(|error| CourtError::Protocol(format!("{error:?}")))?;
+    let request_frame = client_session
+        .seal(KIND_RESOLVE_REQUEST, &request_payload)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+    let request_frame_bytes = request_frame.len();
+    let request_wire = link.transmit(&request_frame)?;
+
+    let (request_kind, request_plaintext) = server_session
+        .open(&request_wire)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+    if request_kind != KIND_RESOLVE_REQUEST {
+        return Err(CourtError::UnexpectedFrameKind(request_kind));
+    }
+
+    let decoded_request = decode_request(&request_plaintext)
+        .map_err(|error| CourtError::Protocol(format!("{error:?}")))?;
+    let response = handle_request(decoded_request, resolver);
+    let response_payload = encode_response(&response)
+        .map_err(|error| CourtError::Protocol(format!("{error:?}")))?;
+    let response_frame = server_session
+        .seal(KIND_RESOLVE_RESPONSE, &response_payload)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+    let response_frame_bytes = response_frame.len();
+    let response_wire = link.transmit(&response_frame)?;
+
+    let (response_kind, response_plaintext) = client_session
+        .open(&response_wire)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+    if response_kind != KIND_RESOLVE_RESPONSE {
+        return Err(CourtError::UnexpectedFrameKind(response_kind));
+    }
+    let final_response = decode_response(&response_plaintext)
+        .map_err(|error| CourtError::Protocol(format!("{error:?}")))?;
+
+    let request_payload_bytes = request_payload.len();
+    let response_payload_bytes = response_payload.len();
+
+    Ok(CourtResult {
+        profile,
+        request_id: request.request_id,
+        hostname: request.hostname,
+        response: final_response,
+        request_payload_bytes,
+        response_payload_bytes,
+        useful_payload_bytes: request_payload_bytes + response_payload_bytes,
+        encrypted_request_frame_bytes: request_frame_bytes,
+        encrypted_response_frame_bytes: response_frame_bytes,
+        accounting: link.accounting()?,
+    })
+}
+
+fn duration_from_ns(value: u128) -> Result<Duration, CourtError> {
+    let seconds = value / 1_000_000_000;
+    let nanos = (value % 1_000_000_000) as u32;
+    let seconds =
+        u64::try_from(seconds).map_err(|_| CourtError::ArithmeticOverflow)?;
+    Ok(Duration::new(seconds, nanos))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FixedResolver;
+
+    impl Resolver for FixedResolver {
+        fn resolve(&self, _hostname: &str) -> io::Result<Vec<IpAddr>> {
+            Ok(vec![
+                "10.0.0.7".parse().unwrap(),
+                "8.8.8.8".parse().unwrap(),
+            ])
+        }
+    }
+
+    #[test]
+    fn standard_ladder_completes_useful_task_at_every_tier() {
+        let mut previous_elapsed = Duration::ZERO;
+
+        for profile in standard_ladder() {
+            let result =
+                run_resolve_court(profile, &FixedResolver, "example.com")
+                    .unwrap();
+
+            assert!(result.succeeded());
+            assert_eq!(
+                result.response.addresses,
+                vec!["8.8.8.8".parse::<IpAddr>().unwrap()]
+            );
+            assert!(result.accounting.elapsed > previous_elapsed);
+            assert!(result.accounting.delivered_bytes > 0);
+            assert!(result.useful_efficiency_ppm() > 0);
+
+            previous_elapsed = result.accounting.elapsed;
+        }
+    }
+
+    #[test]
+    fn ten_bps_is_slow_but_still_completes_in_virtual_time() {
+        let result = run_resolve_court(
+            WeakLinkProfile::ladder(10),
+            &FixedResolver,
+            "example.com",
+        )
+        .unwrap();
+
+        assert!(result.succeeded());
+        assert!(result.accounting.elapsed > Duration::from_secs(60));
+        assert!(result.accounting.elapsed < Duration::from_secs(600));
+    }
+
+    #[test]
+    fn loss_and_periodic_outage_increase_wire_cost_but_preserve_result() {
+        let baseline = run_resolve_court(
+            WeakLinkProfile::ladder(100),
+            &FixedResolver,
+            "example.com",
+        )
+        .unwrap();
+
+        let harsh = run_resolve_court(
+            WeakLinkProfile {
+                bitrate_bps: 100,
+                chunk_bytes: 8,
+                one_way_latency: Duration::from_millis(300),
+                loss_ppm: 200_000,
+                outage: Some(PeriodicOutage {
+                    period: Duration::from_secs(15),
+                    down_for: Duration::from_secs(4),
+                }),
+            },
+            &FixedResolver,
+            "example.com",
+        )
+        .unwrap();
+
+        assert!(harsh.succeeded());
+        assert!(harsh.accounting.elapsed > baseline.accounting.elapsed);
+        assert!(harsh.accounting.lost_chunk_attempts > 0);
+        assert!(harsh.accounting.retransmitted_bytes > 0);
+        assert!(harsh.accounting.outage_wait > Duration::ZERO);
+    }
+
+    #[test]
+    fn invalid_profiles_are_rejected() {
+        let invalid = WeakLinkProfile {
+            bitrate_bps: 0,
+            chunk_bytes: 16,
+            one_way_latency: Duration::ZERO,
+            loss_ppm: 0,
+            outage: None,
+        };
+        assert!(matches!(
+            VirtualReliableLink::new(invalid),
+            Err(CourtError::InvalidProfile(_))
+        ));
+
+        let impossible_loss = WeakLinkProfile {
+            bitrate_bps: 10,
+            chunk_bytes: 16,
+            one_way_latency: Duration::ZERO,
+            loss_ppm: 1_000_000,
+            outage: None,
+        };
+        assert!(matches!(
+            VirtualReliableLink::new(impossible_loss),
+            Err(CourtError::InvalidProfile(_))
+        ));
+    }
+}
