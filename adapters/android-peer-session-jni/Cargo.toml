@@ -1,0 +1,12 @@
+[package]
+name = "android-peer-session-jni"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sp3_android_peer_session"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+jni = "0.21"
+peer-session = { path = "../../crates/peer-session" }
