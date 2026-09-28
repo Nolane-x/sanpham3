@@ -6,7 +6,11 @@ use connectivity_core::{
     Transport,
 };
 use std::io;
-use std::net::IpAddr;
+use path_probe::{
+    run_series, summarize, tcp_connect_device, AttemptMeasurement,
+    ProbeSeriesSummary,
+};
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -19,12 +23,22 @@ pub struct DnsObservation {
     pub success: Option<DnsProbeSuccess>,
 }
 
+#[derive(Debug, Clone)]
+pub struct TcpSeriesObservation {
+    pub interface: String,
+    pub target: SocketAddr,
+    pub status: ProbeStatus,
+    pub detail: String,
+    pub summary: ProbeSeriesSummary,
+}
+
 #[derive(Debug)]
 pub struct LinuxRecoverySnapshot {
     pub ledger: RecoveryLedger,
     pub routes: RouteSnapshot,
     pub resolvers: Vec<IpAddr>,
     pub dns: Vec<DnsObservation>,
+    pub tcp: Vec<TcpSeriesObservation>,
 }
 
 pub struct LinuxRecoveryProbe {
@@ -32,6 +46,9 @@ pub struct LinuxRecoveryProbe {
     ipv6_routes: PathBuf,
     resolv_conf: PathBuf,
     dns_timeout: Duration,
+    tcp_timeout: Duration,
+    tcp_attempts: usize,
+    tcp_pause: Duration,
 }
 
 impl Default for LinuxRecoveryProbe {
@@ -47,11 +64,26 @@ impl LinuxRecoveryProbe {
             ipv6_routes: PathBuf::from("/proc/net/ipv6_route"),
             resolv_conf: PathBuf::from("/etc/resolv.conf"),
             dns_timeout: Duration::from_millis(900),
+            tcp_timeout: Duration::from_millis(900),
+            tcp_attempts: 3,
+            tcp_pause: Duration::from_millis(80),
         }
     }
 
     pub fn dns_timeout(mut self, timeout: Duration) -> Self {
         self.dns_timeout = timeout;
+        self
+    }
+
+    pub fn tcp_policy(
+        mut self,
+        attempts: usize,
+        timeout: Duration,
+        pause: Duration,
+    ) -> Self {
+        self.tcp_attempts = attempts.max(1);
+        self.tcp_timeout = timeout;
+        self.tcp_pause = pause;
         self
     }
 
@@ -66,6 +98,9 @@ impl LinuxRecoveryProbe {
             ipv6_routes: ipv6_routes.into(),
             resolv_conf: resolv_conf.into(),
             dns_timeout: Duration::from_millis(50),
+            tcp_timeout: Duration::from_millis(50),
+            tcp_attempts: 1,
+            tcp_pause: Duration::ZERO,
         }
     }
 
@@ -80,6 +115,7 @@ impl LinuxRecoveryProbe {
         let resolvers = read_resolvers(&self.resolv_conf).unwrap_or_default();
         let mut ledger = RecoveryLedger::new();
         let mut dns = Vec::new();
+        let mut tcp = Vec::new();
 
         for capability in capabilities.iter().filter(|capability| {
             capability.available
@@ -161,6 +197,46 @@ impl LinuxRecoveryProbe {
                         });
                     }
                 }
+
+                let target = SocketAddr::new(resolver, 53);
+                let tcp_id = format!("{interface}:tcp:{target}");
+                ledger.register(&tcp_id, ProbeKind::Tcp);
+
+                let samples = run_series(
+                    self.tcp_attempts,
+                    self.tcp_pause,
+                    || {
+                        let result = tcp_connect_device(
+                            interface,
+                            target,
+                            self.tcp_timeout,
+                        )?;
+
+                        Ok(AttemptMeasurement {
+                            elapsed: result.elapsed,
+                            useful_bytes: 0,
+                        })
+                    },
+                );
+                let summary = summarize(&samples);
+                let status = if summary.successes > 0 {
+                    ProbeStatus::Succeeded
+                } else {
+                    ProbeStatus::Failed
+                };
+                let detail = format_series_detail(&summary);
+                ledger.set_status(
+                    &tcp_id,
+                    status,
+                    Some(detail.clone()),
+                );
+                tcp.push(TcpSeriesObservation {
+                    interface: interface.to_owned(),
+                    target,
+                    status,
+                    detail,
+                    summary,
+                });
             }
 
             if resolver_count == 0 {
@@ -182,8 +258,29 @@ impl LinuxRecoveryProbe {
             routes,
             resolvers,
             dns,
+            tcp,
         })
     }
+}
+
+fn format_series_detail(summary: &ProbeSeriesSummary) -> String {
+    format!(
+        "attempts={} successes={} loss_ppm={} median_ms={} p95_ms={} longest_failure_run={} transitions={} intermittent={}",
+        summary.attempts,
+        summary.successes,
+        summary.loss_ppm,
+        summary
+            .median_rtt
+            .map(|value| value.as_millis().to_string())
+            .unwrap_or_else(|| "-".to_owned()),
+        summary
+            .p95_rtt
+            .map(|value| value.as_millis().to_string())
+            .unwrap_or_else(|| "-".to_owned()),
+        summary.longest_failure_run,
+        summary.state_transitions,
+        summary.intermittent,
+    )
 }
 
 fn record_route_state(
