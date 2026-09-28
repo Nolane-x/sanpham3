@@ -5,4 +5,5 @@ edition = "2021"
 
 [dependencies]
 peer-egress = { path = "../../crates/peer-egress" }
+peer-lan = { path = "../../crates/peer-lan" }
 peer-session = { path = "../../crates/peer-session" }
