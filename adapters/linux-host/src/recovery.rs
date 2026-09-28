@@ -7,8 +7,8 @@ use connectivity_core::{
 };
 use std::io;
 use path_probe::{
-    run_series, summarize, tcp_connect_device, AttemptMeasurement,
-    ProbeSeriesSummary,
+    run_series, summarize, tcp_connect_device, tiny_https_head_device,
+    AttemptMeasurement, HttpsProbeTarget, ProbeSeriesSummary,
 };
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -32,6 +32,15 @@ pub struct TcpSeriesObservation {
     pub summary: ProbeSeriesSummary,
 }
 
+#[derive(Debug, Clone)]
+pub struct HttpsSeriesObservation {
+    pub interface: String,
+    pub target: HttpsProbeTarget,
+    pub status: ProbeStatus,
+    pub detail: String,
+    pub summary: ProbeSeriesSummary,
+}
+
 #[derive(Debug)]
 pub struct LinuxRecoverySnapshot {
     pub ledger: RecoveryLedger,
@@ -39,6 +48,7 @@ pub struct LinuxRecoverySnapshot {
     pub resolvers: Vec<IpAddr>,
     pub dns: Vec<DnsObservation>,
     pub tcp: Vec<TcpSeriesObservation>,
+    pub https: Vec<HttpsSeriesObservation>,
 }
 
 pub struct LinuxRecoveryProbe {
@@ -49,6 +59,10 @@ pub struct LinuxRecoveryProbe {
     tcp_timeout: Duration,
     tcp_attempts: usize,
     tcp_pause: Duration,
+    https_targets: Vec<HttpsProbeTarget>,
+    https_timeout: Duration,
+    https_attempts: usize,
+    https_pause: Duration,
 }
 
 impl Default for LinuxRecoveryProbe {
@@ -67,6 +81,10 @@ impl LinuxRecoveryProbe {
             tcp_timeout: Duration::from_millis(900),
             tcp_attempts: 3,
             tcp_pause: Duration::from_millis(80),
+            https_targets: Vec::new(),
+            https_timeout: Duration::from_millis(1500),
+            https_attempts: 2,
+            https_pause: Duration::from_millis(120),
         }
     }
 
@@ -87,6 +105,26 @@ impl LinuxRecoveryProbe {
         self
     }
 
+    pub fn https_targets(
+        mut self,
+        targets: impl IntoIterator<Item = HttpsProbeTarget>,
+    ) -> Self {
+        self.https_targets = targets.into_iter().collect();
+        self
+    }
+
+    pub fn https_policy(
+        mut self,
+        attempts: usize,
+        timeout: Duration,
+        pause: Duration,
+    ) -> Self {
+        self.https_attempts = attempts.max(1);
+        self.https_timeout = timeout;
+        self.https_pause = pause;
+        self
+    }
+
     #[cfg(test)]
     fn with_paths(
         ipv4_routes: impl Into<PathBuf>,
@@ -101,6 +139,10 @@ impl LinuxRecoveryProbe {
             tcp_timeout: Duration::from_millis(50),
             tcp_attempts: 1,
             tcp_pause: Duration::ZERO,
+            https_targets: Vec::new(),
+            https_timeout: Duration::from_millis(50),
+            https_attempts: 1,
+            https_pause: Duration::ZERO,
         }
     }
 
@@ -116,6 +158,7 @@ impl LinuxRecoveryProbe {
         let mut ledger = RecoveryLedger::new();
         let mut dns = Vec::new();
         let mut tcp = Vec::new();
+        let mut https = Vec::new();
 
         for capability in capabilities.iter().filter(|capability| {
             capability.available
@@ -139,6 +182,64 @@ impl LinuxRecoveryProbe {
                 ProbeKind::Ipv6,
                 routes.has_ipv6_default(interface),
             );
+
+            if self.https_targets.is_empty() {
+                let id = format!("{interface}:https");
+                ledger.register(&id, ProbeKind::TinyHttps);
+                ledger.set_status(
+                    &id,
+                    ProbeStatus::Unsupported,
+                    Some("no HTTPS probe target configured".to_owned()),
+                );
+            } else {
+                for target in &self.https_targets {
+                    let id = format!(
+                        "{interface}:https:{}:{}",
+                        target.server_name,
+                        target.address,
+                    );
+                    ledger.register(&id, ProbeKind::TinyHttps);
+
+                    let samples = run_series(
+                        self.https_attempts,
+                        self.https_pause,
+                        || {
+                            let result = tiny_https_head_device(
+                                interface,
+                                target.address,
+                                &target.server_name,
+                                &target.path,
+                                self.https_timeout,
+                                target.max_response_bytes,
+                            )?;
+
+                            Ok(AttemptMeasurement {
+                                elapsed: result.total_elapsed,
+                                useful_bytes: result.response_bytes,
+                            })
+                        },
+                    );
+                    let summary = summarize(&samples);
+                    let status = if summary.successes > 0 {
+                        ProbeStatus::Succeeded
+                    } else {
+                        ProbeStatus::Failed
+                    };
+                    let detail = format_series_detail(&summary);
+                    ledger.set_status(
+                        &id,
+                        status,
+                        Some(detail.clone()),
+                    );
+                    https.push(HttpsSeriesObservation {
+                        interface: interface.to_owned(),
+                        target: target.clone(),
+                        status,
+                        detail,
+                        summary,
+                    });
+                }
+            }
 
             let matching_resolvers = resolvers.iter().copied().filter(
                 |resolver| {
@@ -259,6 +360,7 @@ impl LinuxRecoveryProbe {
             resolvers,
             dns,
             tcp,
+            https,
         })
     }
 }
