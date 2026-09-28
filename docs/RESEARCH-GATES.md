@@ -120,6 +120,27 @@ Loopback, emulator and unit-test success do not close a physical pair.
 
 Create a reproducible case where the OS/default application path reports no useful Internet while the engine discovers a permitted alternate/peer path and returns new remote information.
 
+Software evidence:
+
+- [x] deterministic court records failed default HTTPS/TCP evidence;
+- [x] peer contact prevents a false LOCAL_ONLY conclusion;
+- [x] a configured high-capacity default edge in Down state is ignored;
+- [x] adaptive planning selects PeerEgress over the dead default edge;
+- [x] secure peer-session authenticates the rescue egress node;
+- [x] constrained remote information returns through the authenticated peer;
+- [x] Windows/Linux G9 court workflow authored.
+
+Physical closure:
+
+- [ ] reproduce default-path failure on a real supported OS/device;
+- [ ] discover/establish a permitted alternate or peer path independently;
+- [ ] show the engine selecting that recovery path;
+- [ ] return fresh remote information unavailable through the failed default path;
+- [ ] preserve commit, topology, probe logs and both endpoint logs.
+
+Physical evidence must follow `docs/G9-RECOVERY-BENCHMARK.md`.
+Software/loopback success is explicitly not physical G9 closure.
+
 This is the minimum evidence for a serious public connectivity-recovery claim.
 
 ## Rename gate
