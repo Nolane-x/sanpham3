@@ -90,11 +90,11 @@ pub fn dispatch_next_resolve<S: Read + Write>(
     stream: &mut S,
     now: Instant,
 ) -> Result<DispatchOutcome, RuntimeError> {
-    let Some((bundle_id, payload)) = ({
-        queue
-            .next_for_send(now)
-            .map(|bundle| (bundle.id, bundle.payload.clone()))
-    }) else {
+    let next = queue
+        .next_for_send(now)
+        .map(|bundle| (bundle.id, bundle.payload.clone()));
+
+    let Some((bundle_id, payload)) = next else {
         return Ok(DispatchOutcome::Empty);
     };
 
