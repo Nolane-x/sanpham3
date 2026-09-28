@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use connectivity_core::PlatformScanner;
 
 fn main() {
