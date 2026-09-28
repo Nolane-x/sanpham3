@@ -1,0 +1,66 @@
+name: g9-recovery-court
+
+on:
+  push:
+    paths:
+      - "Cargo.toml"
+      - "apps/peer-egress-cli/**"
+      - "scripts/g9-physical-capture.sh"
+      - "scripts/g9-physical-capture.ps1"
+      - "apps/g9-recovery-court/**"
+      - "crates/connectivity-core/**"
+      - "crates/peer-session/**"
+      - "crates/peer-egress/**"
+      - ".github/workflows/g9-recovery-court.yml"
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "apps/peer-egress-cli/**"
+      - "scripts/g9-physical-capture.sh"
+      - "scripts/g9-physical-capture.ps1"
+      - "apps/g9-recovery-court/**"
+      - "crates/connectivity-core/**"
+      - "crates/peer-session/**"
+      - "crates/peer-egress/**"
+      - ".github/workflows/g9-recovery-court.yml"
+
+jobs:
+  recovery-court:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Unit and full recovery court tests
+        run: cargo test -p g9-recovery-court
+
+      - name: Run recovery court binary
+        run: cargo run -p g9-recovery-court
+
+      - name: Validate Linux physical capture harness syntax
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: bash -n scripts/g9-physical-capture.sh
+
+      - name: Validate Windows physical capture harness syntax
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "scripts/g9-physical-capture.ps1",
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
