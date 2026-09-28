@@ -13,6 +13,7 @@ members = [
     "apps/scavenger-cli",
     "apps/host-probe-cli",
     "apps/g8-pair-cli",
+    "apps/g9-recovery-court",
     "apps/path-probe-cli",
     "apps/peer-egress-cli",
     "apps/recovery-lab-cli",
