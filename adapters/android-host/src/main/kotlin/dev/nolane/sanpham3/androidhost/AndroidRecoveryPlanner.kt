@@ -228,7 +228,7 @@ internal object AndroidRecoveryPlannerCodec {
             buffer.put(path.kind.toByte())
             buffer.put(transportCode(path.transport).toByte())
             buffer.put(stateCode(path.state).toByte())
-            buffer.put(if (path.metered) 1 else 0)
+            buffer.put((if (path.metered) 1 else 0).toByte())
             buffer.putLong(path.externalId)
             buffer.putLong(path.bitrateBps.coerceAtLeast(1))
             buffer.putInt(path.lossPpm)
