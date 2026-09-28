@@ -134,8 +134,10 @@ impl BridgeState {
         let handle = self.allocate_handle();
         self.sessions.insert(handle, session);
 
-        let mut package = Vec::with_capacity(HANDLE_PREFIX_LEN + HANDSHAKE_LEN);
+        let mut package =
+            Vec::with_capacity(HANDLE_PREFIX_LEN * 2 + HANDSHAKE_LEN);
         package.extend_from_slice(&handle.to_be_bytes());
+        package.extend_from_slice(&client.node_id.to_be_bytes());
         package.extend_from_slice(&server.encode());
 
         Ok(package)
@@ -145,7 +147,7 @@ impl BridgeState {
         &mut self,
         pending_handle: u64,
         server_hello_bytes: &[u8],
-    ) -> Result<u64, BridgeError> {
+    ) -> Result<(u64, u64), BridgeError> {
         let pending = self
             .pending_clients
             .remove(&pending_handle)
@@ -167,7 +169,7 @@ impl BridgeState {
 
         let handle = self.allocate_handle();
         self.sessions.insert(handle, session);
-        Ok(handle)
+        Ok((handle, server.node_id))
     }
 
     fn seal(
@@ -343,25 +345,21 @@ pub extern "system" fn Java_dev_nolane_sanpham3_androidhost_AndroidPeerSessionNa
     _this: JObject<'_>,
     pending_handle: jlong,
     server_hello: JByteArray<'_>,
-) -> jlong {
+) -> jbyteArray {
     let result = (|| {
         let pending_handle = handle_id(pending_handle)?;
         let server_hello = java_bytes(&env, &server_hello)?;
-        with_state(|state| {
+        let (session_handle, peer_id) = with_state(|state| {
             state.client_finish(pending_handle, &server_hello)
-        })
+        })?;
+
+        let mut package = Vec::with_capacity(HANDLE_PREFIX_LEN * 2);
+        package.extend_from_slice(&session_handle.to_be_bytes());
+        package.extend_from_slice(&peer_id.to_be_bytes());
+        Ok(package)
     })();
 
-    match result {
-        Ok(handle) => handle as jlong,
-        Err(error) => {
-            let _ = env.throw_new(
-                "java/lang/IllegalStateException",
-                error.to_string(),
-            );
-            -1
-        }
-    }
+    jni_bytes(&mut env, result)
 }
 
 #[no_mangle]
@@ -465,11 +463,17 @@ mod tests {
             .server_accept(200, &key(), client_hello)
             .unwrap();
         let server_handle = package_handle(&server_package).unwrap();
-        let server_hello = &server_package[HANDLE_PREFIX_LEN..];
+        let server_peer_id = u64::from_be_bytes(
+            server_package[8..16].try_into().unwrap(),
+        );
+        let server_hello = &server_package[HANDLE_PREFIX_LEN * 2..];
 
-        let client_handle = client_bridge
+        let (client_handle, client_peer_id) = client_bridge
             .client_finish(pending_handle, server_hello)
             .unwrap();
+
+        assert_eq!(server_peer_id, 100);
+        assert_eq!(client_peer_id, 200);
 
         let frame = client_bridge
             .seal(client_handle, 7, b"android-to-rust")
@@ -518,12 +522,13 @@ mod tests {
                 &client_package[HANDLE_PREFIX_LEN..],
             )
             .unwrap();
-        let client_handle = client_bridge
+        let (client_handle, peer_id) = client_bridge
             .client_finish(
                 pending_handle,
-                &server_package[HANDLE_PREFIX_LEN..],
+                &server_package[HANDLE_PREFIX_LEN * 2..],
             )
             .unwrap();
+        assert_eq!(peer_id, 2);
 
         let frame = client_bridge.seal(client_handle, 3, b"hello").unwrap();
         let length =
