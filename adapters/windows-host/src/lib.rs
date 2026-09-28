@@ -2,7 +2,7 @@ pub mod path;
 pub mod recovery;
 
 pub use path::{inventory_adapter_paths, WindowsAdapterPath};
-pub use recovery::{WindowsDnsObservation, WindowsRecoveryProbe, WindowsRecoverySnapshot};
+pub use recovery::{WindowsDnsObservation, WindowsRecoveryProbe, WindowsRecoverySnapshot, WindowsTcpObservation};
 
 use connectivity_core::{
     Capability, PermissionState, PlatformScanner, Transport,
