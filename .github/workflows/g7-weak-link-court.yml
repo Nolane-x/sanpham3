@@ -40,3 +40,9 @@ jobs:
         run: >
           cargo run -p weak-link-court-cli --
           profile 1 0 250 16 0 0
+
+      - name: Near-Zero v1 comparison at 10 bit-per-second
+        run: cargo run -p weak-link-court-cli -- compare 10
+
+      - name: Near-Zero v1 comparison at 1 bit-per-second
+        run: cargo run -p weak-link-court-cli -- compare 1
