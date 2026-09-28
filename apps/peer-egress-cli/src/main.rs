@@ -442,6 +442,8 @@ fn usage() -> String {
         "  peer-egress-cli advertise-server <bind_addr> <discovery_port> <node_id> <64_hex_psk|-> <advertised_bps>",
         "  peer-egress-cli discover-client <discovery_port> <node_id> <64_hex_psk|-> <public_hostname>",
         "",
+        "Use '-' for the PSK argument to read SP3_PEER_PSK_HEX instead of exposing key material in argv.",
+        "",
         "examples:",
         "  peer-egress-cli server 0.0.0.0:45123 300 <psk>",
         "  peer-egress-cli relay-server 0.0.0.0:45124 200 <psk> 192.168.1.30:45123",
