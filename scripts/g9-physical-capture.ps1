@@ -49,8 +49,9 @@ Write-Host "=== authenticated peer rescue ==="
 $env:SP3_PEER_PSK_HEX = $Psk
 & .\target\release\peer-egress-cli.exe client $PeerAddr $NodeId - $Hostname 2>&1 |
     Tee-Object -FilePath $peerLog
+$peerExitCode = $LASTEXITCODE
 Remove-Item Env:SP3_PEER_PSK_HEX -ErrorAction SilentlyContinue
-if ($LASTEXITCODE -ne 0) {
+if ($peerExitCode -ne 0) {
     throw "peer-egress-cli failed"
 }
 
