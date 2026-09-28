@@ -1,6 +1,8 @@
 use connectivity_core::{ProbeKind, ProbeStatus, RecoveryLedger};
 #[cfg(target_os = "windows")]
 use connectivity_core::Transport;
+#[cfg(target_os = "windows")]
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::io;
 use std::net::IpAddr;
 #[cfg(target_os = "windows")]
@@ -103,13 +105,27 @@ impl WindowsRecoveryProbe {
                     }
 
                     attempted += 1;
-                    let id = format!(
+                    let dns_id = format!(
                         "{}:dns:{}->{}",
                         interface.name,
                         source.ip(),
                         resolver.ip(),
                     );
-                    ledger.register(&id, ProbeKind::Dns);
+                    let udp_id = format!(
+                        "{}:udp:{}->{}",
+                        interface.name,
+                        source.ip(),
+                        resolver.ip(),
+                    );
+                    let tcp_id = format!(
+                        "{}:tcp:{}->{}",
+                        interface.name,
+                        source.ip(),
+                        resolver.ip(),
+                    );
+                    ledger.register(&dns_id, ProbeKind::Dns);
+                    ledger.register(&udp_id, ProbeKind::Udp);
+                    ledger.register(&tcp_id, ProbeKind::Tcp);
 
                     match probe_dns_udp(*source, *resolver, self.dns_timeout) {
                         Ok(success) => {
@@ -122,9 +138,16 @@ impl WindowsRecoveryProbe {
                                 success.rcode,
                             );
                             ledger.set_status(
-                                &id,
+                                &dns_id,
                                 ProbeStatus::Succeeded,
                                 Some(detail.clone()),
+                            );
+                            ledger.set_status(
+                                &udp_id,
+                                ProbeStatus::Succeeded,
+                                Some(format!(
+                                    "UDP response proved by DNS exchange; {detail}"
+                                )),
                             );
                             dns.push(WindowsDnsObservation {
                                 interface: interface.name.clone(),
@@ -138,9 +161,16 @@ impl WindowsRecoveryProbe {
                             let status = classify_probe_error(&error);
                             let detail = error.to_string();
                             ledger.set_status(
-                                &id,
+                                &dns_id,
                                 status,
                                 Some(detail.clone()),
+                            );
+                            ledger.set_status(
+                                &udp_id,
+                                status,
+                                Some(format!(
+                                    "UDP DNS exchange failed: {detail}"
+                                )),
                             );
                             dns.push(WindowsDnsObservation {
                                 interface: interface.name.clone(),
@@ -151,20 +181,58 @@ impl WindowsRecoveryProbe {
                             });
                         }
                     }
+
+                    match probe_tcp_bound(
+                        *source,
+                        *resolver,
+                        self.dns_timeout,
+                    ) {
+                        Ok(elapsed) => {
+                            ledger.set_status(
+                                &tcp_id,
+                                ProbeStatus::Succeeded,
+                                Some(format!(
+                                    "bound TCP connect source={} target={}:53 elapsed_ms={}",
+                                    source.ip(),
+                                    resolver.ip(),
+                                    elapsed.as_millis(),
+                                )),
+                            );
+                        }
+                        Err(error) => {
+                            let status = classify_probe_error(&error);
+                            ledger.set_status(
+                                &tcp_id,
+                                status,
+                                Some(format!(
+                                    "bound TCP connect source={} target={}:53 failed: {}",
+                                    source.ip(),
+                                    resolver.ip(),
+                                    error,
+                                )),
+                            );
+                        }
+                    }
                 }
             }
 
             if attempted == 0 {
-                let id = format!("{}:dns", interface.name);
-                ledger.register(&id, ProbeKind::Dns);
-                ledger.set_status(
-                    &id,
-                    ProbeStatus::Unsupported,
-                    Some(
-                        "no source/DNS address-family pair exposed by adapter"
-                            .to_owned(),
-                    ),
-                );
+                for (suffix, kind) in [
+                    ("dns", ProbeKind::Dns),
+                    ("udp", ProbeKind::Udp),
+                    ("tcp", ProbeKind::Tcp),
+                ] {
+                    let id = format!("{}:{suffix}", interface.name);
+                    ledger.register(&id, kind);
+                    ledger.set_status(
+                        &id,
+                        ProbeStatus::Unsupported,
+                        Some(
+                            "no source/DNS address-family pair exposed by adapter"
+                                .to_owned(),
+                        ),
+                    );
+                }
             }
 
             register_remaining_probe_obligations(
@@ -252,6 +320,42 @@ fn probe_dns_udp(
     })
 }
 
+#[cfg(target_os = "windows")]
+fn probe_tcp_bound(
+    source: SocketAddr,
+    resolver: SocketAddr,
+    timeout: Duration,
+) -> io::Result<Duration> {
+    let bind_source = with_port(source, 0);
+    let target = with_port(resolver, 53);
+    let domain = if source.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
+
+    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    socket.bind(&SockAddr::from(bind_source))?;
+
+    let started = Instant::now();
+    socket.connect_timeout(&SockAddr::from(target), timeout)?;
+    Ok(started.elapsed())
+}
+
+#[cfg(target_os = "windows")]
+fn with_port(address: SocketAddr, port: u16) -> SocketAddr {
+    match address {
+        SocketAddr::V4(mut address) => {
+            address.set_port(port);
+            SocketAddr::V4(address)
+        }
+        SocketAddr::V6(mut address) => {
+            address.set_port(port);
+            SocketAddr::V6(address)
+        }
+    }
+}
+
 #[cfg(any(target_os = "windows", test))]
 fn root_a_query() -> [u8; 17] {
     [
@@ -273,8 +377,6 @@ fn register_remaining_probe_obligations(
     interface: &str,
 ) {
     for (suffix, kind) in [
-        ("udp", ProbeKind::Udp),
-        ("tcp", ProbeKind::Tcp),
         ("tiny-https", ProbeKind::TinyHttps),
         ("lan-peer", ProbeKind::LanPeer),
     ] {
@@ -630,7 +732,7 @@ mod tests {
             .run()
             .unwrap();
 
-        assert!(snapshot.ledger.pending_count() >= 4);
+        assert!(snapshot.ledger.pending_count() >= 2);
         assert!(!snapshot.ledger.can_declare_local_only());
     }
 }
