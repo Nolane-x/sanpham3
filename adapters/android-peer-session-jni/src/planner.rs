@@ -201,8 +201,13 @@ fn decode_request(bytes: &[u8]) -> Result<PlannerRequest, PlannerError> {
         return Err(PlannerError::InvalidRoundTrips);
     }
 
-    let wire_bytes = cursor.u64()?;
-    let max_wait_ms = cursor.u64()?;
+    let wire_bytes = jvm_unsigned("wire_bytes", cursor.u64()?)?;
+    let raw_max_wait_ms = cursor.u64()?;
+    let max_wait_ms = if raw_max_wait_ms == u64::MAX {
+        u64::MAX
+    } else {
+        jvm_unsigned("max_wait_ms", raw_max_wait_ms)?
+    };
 
     let expected_len = REQUEST_HEADER_LEN
         .checked_add(
@@ -559,7 +564,7 @@ mod tests {
                     out,
                     TestPath {
                         kind: 1,
-                        transport: 0,
+                        transport: 9,
                         state: 0,
                         metered: false,
                         external_id: 300,
@@ -651,6 +656,52 @@ mod tests {
         assert!(matches!(
             decode_request(&trailing),
             Err(PlannerError::WrongLength)
+        ));
+    }
+
+    #[test]
+    fn rejects_unsigned_values_outside_non_negative_jvm_long_range() {
+        let mut bytes = request(
+            1,
+            0b11,
+            2,
+            232,
+            u64::MAX,
+            |out| {
+                push_path(
+                    out,
+                    TestPath {
+                        kind: 0,
+                        transport: 0,
+                        state: 0,
+                        metered: false,
+                        external_id: i64::MAX as u64 + 1,
+                        bitrate: 100,
+                        loss_ppm: 0,
+                        rtt_ms: 10,
+                    },
+                );
+            },
+            1,
+        );
+
+        assert!(matches!(
+            decode_request(&bytes),
+            Err(PlannerError::InvalidJvmUnsigned("external_id", _))
+        ));
+
+        bytes = request(
+            1,
+            0b11,
+            2,
+            i64::MAX as u64 + 1,
+            u64::MAX,
+            |_| {},
+            0,
+        );
+        assert!(matches!(
+            decode_request(&bytes),
+            Err(PlannerError::InvalidJvmUnsigned("wire_bytes", _))
         ));
     }
 
