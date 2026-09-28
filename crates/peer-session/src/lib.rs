@@ -388,11 +388,7 @@ impl SecureSession {
             return Err(SessionError::WrongVersion(header[4]));
         }
 
-        let ciphertext_len =
-            u16::from_be_bytes([header[14], header[15]]) as usize;
-        if ciphertext_len < AEAD_TAG_LEN {
-            return Err(SessionError::WrongLength);
-        }
+        let ciphertext_len = frame_ciphertext_len_from_header(&header)?;
 
         let mut frame = Vec::with_capacity(FRAME_HEADER_LEN + ciphertext_len);
         frame.extend_from_slice(&header);
@@ -401,6 +397,32 @@ impl SecureSession {
 
         self.open(&frame)
     }
+}
+
+/// Validates an encrypted frame header and returns the ciphertext length.
+///
+/// Transport bridges can use this to read one complete frame without
+/// duplicating peer-session wire-format validation.
+pub fn frame_ciphertext_len_from_header(
+    header: &[u8],
+) -> Result<usize, SessionError> {
+    if header.len() != FRAME_HEADER_LEN {
+        return Err(SessionError::WrongLength);
+    }
+    if header[0..4] != MAGIC {
+        return Err(SessionError::WrongMagic);
+    }
+    if header[4] != VERSION {
+        return Err(SessionError::WrongVersion(header[4]));
+    }
+
+    let ciphertext_len =
+        u16::from_be_bytes([header[14], header[15]]) as usize;
+    if ciphertext_len < AEAD_TAG_LEN {
+        return Err(SessionError::WrongLength);
+    }
+
+    Ok(ciphertext_len)
 }
 
 pub fn perform_client_handshake<S: Read + Write>(
@@ -638,6 +660,33 @@ mod tests {
         assert!(matches!(
             client.verify(&bad),
             Err(SessionError::AuthenticationFailed)
+        ));
+    }
+
+    #[test]
+    fn frame_header_length_parser_validates_wire_header() {
+        let key = key();
+        let (client_hello, server_hello) = transcript();
+        let mut client = SecureSession::from_handshake(
+            SessionRole::Client,
+            &key,
+            &client_hello,
+            &server_hello,
+        )
+        .unwrap();
+
+        let frame = client.seal(7, b"abc").unwrap();
+        let ciphertext_len =
+            frame_ciphertext_len_from_header(&frame[..FRAME_HEADER_LEN])
+                .unwrap();
+
+        assert_eq!(ciphertext_len, frame.len() - FRAME_HEADER_LEN);
+
+        let mut bad = frame[..FRAME_HEADER_LEN].to_vec();
+        bad[0] ^= 0x01;
+        assert!(matches!(
+            frame_ciphertext_len_from_header(&bad),
+            Err(SessionError::WrongMagic)
         ));
     }
 
