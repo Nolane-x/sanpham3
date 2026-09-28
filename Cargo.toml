@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "crates/connectivity-core",
+    "apps/scavenger-cli",
+]
+resolver = "2"
