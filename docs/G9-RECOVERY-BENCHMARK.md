@@ -92,6 +92,33 @@ Examples of suitable returned information:
 
 Avoid relying on a static fixture for the physical claim.
 
+## Prepare the consenting peer egress
+
+On the peer device/machine that still has Internet, build and run the
+constrained egress server.
+
+Linux:
+
+```bash
+cargo build --release -p peer-egress-cli
+export SP3_PEER_PSK_HEX=<64_hex_psk>
+./target/release/peer-egress-cli server 0.0.0.0:45123 300 -
+```
+
+Windows PowerShell:
+
+```powershell
+cargo build --release -p peer-egress-cli
+$env:SP3_PEER_PSK_HEX = "<64_hex_psk>"
+.\target\release\peer-egress-cli.exe server 0.0.0.0:45123 300 -
+```
+
+The `-` PSK argument means "read `SP3_PEER_PSK_HEX`". This keeps key
+material out of the process command line.
+
+The peer server exposes only the constrained public-host resolve operation; it
+is not an arbitrary TCP proxy.
+
 ## Capture harnesses
 
 Linux:
