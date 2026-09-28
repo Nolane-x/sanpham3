@@ -2,8 +2,8 @@ use crate::dns_probe::{probe_dns_udp, DnsProbeSuccess};
 use crate::resolver::read_resolvers;
 use crate::routes::{read_route_snapshot, RouteSnapshot};
 use connectivity_core::{
-    Capability, PermissionState, ProbeKind, ProbeStatus, RecoveryLedger,
-    Transport,
+    Capability, LinkState, MeasuredInternetPath, PermissionState, ProbeKind,
+    ProbeStatus, RecoveryLedger, Transport,
 };
 use std::io;
 use path_probe::{
@@ -49,6 +49,76 @@ pub struct LinuxRecoverySnapshot {
     pub dns: Vec<DnsObservation>,
     pub tcp: Vec<TcpSeriesObservation>,
     pub https: Vec<HttpsSeriesObservation>,
+}
+
+impl LinuxRecoverySnapshot {
+    /// Converts verified tiny-HTTPS observations into graph-ready Internet
+    /// paths. DNS/TCP-only success is intentionally excluded.
+    pub fn measured_internet_paths(
+        &self,
+        capabilities: &[Capability],
+    ) -> Vec<MeasuredInternetPath> {
+        let mut paths = Vec::new();
+
+        for capability in capabilities.iter().filter(|capability| {
+            capability.available
+                && capability.permission == PermissionState::Granted
+                && capability.can_connect
+        }) {
+            let Some(interface) = capability.interface.as_deref() else {
+                continue;
+            };
+
+            let best = self
+                .https
+                .iter()
+                .filter(|observation| {
+                    observation.interface == interface
+                        && observation.status == ProbeStatus::Succeeded
+                        && observation.summary.successes > 0
+                })
+                .max_by(|left, right| {
+                    left.summary
+                        .observed_useful_bitrate_bps
+                        .cmp(&right.summary.observed_useful_bitrate_bps)
+                        .then_with(|| {
+                            right.summary.loss_ppm.cmp(&left.summary.loss_ppm)
+                        })
+                        .then_with(|| {
+                            right.summary.median_rtt.cmp(&left.summary.median_rtt)
+                        })
+                });
+
+            let Some(best) = best else {
+                continue;
+            };
+
+            let state = if best.summary.intermittent
+                || best.summary.loss_ppm > 0
+            {
+                LinkState::Intermittent
+            } else {
+                LinkState::Up
+            };
+            let rtt = best
+                .summary
+                .median_rtt
+                .or(best.summary.min_rtt)
+                .unwrap_or(Duration::from_secs(1));
+
+            paths.push(MeasuredInternetPath::new(
+                format!("linux:{interface}"),
+                capability.transport,
+                state,
+                best.summary.observed_useful_bitrate_bps,
+                best.summary.loss_ppm,
+                rtt,
+            ));
+        }
+
+        paths.sort_by(|left, right| left.path_id.cmp(&right.path_id));
+        paths
+    }
 }
 
 pub struct LinuxRecoveryProbe {
@@ -425,8 +495,80 @@ fn classify_probe_error(error: &io::Error) -> ProbeStatus {
 }
 
 #[cfg(test)]
+fn test_https_observation(
+    interface: &str,
+    bitrate: u64,
+    loss_ppm: u32,
+    intermittent: bool,
+) -> HttpsSeriesObservation {
+    HttpsSeriesObservation {
+        interface: interface.to_owned(),
+        target: HttpsProbeTarget::new(
+            "93.184.216.34:443".parse().unwrap(),
+            "example.com",
+            "/",
+            256,
+        )
+        .unwrap(),
+        status: ProbeStatus::Succeeded,
+        detail: "test".to_owned(),
+        summary: ProbeSeriesSummary {
+            attempts: 3,
+            successes: if intermittent { 2 } else { 3 },
+            failures: if intermittent { 1 } else { 0 },
+            loss_ppm,
+            min_rtt: Some(Duration::from_millis(20)),
+            median_rtt: Some(Duration::from_millis(30)),
+            p95_rtt: Some(Duration::from_millis(50)),
+            total_useful_bytes: 300,
+            observed_useful_bitrate_bps: bitrate,
+            longest_failure_run: u32::from(intermittent),
+            state_transitions: u32::from(intermittent),
+            intermittent,
+        },
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn https_measurement_becomes_graph_ready_internet_path() {
+        let snapshot = LinuxRecoverySnapshot {
+            ledger: RecoveryLedger::new(),
+            routes: RouteSnapshot::default(),
+            resolvers: Vec::new(),
+            dns: Vec::new(),
+            tcp: Vec::new(),
+            https: vec![
+                test_https_observation("wlan0", 80, 300_000, true),
+                test_https_observation("wlan0", 120, 100_000, false),
+            ],
+        };
+        let capabilities = vec![Capability {
+            name: "net:wlan0".to_owned(),
+            interface: Some("wlan0".to_owned()),
+            transport: Transport::Wifi,
+            available: true,
+            permission: PermissionState::Granted,
+            can_scan: true,
+            can_connect: true,
+            can_advertise: false,
+            can_relay: true,
+            can_bind_socket: true,
+            constraints: Vec::new(),
+        }];
+
+        let paths = snapshot.measured_internet_paths(&capabilities);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].path_id, "linux:wlan0");
+        assert_eq!(paths[0].estimated_bitrate_bps, 120);
+        assert_eq!(paths[0].loss_ppm, 100_000);
+        assert_eq!(paths[0].transport, Transport::Wifi);
+    }
+
+
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
