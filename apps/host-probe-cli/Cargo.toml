@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 connectivity-core = { path = "../../crates/connectivity-core" }
 linux-host = { path = "../../adapters/linux-host" }
+windows-host = { path = "../../adapters/windows-host" }
