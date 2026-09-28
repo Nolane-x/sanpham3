@@ -8,7 +8,8 @@ pub use custody::{
 pub use spool::{decode_queue, load_queue, save_queue, SpoolError};
 
 use connectivity_core::{
-    Bundle, BundlePriority, DtnQueue,
+    plan_recovery, Bundle, BundlePriority, ConnectivityGraph, DtnQueue,
+    LiveRecoveryPlan, NodeId, PlanReason, RecoveryPlan, RecoveryTask,
 };
 use peer_egress::{
     decode_request, decode_response, encode_request, ProtocolError,
@@ -42,6 +43,18 @@ impl From<SessionError> for RuntimeError {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum ScheduleResolveOutcome {
+    Live(LiveRecoveryPlan),
+    Queued {
+        bundle_id: u64,
+        reason: PlanReason,
+    },
+    LocalOnly {
+        reason: PlanReason,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatchOutcome {
     Empty,
@@ -55,6 +68,48 @@ pub enum DispatchOutcome {
         request_id: u32,
         status: ResolveStatus,
     },
+}
+
+/// Applies the adaptive recovery policy before a constrained DNS task is sent.
+///
+/// Live-capable tasks return a concrete plan to the caller. Tasks that should
+/// wait for a better/contact path are inserted into the durable DTN queue.
+/// LocalOnly is returned only when the task explicitly disables DTN fallback.
+#[allow(clippy::too_many_arguments)]
+pub fn schedule_resolve(
+    graph: &ConnectivityGraph,
+    start: NodeId,
+    task: &RecoveryTask,
+    queue: &mut DtnQueue,
+    bundle_id: u64,
+    request_id: u32,
+    hostname: &str,
+    priority: BundlePriority,
+    ttl: Duration,
+    now: Instant,
+) -> Result<ScheduleResolveOutcome, RuntimeError> {
+    match plan_recovery(graph, start, task) {
+        RecoveryPlan::Live(plan) => Ok(ScheduleResolveOutcome::Live(plan)),
+        RecoveryPlan::DelayTolerant { reason, .. } => {
+            enqueue_resolve(
+                queue,
+                bundle_id,
+                request_id,
+                hostname,
+                priority,
+                ttl,
+                now,
+            )?;
+
+            Ok(ScheduleResolveOutcome::Queued {
+                bundle_id,
+                reason,
+            })
+        }
+        RecoveryPlan::LocalOnly { reason } => {
+            Ok(ScheduleResolveOutcome::LocalOnly { reason })
+        }
+    }
 }
 
 /// Queues a constrained semantic DNS request without requiring a live route.
@@ -178,6 +233,132 @@ mod tests {
         }
     }
 
+
+    fn policy_link(
+        from: u64,
+        to: u64,
+        bitrate: u64,
+    ) -> connectivity_core::LinkObservation {
+        connectivity_core::LinkObservation {
+            from,
+            to,
+            transport: connectivity_core::Transport::Wifi,
+            reachability: connectivity_core::Reachability::Internet,
+            state: connectivity_core::LinkState::Up,
+            estimated_bitrate_bps: bitrate,
+            loss_ppm: 0,
+            rtt: Duration::from_millis(20),
+            energy_cost: 10,
+            metered: false,
+            last_success_age: Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn adaptive_scheduler_keeps_tiny_task_live_on_weak_path() {
+        let mut graph = ConnectivityGraph::new();
+        graph.upsert_node(connectivity_core::NodeProfile::local(1));
+        graph.upsert_node(connectivity_core::NodeProfile::egress(2, false));
+        graph.observe_link(policy_link(1, 2, 30));
+
+        let task = RecoveryTask::new(
+            connectivity_core::TrafficClass::TinySemantic,
+            232,
+        );
+        let mut queue = DtnQueue::new();
+
+        let outcome = schedule_resolve(
+            &graph,
+            1,
+            &task,
+            &mut queue,
+            700,
+            70,
+            "example.com",
+            BundlePriority::Urgent,
+            Duration::from_secs(3600),
+            Instant::now(),
+        )
+        .unwrap();
+
+        let ScheduleResolveOutcome::Live(plan) = outcome else {
+            panic!("tiny task should remain live");
+        };
+        assert_eq!(
+            plan.mode,
+            connectivity_core::DeliveryMode::TinySemantic
+        );
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn adaptive_scheduler_queues_bulk_task_on_tiny_path() {
+        let mut graph = ConnectivityGraph::new();
+        graph.upsert_node(connectivity_core::NodeProfile::local(1));
+        graph.upsert_node(connectivity_core::NodeProfile::egress(2, false));
+        graph.observe_link(policy_link(1, 2, 30));
+
+        let task =
+            RecoveryTask::new(connectivity_core::TrafficClass::Bulk, 1_000_000);
+        let mut queue = DtnQueue::new();
+
+        let outcome = schedule_resolve(
+            &graph,
+            1,
+            &task,
+            &mut queue,
+            701,
+            71,
+            "example.com",
+            BundlePriority::Normal,
+            Duration::from_secs(3600),
+            Instant::now(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            ScheduleResolveOutcome::Queued {
+                bundle_id: 701,
+                reason: PlanReason::TrafficTooHeavyForPath,
+            }
+        ));
+        assert_eq!(queue.len(), 1);
+        assert!(queue.contains(701));
+    }
+
+    #[test]
+    fn adaptive_scheduler_respects_no_dtn_policy() {
+        let mut graph = ConnectivityGraph::new();
+        graph.upsert_node(connectivity_core::NodeProfile::local(1));
+
+        let mut task =
+            RecoveryTask::new(connectivity_core::TrafficClass::Critical, 32);
+        task.allow_delay_tolerant = false;
+
+        let mut queue = DtnQueue::new();
+        let outcome = schedule_resolve(
+            &graph,
+            1,
+            &task,
+            &mut queue,
+            702,
+            72,
+            "example.com",
+            BundlePriority::Urgent,
+            Duration::from_secs(60),
+            Instant::now(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            ScheduleResolveOutcome::LocalOnly {
+                reason: PlanReason::NoLiveEgress,
+            }
+        ));
+        assert!(queue.is_empty());
+    }
 
     #[test]
     fn duplicate_bundle_id_is_rejected_at_runtime_boundary() {
