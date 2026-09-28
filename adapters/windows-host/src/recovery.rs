@@ -658,6 +658,51 @@ mod tests {
     }
 
     #[test]
+    fn https_observation_becomes_graph_link() {
+        let observation = WindowsHttpsObservation {
+            interface: "Wi-Fi".to_owned(),
+            transport: Transport::Wifi,
+            source: Some("192.0.2.50".parse().unwrap()),
+            target: HttpsProbeTarget::new(
+                "203.0.113.10:443".parse().unwrap(),
+                "example.com",
+                "/",
+                1024,
+            )
+            .unwrap(),
+            status: ProbeStatus::Succeeded,
+            detail: "test".to_owned(),
+            summary: ProbeSeriesSummary {
+                attempts: 4,
+                successes: 3,
+                failures: 1,
+                loss_ppm: 250_000,
+                min_rtt: Some(Duration::from_millis(30)),
+                median_rtt: Some(Duration::from_millis(60)),
+                p95_rtt: Some(Duration::from_millis(110)),
+                total_useful_bytes: 800,
+                observed_useful_bitrate_bps: 5_000,
+                longest_failure_run: 1,
+                state_transitions: 2,
+                intermittent: true,
+            },
+        };
+
+        let link = observation.to_link_observation(
+            1,
+            2,
+            Duration::from_secs(1),
+        );
+
+        assert_eq!(link.transport, Transport::Wifi);
+        assert_eq!(link.state, connectivity_core::LinkState::Intermittent);
+        assert_eq!(link.estimated_bitrate_bps, 5_000);
+        assert_eq!(link.loss_ppm, 250_000);
+        assert_eq!(link.rtt, Duration::from_millis(110));
+        assert_eq!(link.reachability, Reachability::Internet);
+    }
+
+    #[test]
     fn source_selection_matches_address_family() {
         let adapter = adapter();
 
