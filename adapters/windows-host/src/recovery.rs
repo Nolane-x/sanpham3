@@ -386,10 +386,12 @@ struct DnsProbeSuccess {
 
 fn format_series_detail(summary: &ProbeSeriesSummary) -> String {
     format!(
-        "attempts={} successes={} loss_ppm={} median_ms={} p95_ms={} longest_failure_run={} transitions={} intermittent={}",
+        "attempts={} successes={} loss_ppm={} useful_bytes={} useful_bps={} median_ms={} p95_ms={} longest_failure_run={} transitions={} intermittent={}",
         summary.attempts,
         summary.successes,
         summary.loss_ppm,
+        summary.total_useful_bytes,
+        summary.observed_useful_bitrate_bps,
         summary
             .median_rtt
             .map(|value| value.as_millis().to_string())
