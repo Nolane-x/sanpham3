@@ -273,6 +273,7 @@ fn decode_transport(value: u8) -> Result<Transport, PlannerError> {
         5 => Ok(Transport::WifiAware),
         6 => Ok(Transport::Satellite),
         7 | 8 => Ok(Transport::Other),
+        9 => Ok(Transport::WifiDirect),
         other => Err(PlannerError::InvalidTransport(other)),
     }
 }
