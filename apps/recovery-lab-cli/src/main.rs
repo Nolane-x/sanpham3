@@ -8,7 +8,7 @@ use peer_session::{
 };
 use recovery_runtime::{
     dispatch_next_resolve, enqueue_resolve, load_queue, offer_next_bundle,
-    receive_one_bundle, save_queue, CustodySendOutcome, DispatchOutcome,
+    receive_one_bundle, save_queue, DispatchOutcome,
 };
 use std::env;
 use std::fs;
@@ -37,7 +37,7 @@ fn run() -> Result<(), String> {
 }
 
 fn enqueue(args: &[String]) -> Result<(), String> {
-    if args.len() != 9 {
+    if args.len() != 8 {
         return Err(usage());
     }
 
@@ -47,11 +47,6 @@ fn enqueue(args: &[String]) -> Result<(), String> {
     let hostname = &args[5];
     let priority = parse_priority(&args[6])?;
     let ttl_secs = parse_u64(&args[7], "ttl_secs")?;
-    let relays_hint = parse_u64(&args[8], "relays_hint")?;
-
-    if relays_hint == 0 {
-        return Err("relays_hint must be at least 1".to_owned());
-    }
 
     let mono = Instant::now();
     let wall = SystemTime::now();
@@ -73,9 +68,6 @@ fn enqueue(args: &[String]) -> Result<(), String> {
 
     println!(
         "queued bundle_id={bundle_id} request_id={request_id} hostname={hostname} priority={priority:?} ttl_secs={ttl_secs} persisted={count}"
-    );
-    println!(
-        "note: relays_hint={relays_hint} is an operator planning hint; protocol relay budget remains runtime-controlled"
     );
     Ok(())
 }
@@ -375,14 +367,14 @@ fn usage() -> String {
     [
         "physical DTN recovery lab:",
         "",
-        "  enqueue <spool> <bundle_id> <request_id> <hostname> <bulk|normal|urgent> <ttl_secs> <relays_hint>",
+        "  enqueue <spool> <bundle_id> <request_id> <hostname> <bulk|normal|urgent> <ttl_secs>",
         "  custody-receive <bind_addr> <node_id> <64_hex_psk> <spool>",
         "  custody-send <peer_addr> <node_id> <64_hex_psk> <spool>",
         "  dispatch <egress_addr> <node_id> <64_hex_psk> <request_spool> <return_spool> <return_bundle_id> <return_ttl_secs>",
         "  show-result <spool>",
         "",
         "A -> B request:",
-        "  A: enqueue a.spool 1001 501 example.com urgent 3600 8",
+        "  A: enqueue a.spool 1001 501 example.com urgent 3600",
         "  B: custody-receive 0.0.0.0:45130 200 <psk> b-request.spool",
         "  A: custody-send <B_IP>:45130 100 <psk> a.spool",
         "",
