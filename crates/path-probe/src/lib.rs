@@ -116,18 +116,12 @@ pub fn summarize(samples: &[AttemptSample]) -> ProbeSeriesSummary {
         .iter()
         .fold(Duration::ZERO, |total, sample| total + sample.elapsed);
 
-    let observed_useful_bitrate_bps = if total_elapsed.is_zero() {
-        0
-    } else {
-        let bits = u128::from(total_useful_bytes) * 8;
-        let nanos = total_elapsed.as_nanos();
-        if nanos == 0 {
-            0
-        } else {
-            ((bits * 1_000_000_000) / nanos)
-                .min(u128::from(u64::MAX)) as u64
-        }
-    };
+    let bits = u128::from(total_useful_bytes) * 8;
+    let nanos = total_elapsed.as_nanos();
+    let observed_useful_bitrate_bps = (bits * 1_000_000_000)
+        .checked_div(nanos)
+        .unwrap_or(0)
+        .min(u128::from(u64::MAX)) as u64;
 
     let mut longest_failure_run = 0_u32;
     let mut current_failure_run = 0_u32;
@@ -514,7 +508,7 @@ fn percentile(values: &[Duration], percentile: usize) -> Option<Duration> {
         return None;
     }
 
-    let rank = ((values.len() - 1) * percentile + 99) / 100;
+    let rank = ((values.len() - 1) * percentile).div_ceil(100);
     values.get(rank.min(values.len() - 1)).copied()
 }
 
