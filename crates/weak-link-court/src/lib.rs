@@ -4,7 +4,8 @@ use peer_egress::{
     KIND_RESOLVE_REQUEST, KIND_RESOLVE_RESPONSE,
 };
 use peer_session::{
-    ClientHello, PeerKey, SecureSession, ServerHello, SessionRole,
+    ClientHello, PeerKey, ResumeClientHello, ResumeServerHello,
+    SecureSession, ServerHello, SessionRole,
 };
 use std::time::Duration;
 
@@ -409,6 +410,125 @@ pub fn run_resolve_court<R: Resolver>(
     })
 }
 
+pub fn run_nearzero_resolve_court<R: Resolver>(
+    profile: WeakLinkProfile,
+    resolver: &R,
+    hostname: &str,
+) -> Result<CourtResult, CourtError> {
+    let mut link = VirtualReliableLink::new(profile)?;
+    let key = PeerKey::new([0x47; 32]);
+
+    // Paired peers already know one another's stable identities. The compact
+    // resumption exchange authenticates fresh contact nonces without
+    // retransmitting both node IDs and full 32-byte tags on every contact.
+    let client_hello = ResumeClientHello::from_nonce(
+        100,
+        200,
+        [0x33; 12],
+        &key,
+    );
+    let client_hello_bytes = client_hello.encode();
+    let client_wire = link.transmit(&client_hello_bytes)?;
+    let server_seen = ResumeClientHello::decode(&client_wire)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+    server_seen
+        .verify(100, 200, &key)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+
+    let server_hello = ResumeServerHello::from_nonce(
+        100,
+        200,
+        [0x44; 12],
+        &server_seen,
+        &key,
+    );
+    let server_hello_bytes = server_hello.encode();
+    let server_wire = link.transmit(&server_hello_bytes)?;
+    let client_seen = ResumeServerHello::decode(&server_wire)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+    client_seen
+        .verify(100, 200, &client_hello, &key)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+
+    let mut client_session = SecureSession::from_resume(
+        SessionRole::Client,
+        100,
+        200,
+        &key,
+        &client_hello,
+        &client_seen,
+    )
+    .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+    let mut server_session = SecureSession::from_resume(
+        SessionRole::Server,
+        100,
+        200,
+        &key,
+        &server_seen,
+        &server_hello,
+    )
+    .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+
+    let request = ResolveRequest {
+        request_id: 501,
+        relays_remaining: 1,
+        hostname: hostname.to_owned(),
+    };
+    let request_payload = encode_request(&request)
+        .map_err(|error| CourtError::Protocol(format!("{error:?}")))?;
+    let request_frame = client_session
+        .seal_compact(KIND_RESOLVE_REQUEST, &request_payload)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+    let request_frame_bytes = request_frame.len();
+    let request_wire = link.transmit(&request_frame)?;
+
+    let (request_kind, request_plaintext) = server_session
+        .open_compact(&request_wire)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+    if request_kind != KIND_RESOLVE_REQUEST {
+        return Err(CourtError::UnexpectedFrameKind(request_kind));
+    }
+
+    let decoded_request = decode_request(&request_plaintext)
+        .map_err(|error| CourtError::Protocol(format!("{error:?}")))?;
+    let response = handle_request(decoded_request, resolver);
+    let response_payload = encode_response(&response)
+        .map_err(|error| CourtError::Protocol(format!("{error:?}")))?;
+    let response_frame = server_session
+        .seal_compact(KIND_RESOLVE_RESPONSE, &response_payload)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+    let response_frame_bytes = response_frame.len();
+    let response_wire = link.transmit(&response_frame)?;
+
+    let (response_kind, response_plaintext) = client_session
+        .open_compact(&response_wire)
+        .map_err(|error| CourtError::Session(format!("{error:?}")))?;
+    if response_kind != KIND_RESOLVE_RESPONSE {
+        return Err(CourtError::UnexpectedFrameKind(response_kind));
+    }
+
+    let final_response = decode_response(&response_plaintext)
+        .map_err(|error| CourtError::Protocol(format!("{error:?}")))?;
+
+    let request_payload_bytes = request_payload.len();
+    let response_payload_bytes = response_payload.len();
+
+    Ok(CourtResult {
+        profile,
+        request_id: request.request_id,
+        hostname: request.hostname,
+        response: final_response,
+        request_payload_bytes,
+        response_payload_bytes,
+        useful_payload_bytes: request_payload_bytes + response_payload_bytes,
+        handshake_wire_bytes:
+            client_hello_bytes.len() + server_hello_bytes.len(),
+        encrypted_request_frame_bytes: request_frame_bytes,
+        encrypted_response_frame_bytes: response_frame_bytes,
+        accounting: link.accounting()?,
+    })
+}
+
 fn duration_from_ns(value: u128) -> Result<Duration, CourtError> {
     let seconds = value / 1_000_000_000;
     let nanos = (value % 1_000_000_000) as u32;
@@ -542,6 +662,67 @@ mod tests {
         assert_eq!(accounting.serialization_time, Duration::from_secs(4));
         assert_eq!(accounting.outage_wait, Duration::from_secs(1));
         assert_eq!(accounting.elapsed, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn nearzero_v1_reduces_same_task_from_232_to_142_wire_bytes() {
+        let baseline = run_resolve_court(
+            WeakLinkProfile::ladder(10),
+            &FixedResolver,
+            "example.com",
+        )
+        .unwrap();
+        let nearzero = run_nearzero_resolve_court(
+            WeakLinkProfile::ladder(10),
+            &FixedResolver,
+            "example.com",
+        )
+        .unwrap();
+
+        assert!(nearzero.succeeded());
+        assert_eq!(nearzero.response, baseline.response);
+        assert_eq!(baseline.accounting.delivered_bytes, 232);
+
+        assert_eq!(nearzero.handshake_wire_bytes, 76);
+        assert_eq!(nearzero.encrypted_request_frame_bytes, 36);
+        assert_eq!(nearzero.encrypted_response_frame_bytes, 30);
+        assert_eq!(nearzero.accounting.delivered_bytes, 142);
+
+        assert!(
+            nearzero.accounting.elapsed < baseline.accounting.elapsed
+        );
+        assert!(
+            nearzero.useful_efficiency_ppm()
+                > baseline.useful_efficiency_ppm()
+        );
+    }
+
+    #[test]
+    fn nearzero_v1_saves_over_a_minute_at_ten_bps() {
+        let result = run_nearzero_resolve_court(
+            WeakLinkProfile::ladder(10),
+            &FixedResolver,
+            "example.com",
+        )
+        .unwrap();
+
+        assert!(result.succeeded());
+        assert!(result.accounting.elapsed > Duration::from_secs(116));
+        assert!(result.accounting.elapsed < Duration::from_secs(117));
+    }
+
+    #[test]
+    fn nearzero_v1_cuts_experimental_one_bps_time_below_twenty_minutes() {
+        let result = run_nearzero_resolve_court(
+            WeakLinkProfile::ladder(1),
+            &FixedResolver,
+            "example.com",
+        )
+        .unwrap();
+
+        assert!(result.succeeded());
+        assert!(result.accounting.elapsed > Duration::from_secs(1_138));
+        assert!(result.accounting.elapsed < Duration::from_secs(1_140));
     }
 
     #[test]
