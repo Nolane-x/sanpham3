@@ -10,6 +10,7 @@ members = [
     "adapters/windows-host",
     "apps/scavenger-cli",
     "apps/host-probe-cli",
+    "apps/path-probe-cli",
     "apps/peer-egress-cli",
     "apps/recovery-lab-cli",
 ]
