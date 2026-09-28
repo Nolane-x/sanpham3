@@ -1,3 +1,10 @@
+pub mod dns_probe;
+pub mod recovery;
+pub mod resolver;
+pub mod routes;
+
+pub use recovery::{DnsObservation, LinuxRecoveryProbe, LinuxRecoverySnapshot};
+
 use connectivity_core::{Capability, PermissionState, PlatformScanner, Transport};
 use std::fs;
 use std::path::{Path, PathBuf};
