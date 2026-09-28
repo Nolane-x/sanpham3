@@ -60,9 +60,32 @@ fn run_windows() {
     print_capabilities(&capabilities);
 
     println!();
-    println!(
-        "recovery_probe: Windows per-interface active probing is the next adapter lane"
-    );
+    println!("recovery_probe:");
+
+    match windows_host::WindowsRecoveryProbe::new().run() {
+        Ok(snapshot) => {
+            for record in snapshot.ledger.records() {
+                println!(
+                    "PROBE id={} kind={:?} status={:?} detail={}",
+                    record.id,
+                    record.kind,
+                    record.status,
+                    record.detail.as_deref().unwrap_or("-"),
+                );
+            }
+
+            println!(
+                "SUMMARY pending={} information_path={} local_only={}",
+                snapshot.ledger.pending_count(),
+                snapshot.ledger.any_information_path(),
+                snapshot.ledger.can_declare_local_only(),
+            );
+        }
+        Err(error) => {
+            eprintln!("Windows recovery probe failed: {error}");
+            std::process::exit(2);
+        }
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
