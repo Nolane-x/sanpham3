@@ -152,10 +152,20 @@ mod tests {
         let items = scanner.inventory();
 
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].transport, Transport::Wifi);
-        assert!(items[0].available);
-        assert_eq!(items[1].transport, Transport::Tunnel);
-        assert!(items[1].can_bind_socket);
+
+        let wifi_item = items
+            .iter()
+            .find(|item| item.interface.as_deref() == Some("wlan0"))
+            .expect("wifi capability");
+        assert_eq!(wifi_item.transport, Transport::Wifi);
+        assert!(wifi_item.available);
+
+        let tunnel_item = items
+            .iter()
+            .find(|item| item.interface.as_deref() == Some("wg0"))
+            .expect("tunnel capability");
+        assert_eq!(tunnel_item.transport, Transport::Tunnel);
+        assert!(tunnel_item.can_bind_socket);
 
         fs::remove_dir_all(root).unwrap();
     }
