@@ -212,6 +212,18 @@ pub fn tcp_connect_device(
     })
 }
 
+#[cfg(not(target_os = "linux"))]
+pub fn tcp_connect_device(
+    _interface: &str,
+    _destination: SocketAddr,
+    _timeout: Duration,
+) -> io::Result<TcpConnectResult> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "interface-bound TCP probing is Linux-only",
+    ))
+}
+
 pub fn tcp_connect(
     source_ip: Option<IpAddr>,
     destination: SocketAddr,
