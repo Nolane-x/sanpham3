@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "dev.nolane.sanpham3.androidhost"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 26
