@@ -6,6 +6,7 @@
 
 pub mod capsule;
 pub mod dtn;
+pub mod evidence;
 pub mod graph;
 pub mod model;
 pub mod policy;
@@ -15,6 +16,10 @@ pub mod scoring;
 
 pub use capsule::{CapsuleError, CapsuleKind, SemanticCapsule};
 pub use dtn::{Bundle, BundlePriority, DtnQueue};
+pub use evidence::{
+    default_energy_cost, default_metered, install_measured_internet_path,
+    MeasuredInternetPath,
+};
 pub use graph::{ConnectivityGraph, Route};
 pub use model::{
     LinkObservation, LinkState, NodeId, NodeProfile, Reachability, Transport,
