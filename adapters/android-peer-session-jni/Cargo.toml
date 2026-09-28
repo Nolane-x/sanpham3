@@ -8,5 +8,6 @@ name = "sp3_android_peer_session"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+connectivity-core = { path = "../../crates/connectivity-core" }
 jni = "0.21"
 peer-session = { path = "../../crates/peer-session" }
