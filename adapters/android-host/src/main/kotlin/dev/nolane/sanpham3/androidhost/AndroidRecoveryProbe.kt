@@ -9,6 +9,7 @@ enum class AndroidProbeKind {
     IPV4,
     IPV6,
     DNS,
+    TINY_HTTPS,
 }
 
 enum class AndroidProbeStatus {
@@ -31,7 +32,10 @@ data class AndroidRecoverySnapshot(
 ) {
     val informationPathFound: Boolean
         get() = probes.any {
-            it.kind == AndroidProbeKind.DNS &&
+            (
+                it.kind == AndroidProbeKind.DNS ||
+                    it.kind == AndroidProbeKind.TINY_HTTPS
+            ) &&
                 it.status == AndroidProbeStatus.SUCCEEDED
         }
 }
@@ -39,7 +43,15 @@ data class AndroidRecoverySnapshot(
 class AndroidRecoveryProbe(
     context: Context,
     private val dnsProbe: AndroidBoundDnsProbe = AndroidBoundDnsProbe(),
+    private val httpsProbe: AndroidBoundHttpsProbe = AndroidBoundHttpsProbe(),
+    private val httpsTargets: List<AndroidHttpsProbeTarget> = emptyList(),
+    private val httpsAttempts: Int = 2,
+    private val httpsPauseMillis: Long = 120,
 ) {
+    init {
+        require(httpsAttempts > 0)
+        require(httpsPauseMillis >= 0)
+    }
     private val connectivityManager =
         context.getSystemService(ConnectivityManager::class.java)
 
@@ -81,6 +93,19 @@ class AndroidRecoveryProbe(
                 },
                 detail = "configured=$ipv6 interface=${snapshot.interfaceName}",
             )
+
+            if (httpsTargets.isEmpty()) {
+                records += AndroidProbeRecord(
+                    id = "${snapshot.networkHandle}:https",
+                    kind = AndroidProbeKind.TINY_HTTPS,
+                    status = AndroidProbeStatus.UNSUPPORTED,
+                    detail = "no HTTPS probe target configured",
+                )
+            } else {
+                for (target in httpsTargets) {
+                    records += probeHttpsSeries(network, target)
+                }
+            }
 
             val resolvers = linkProperties?.dnsServers.orEmpty()
             if (resolvers.isEmpty()) {
@@ -150,4 +175,107 @@ class AndroidRecoveryProbe(
             )
         }
     }
+    private fun probeHttpsSeries(
+        network: Network,
+        target: AndroidHttpsProbeTarget,
+    ): AndroidProbeRecord {
+        val samples = buildList {
+            repeat(httpsAttempts) { attempt ->
+                val started = System.nanoTime()
+                val sample = try {
+                    val result = httpsProbe.probe(network, target)
+                    AndroidAttemptSample(
+                        success = true,
+                        elapsedMillis = result.elapsedMillis,
+                        usefulBytes = result.responseBytes,
+                        detail = "status=${result.statusCode}",
+                    )
+                } catch (error: SecurityException) {
+                    AndroidAttemptSample(
+                        success = false,
+                        elapsedMillis =
+                            (System.nanoTime() - started) / 1_000_000,
+                        usefulBytes = 0,
+                        detail = "blocked:${error.message ?: error.javaClass.simpleName}",
+                    )
+                } catch (error: UnsupportedOperationException) {
+                    AndroidAttemptSample(
+                        success = false,
+                        elapsedMillis =
+                            (System.nanoTime() - started) / 1_000_000,
+                        usefulBytes = 0,
+                        detail = "unsupported:${error.message ?: error.javaClass.simpleName}",
+                    )
+                } catch (error: Exception) {
+                    AndroidAttemptSample(
+                        success = false,
+                        elapsedMillis =
+                            (System.nanoTime() - started) / 1_000_000,
+                        usefulBytes = 0,
+                        detail = error.message ?: error.javaClass.simpleName,
+                    )
+                }
+
+                add(sample)
+
+                if (
+                    attempt + 1 < httpsAttempts &&
+                    httpsPauseMillis > 0
+                ) {
+                    Thread.sleep(httpsPauseMillis)
+                }
+            }
+        }
+
+        val summary = summarizeAndroidProbeSeries(samples)
+        val firstFailure = samples.firstOrNull { !it.success }?.detail
+        val status = when {
+            summary.successes > 0 -> AndroidProbeStatus.SUCCEEDED
+            samples.any {
+                it.detail?.startsWith("blocked:") == true
+            } -> AndroidProbeStatus.BLOCKED
+            samples.any {
+                it.detail?.startsWith("unsupported:") == true
+            } -> AndroidProbeStatus.UNSUPPORTED
+            else -> AndroidProbeStatus.FAILED
+        }
+
+        val targetAddress =
+            target.address.hostAddress ?: target.address.toString()
+        val id =
+            "${network.networkHandle}:https:${target.serverName}:$targetAddress:${target.port}"
+
+        return AndroidProbeRecord(
+            id = id,
+            kind = AndroidProbeKind.TINY_HTTPS,
+            status = status,
+            detail = buildString {
+                append("attempts=")
+                append(summary.attempts)
+                append(" successes=")
+                append(summary.successes)
+                append(" loss_ppm=")
+                append(summary.lossPpm)
+                append(" useful_bytes=")
+                append(summary.totalUsefulBytes)
+                append(" useful_bps=")
+                append(summary.observedUsefulBitrateBps)
+                append(" median_ms=")
+                append(summary.medianMillis ?: "-")
+                append(" p95_ms=")
+                append(summary.p95Millis ?: "-")
+                append(" longest_failure_run=")
+                append(summary.longestFailureRun)
+                append(" transitions=")
+                append(summary.stateTransitions)
+                append(" intermittent=")
+                append(summary.intermittent)
+                if (firstFailure != null) {
+                    append(" first_failure=")
+                    append(firstFailure)
+                }
+            },
+        )
+    }
+
 }
