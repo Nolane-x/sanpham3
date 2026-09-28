@@ -279,6 +279,220 @@ mod tests {
         server.join().unwrap();
     }
 
+
+    #[test]
+    fn store_carry_forward_request_and_return_result_across_contacts() {
+        use peer_egress::{decode_response, encode_response, ResolveResponse};
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let t0 = Instant::now();
+        let wall0 = UNIX_EPOCH + Duration::from_secs(2_000_000_000);
+
+        // Phase 1: A is offline and creates work without any live route.
+        let mut a_queue = DtnQueue::new();
+        enqueue_resolve(
+            &mut a_queue,
+            1001,
+            501,
+            "example.com",
+            BundlePriority::Urgent,
+            Duration::from_secs(3600),
+            t0,
+        )
+        .unwrap();
+
+        // Phase 2: A later meets B. B has no egress yet, but accepts custody.
+        let custody_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let custody_addr = custody_listener.local_addr().unwrap();
+
+        let b_contact = thread::spawn(move || {
+            let (mut stream, _) = custody_listener.accept().unwrap();
+            let key = PeerKey::new([0xA1; 32]);
+            let mut replay = NonceReplayCache::new(16);
+            let (_, mut session) =
+                perform_server_handshake(&mut stream, 200, &key, &mut replay)
+                    .unwrap();
+
+            let mut b_queue = DtnQueue::new();
+            let (_, status) = receive_one_bundle(
+                &mut b_queue,
+                &mut session,
+                &mut stream,
+                Instant::now(),
+            )
+            .unwrap();
+
+            assert_eq!(status, CustodyStatus::Accepted);
+            b_queue
+        });
+
+        let mut custody_stream = TcpStream::connect(custody_addr).unwrap();
+        let key = PeerKey::new([0xA1; 32]);
+        let (_, mut custody_session) =
+            perform_client_handshake(&mut custody_stream, 100, &key).unwrap();
+
+        let custody_outcome = offer_next_bundle(
+            &mut a_queue,
+            &mut custody_session,
+            &mut custody_stream,
+            t0,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            custody_outcome,
+            CustodySendOutcome::Transferred {
+                bundle_id: 1001,
+                status: CustodyStatus::Accepted,
+            }
+        ));
+        assert!(a_queue.is_empty());
+
+        let b_queue = b_contact.join().unwrap();
+
+        // Phase 3: B can shut down/restart before ever seeing an egress node.
+        let spool_path = std::env::temp_dir().join(format!(
+            "sanpham3-g6-roundtrip-{}-{}.bin",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+
+        save_queue(&spool_path, &b_queue, Instant::now(), wall0).unwrap();
+        let mut b_queue = load_queue(
+            &spool_path,
+            Instant::now(),
+            wall0 + Duration::from_secs(2),
+        )
+        .unwrap();
+        fs::remove_file(&spool_path).unwrap();
+
+        assert!(b_queue.contains(1001));
+
+        // Phase 4: later B meets C. Only C has an egress resolver.
+        let egress_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let egress_addr = egress_listener.local_addr().unwrap();
+
+        let c_egress = thread::spawn(move || {
+            let (mut stream, _) = egress_listener.accept().unwrap();
+            let key = PeerKey::new([0xA2; 32]);
+            let mut replay = NonceReplayCache::new(16);
+            let (_, mut session) =
+                perform_server_handshake(&mut stream, 300, &key, &mut replay)
+                    .unwrap();
+
+            let resolver = FakeResolver {
+                addresses: vec![
+                    "10.1.2.3".parse().unwrap(),
+                    "8.8.8.8".parse().unwrap(),
+                ],
+            };
+
+            serve_one(&mut session, &mut stream, &resolver).unwrap();
+        });
+
+        let mut egress_stream = TcpStream::connect(egress_addr).unwrap();
+        let key = PeerKey::new([0xA2; 32]);
+        let (_, mut egress_session) =
+            perform_client_handshake(&mut egress_stream, 200, &key).unwrap();
+
+        let delivered = dispatch_next_resolve(
+            &mut b_queue,
+            &mut egress_session,
+            &mut egress_stream,
+            Instant::now(),
+        )
+        .unwrap();
+
+        let addresses = match delivered {
+            DispatchOutcome::Delivered {
+                bundle_id,
+                request_id,
+                addresses,
+            } => {
+                assert_eq!(bundle_id, 1001);
+                assert_eq!(request_id, 501);
+                addresses
+            }
+            other => panic!("unexpected egress outcome: {other:?}"),
+        };
+        assert!(b_queue.is_empty());
+        c_egress.join().unwrap();
+
+        // Phase 5: B stores the result as another DTN bundle and carries it
+        // back to A during a completely separate contact.
+        let response_payload = encode_response(&ResolveResponse {
+            request_id: 501,
+            status: ResolveStatus::Ok,
+            addresses: addresses.clone(),
+        })
+        .unwrap();
+
+        let mut b_return_queue = DtnQueue::new();
+        assert!(b_return_queue.push_unique(Bundle {
+            id: 2001,
+            priority: BundlePriority::Urgent,
+            created_at: Instant::now(),
+            ttl: Duration::from_secs(3600),
+            payload: response_payload,
+            attempts: 0,
+        }));
+
+        let return_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let return_addr = return_listener.local_addr().unwrap();
+
+        let a_return = thread::spawn(move || {
+            let (mut stream, _) = return_listener.accept().unwrap();
+            let key = PeerKey::new([0xA3; 32]);
+            let mut replay = NonceReplayCache::new(16);
+            let (_, mut session) =
+                perform_server_handshake(&mut stream, 100, &key, &mut replay)
+                    .unwrap();
+
+            let mut returned = DtnQueue::new();
+            receive_one_bundle(
+                &mut returned,
+                &mut session,
+                &mut stream,
+                Instant::now(),
+            )
+            .unwrap();
+            returned
+        });
+
+        let mut return_stream = TcpStream::connect(return_addr).unwrap();
+        let key = PeerKey::new([0xA3; 32]);
+        let (_, mut return_session) =
+            perform_client_handshake(&mut return_stream, 200, &key).unwrap();
+
+        let return_outcome = offer_next_bundle(
+            &mut b_return_queue,
+            &mut return_session,
+            &mut return_stream,
+            Instant::now(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            return_outcome,
+            CustodySendOutcome::Transferred {
+                bundle_id: 2001,
+                status: CustodyStatus::Accepted,
+            }
+        ));
+
+        let returned = a_return.join().unwrap();
+        let result_bundle = returned.iter().next().unwrap();
+        let response = decode_response(&result_bundle.payload).unwrap();
+
+        assert_eq!(response.request_id, 501);
+        assert_eq!(response.status, ResolveStatus::Ok);
+        assert_eq!(response.addresses, addresses);
+    }
+
     #[test]
     fn valid_remote_rejection_is_terminal_and_acked() {
         let now = Instant::now();
