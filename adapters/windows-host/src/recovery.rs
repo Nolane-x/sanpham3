@@ -1,5 +1,7 @@
 use crate::{inventory_adapter_paths, WindowsAdapterPath};
-use connectivity_core::{ProbeKind, ProbeStatus, RecoveryLedger};
+use connectivity_core::{
+    LinkState, MeasuredInternetPath, ProbeKind, ProbeStatus, RecoveryLedger,
+};
 use path_probe::{
     run_series, summarize, tcp_connect, tiny_https_head, AttemptMeasurement,
     HttpsProbeTarget, ProbeSeriesSummary,
@@ -46,6 +48,65 @@ pub struct WindowsRecoverySnapshot {
     pub dns: Vec<WindowsDnsObservation>,
     pub tcp: Vec<WindowsTcpObservation>,
     pub https: Vec<WindowsHttpsObservation>,
+}
+
+impl WindowsRecoverySnapshot {
+    /// Converts verified tiny-HTTPS observations into graph-ready Internet
+    /// paths. DNS/TCP-only success is intentionally excluded.
+    pub fn measured_internet_paths(&self) -> Vec<MeasuredInternetPath> {
+        let mut paths = Vec::new();
+
+        for adapter in self.adapters.iter().filter(|adapter| adapter.available) {
+            let best = self
+                .https
+                .iter()
+                .filter(|observation| {
+                    observation.interface == adapter.name
+                        && observation.status == ProbeStatus::Succeeded
+                        && observation.summary.successes > 0
+                })
+                .max_by(|left, right| {
+                    left.summary
+                        .observed_useful_bitrate_bps
+                        .cmp(&right.summary.observed_useful_bitrate_bps)
+                        .then_with(|| {
+                            right.summary.loss_ppm.cmp(&left.summary.loss_ppm)
+                        })
+                        .then_with(|| {
+                            right.summary.median_rtt.cmp(&left.summary.median_rtt)
+                        })
+                });
+
+            let Some(best) = best else {
+                continue;
+            };
+
+            let state = if best.summary.intermittent
+                || best.summary.loss_ppm > 0
+            {
+                LinkState::Intermittent
+            } else {
+                LinkState::Up
+            };
+            let rtt = best
+                .summary
+                .median_rtt
+                .or(best.summary.min_rtt)
+                .unwrap_or(Duration::from_secs(1));
+
+            paths.push(MeasuredInternetPath::new(
+                format!("windows:{}", adapter.name),
+                adapter.transport,
+                state,
+                best.summary.observed_useful_bitrate_bps,
+                best.summary.loss_ppm,
+                rtt,
+            ));
+        }
+
+        paths.sort_by(|left, right| left.path_id.cmp(&right.path_id));
+        paths
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -556,8 +617,81 @@ fn classify_probe_error(error: &io::Error) -> ProbeStatus {
 }
 
 #[cfg(test)]
+fn test_https_observation(
+    interface: &str,
+    bitrate: u64,
+    loss_ppm: u32,
+    intermittent: bool,
+) -> WindowsHttpsObservation {
+    WindowsHttpsObservation {
+        interface: interface.to_owned(),
+        source: Some("192.0.2.10".parse().unwrap()),
+        target: HttpsProbeTarget::new(
+            "93.184.216.34:443".parse().unwrap(),
+            "example.com",
+            "/",
+            256,
+        )
+        .unwrap(),
+        status: ProbeStatus::Succeeded,
+        detail: "test".to_owned(),
+        summary: ProbeSeriesSummary {
+            attempts: 3,
+            successes: if intermittent { 2 } else { 3 },
+            failures: if intermittent { 1 } else { 0 },
+            loss_ppm,
+            min_rtt: Some(Duration::from_millis(20)),
+            median_rtt: Some(Duration::from_millis(30)),
+            p95_rtt: Some(Duration::from_millis(50)),
+            total_useful_bytes: 300,
+            observed_useful_bitrate_bps: bitrate,
+            longest_failure_run: u32::from(intermittent),
+            state_transitions: u32::from(intermittent),
+            intermittent,
+        },
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn https_measurement_becomes_graph_ready_internet_path() {
+        let snapshot = WindowsRecoverySnapshot {
+            ledger: RecoveryLedger::new(),
+            adapters: vec![WindowsAdapterPath {
+                name: "Wi-Fi".to_owned(),
+                transport: connectivity_core::Transport::Wifi,
+                available: true,
+                has_gateway: true,
+                ipv4_metric: 25,
+                ipv6_metric: 35,
+                tx_bps: 1_000_000,
+                rx_bps: 1_000_000,
+                unicast: vec!["192.0.2.10".parse().unwrap()],
+                dns_servers: vec!["8.8.8.8".parse().unwrap()],
+            }],
+            dns: Vec::new(),
+            tcp: Vec::new(),
+            https: vec![
+                test_https_observation("Wi-Fi", 75, 300_000, true),
+                test_https_observation("Wi-Fi", 140, 100_000, false),
+            ],
+        };
+
+        let paths = snapshot.measured_internet_paths();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].path_id, "windows:Wi-Fi");
+        assert_eq!(paths[0].estimated_bitrate_bps, 140);
+        assert_eq!(paths[0].loss_ppm, 100_000);
+        assert_eq!(
+            paths[0].transport,
+            connectivity_core::Transport::Wifi
+        );
+    }
+
+
     use connectivity_core::Transport;
     use std::net::{Ipv4Addr, UdpSocket};
     use std::thread;
