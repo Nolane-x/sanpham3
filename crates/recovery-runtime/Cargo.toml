@@ -1,0 +1,9 @@
+[package]
+name = "recovery-runtime"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+connectivity-core = { path = "../connectivity-core" }
+peer-egress = { path = "../peer-egress" }
+peer-session = { path = "../peer-session" }
