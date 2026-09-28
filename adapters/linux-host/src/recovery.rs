@@ -531,6 +531,50 @@ mod tests {
     }
 
     #[test]
+    fn https_observation_becomes_graph_link() {
+        let observation = HttpsSeriesObservation {
+            interface: "wlan0".to_owned(),
+            transport: Transport::Wifi,
+            target: HttpsProbeTarget::new(
+                "203.0.113.10:443".parse().unwrap(),
+                "example.com",
+                "/",
+                1024,
+            )
+            .unwrap(),
+            status: ProbeStatus::Succeeded,
+            detail: "test".to_owned(),
+            summary: ProbeSeriesSummary {
+                attempts: 3,
+                successes: 2,
+                failures: 1,
+                loss_ppm: 333_333,
+                min_rtt: Some(Duration::from_millis(50)),
+                median_rtt: Some(Duration::from_millis(80)),
+                p95_rtt: Some(Duration::from_millis(120)),
+                total_useful_bytes: 600,
+                observed_useful_bitrate_bps: 4_000,
+                longest_failure_run: 1,
+                state_transitions: 2,
+                intermittent: true,
+            },
+        };
+
+        let link = observation.to_link_observation(
+            1,
+            2,
+            Duration::from_secs(2),
+        );
+
+        assert_eq!(link.transport, Transport::Wifi);
+        assert_eq!(link.state, connectivity_core::LinkState::Intermittent);
+        assert_eq!(link.estimated_bitrate_bps, 4_000);
+        assert_eq!(link.loss_ppm, 333_333);
+        assert_eq!(link.rtt, Duration::from_millis(120));
+        assert_eq!(link.reachability, Reachability::Internet);
+    }
+
+    #[test]
     fn route_records_are_terminal_even_without_resolver() {
         let root = temp_root();
         fs::create_dir_all(&root).unwrap();
