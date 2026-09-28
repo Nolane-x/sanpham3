@@ -1,3 +1,4 @@
+use hmac::Mac;
 use super::{
     finalize_mac, new_mac, PeerKey, SecureSession, SessionError, SessionRole,
 };
