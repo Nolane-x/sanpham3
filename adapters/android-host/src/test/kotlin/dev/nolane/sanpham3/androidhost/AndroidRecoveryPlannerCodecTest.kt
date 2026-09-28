@@ -67,9 +67,9 @@ class AndroidRecoveryPlannerCodecTest {
         val paths = AndroidRecoveryPlannerCodec.paths(
             direct = listOf(direct(7, 120)),
             peers = listOf(
-                AndroidPeerEgressCandidate(
+                AndroidPeerEgressCandidate.forTest(
                     peerNodeId = 300,
-                    transport = AndroidTransport.WIFI,
+                    transport = AndroidTransport.WIFI_DIRECT,
                     state = AndroidMeasuredLinkState.INTERMITTENT,
                     estimatedBitrateBps = 100,
                     lossPpm = 100_000,
@@ -110,7 +110,7 @@ class AndroidRecoveryPlannerCodecTest {
         assertEquals(20L, buffer.long)
 
         assertEquals(1, buffer.get().toInt())
-        assertEquals(0, buffer.get().toInt())
+        assertEquals(9, buffer.get().toInt())
         assertEquals(1, buffer.get().toInt())
         assertEquals(0, buffer.get().toInt())
         assertEquals(300L, buffer.long)
@@ -125,9 +125,9 @@ class AndroidRecoveryPlannerCodecTest {
         val paths = AndroidRecoveryPlannerCodec.paths(
             direct = listOf(direct(7, 120)),
             peers = listOf(
-                AndroidPeerEgressCandidate(
+                AndroidPeerEgressCandidate.forTest(
                     peerNodeId = 300,
-                    transport = AndroidTransport.WIFI,
+                    transport = AndroidTransport.WIFI_DIRECT,
                     state = AndroidMeasuredLinkState.UP,
                     estimatedBitrateBps = 100,
                     lossPpm = 100_000,
