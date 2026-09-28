@@ -195,6 +195,23 @@ where
     samples
 }
 
+#[cfg(target_os = "linux")]
+pub fn tcp_connect_device(
+    interface: &str,
+    destination: SocketAddr,
+    timeout: Duration,
+) -> io::Result<TcpConnectResult> {
+    let started = Instant::now();
+    let stream = connect_bound_device(interface, destination, timeout)?;
+    let source = stream.local_addr()?;
+
+    Ok(TcpConnectResult {
+        destination,
+        source,
+        elapsed: started.elapsed(),
+    })
+}
+
 pub fn tcp_connect(
     source_ip: Option<IpAddr>,
     destination: SocketAddr,
@@ -247,7 +264,8 @@ pub fn tiny_https_head(
     let config = ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    let server_name = ServerName::try_from(server_name.to_owned()).map_err(
+    let server_name_text = server_name.to_owned();
+    let server_name = ServerName::try_from(server_name_text.clone()).map_err(
         |_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -261,7 +279,7 @@ pub fn tiny_https_head(
 
     let request = format!(
         "HEAD {path} HTTP/1.1\r\nHost: {server_name}\r\nUser-Agent: sanpham3-path-probe/0\r\nAccept: */*\r\nConnection: close\r\n\r\n",
-        server_name = server_name_text(&tls),
+        server_name = server_name_text,
     );
     tls.write_all(request.as_bytes())?;
     tls.flush()?;
@@ -304,6 +322,28 @@ pub fn tiny_https_head(
         status_code,
         response_bytes: received.len(),
     })
+}
+
+#[cfg(target_os = "linux")]
+fn connect_bound_device(
+    interface: &str,
+    destination: SocketAddr,
+    timeout: Duration,
+) -> io::Result<TcpStream> {
+    if interface.is_empty() || interface.as_bytes().contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid interface name",
+        ));
+    }
+
+    let domain = Domain::for_address(destination);
+    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    socket.bind_device(Some(interface.as_bytes()))?;
+    socket.connect_timeout(&SockAddr::from(destination), timeout)?;
+    socket.set_nodelay(true)?;
+
+    Ok(socket.into())
 }
 
 fn connect_bound(
@@ -390,16 +430,6 @@ fn percentile(values: &[Duration], percentile: usize) -> Option<Duration> {
 
     let rank = ((values.len() - 1) * percentile + 99) / 100;
     values.get(rank.min(values.len() - 1)).copied()
-}
-
-fn server_name_text(
-    tls: &StreamOwned<ClientConnection, TcpStream>,
-) -> String {
-    match tls.conn.server_name() {
-        Some(ServerName::DnsName(name)) => name.as_ref().to_owned(),
-        Some(ServerName::IpAddress(address)) => address.to_string(),
-        _ => String::new(),
-    }
 }
 
 #[cfg(test)]
