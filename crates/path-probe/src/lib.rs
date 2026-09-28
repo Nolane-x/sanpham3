@@ -248,6 +248,72 @@ pub fn tiny_https_head(
     timeout: Duration,
     max_response_bytes: usize,
 ) -> io::Result<TinyHttpsResult> {
+    validate_https_args(path, max_response_bytes)?;
+
+    let started = Instant::now();
+    let tcp_started = Instant::now();
+    let stream = connect_bound(source_ip, destination, timeout)?;
+    let tcp_connect_elapsed = tcp_started.elapsed();
+
+    tiny_https_on_stream(
+        stream,
+        destination,
+        server_name,
+        path,
+        timeout,
+        max_response_bytes,
+        tcp_connect_elapsed,
+        started,
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub fn tiny_https_head_device(
+    interface: &str,
+    destination: SocketAddr,
+    server_name: &str,
+    path: &str,
+    timeout: Duration,
+    max_response_bytes: usize,
+) -> io::Result<TinyHttpsResult> {
+    validate_https_args(path, max_response_bytes)?;
+
+    let started = Instant::now();
+    let tcp_started = Instant::now();
+    let stream = connect_bound_device(interface, destination, timeout)?;
+    let tcp_connect_elapsed = tcp_started.elapsed();
+
+    tiny_https_on_stream(
+        stream,
+        destination,
+        server_name,
+        path,
+        timeout,
+        max_response_bytes,
+        tcp_connect_elapsed,
+        started,
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn tiny_https_head_device(
+    _interface: &str,
+    _destination: SocketAddr,
+    _server_name: &str,
+    _path: &str,
+    _timeout: Duration,
+    _max_response_bytes: usize,
+) -> io::Result<TinyHttpsResult> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "interface-bound HTTPS probing is Linux-only",
+    ))
+}
+
+fn validate_https_args(
+    path: &str,
+    max_response_bytes: usize,
+) -> io::Result<()> {
     if max_response_bytes < 16 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -261,12 +327,20 @@ pub fn tiny_https_head(
         ));
     }
 
-    let started = Instant::now();
-    let tcp_started = Instant::now();
-    let stream = connect_bound(source_ip, destination, timeout)?;
-    let tcp_connect_elapsed = tcp_started.elapsed();
-    let source = stream.local_addr()?;
+    Ok(())
+}
 
+fn tiny_https_on_stream(
+    stream: TcpStream,
+    destination: SocketAddr,
+    server_name: &str,
+    path: &str,
+    timeout: Duration,
+    max_response_bytes: usize,
+    tcp_connect_elapsed: Duration,
+    started: Instant,
+) -> io::Result<TinyHttpsResult> {
+    let source = stream.local_addr()?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
 
