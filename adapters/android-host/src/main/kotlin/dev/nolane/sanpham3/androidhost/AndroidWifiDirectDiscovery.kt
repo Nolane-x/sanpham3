@@ -176,7 +176,7 @@ class AndroidWifiDirectDiscovery(
         try {
             wifiP2p.requestPeers(channel) { peerList ->
                 val peers = peerList.deviceList
-                    .map(WifiP2pDevice::toDiscoveryPeer)
+                    .map { device -> device.toDiscoveryPeer() }
                     .sortedWith(
                         compareBy(
                             AndroidWifiDirectPeer::deviceName,
