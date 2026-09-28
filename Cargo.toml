@@ -2,6 +2,7 @@
 members = [
     "crates/connectivity-core",
     "crates/peer-lan",
+    "crates/path-probe",
     "crates/peer-session",
     "crates/peer-egress",
     "crates/recovery-runtime",
