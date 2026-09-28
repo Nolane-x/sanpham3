@@ -8,18 +8,56 @@ import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
-data class AndroidHttpsProbeTarget(
+data class AndroidHttpsProbeTarget private constructor(
     val address: InetAddress,
-    val port: Int = 443,
+    val port: Int,
     val serverName: String,
-    val path: String = "/",
-    val maxResponseBytes: Int = 1024,
+    val path: String,
+    val maxResponseBytes: Int,
 ) {
-    init {
-        require(port in 1..65535)
-        require(serverName.isNotBlank())
-        require(path.startsWith("/"))
-        require(maxResponseBytes >= 16)
+    companion object {
+        fun fromLiteralAddress(
+            literalAddress: String,
+            serverName: String,
+            port: Int = 443,
+            path: String = "/",
+            maxResponseBytes: Int = 1024,
+        ): AndroidHttpsProbeTarget {
+            require(isNumericAddressLiteral(literalAddress)) {
+                "HTTPS probe address must be a literal IPv4/IPv6 address"
+            }
+            require(port in 1..65535)
+            require(serverName.isNotBlank())
+            require(path.startsWith("/"))
+            require(maxResponseBytes >= 16)
+
+            return AndroidHttpsProbeTarget(
+                address = InetAddress.getByName(literalAddress),
+                port = port,
+                serverName = serverName,
+                path = path,
+                maxResponseBytes = maxResponseBytes,
+            )
+        }
+
+        private fun isNumericAddressLiteral(value: String): Boolean {
+            if (value.contains(':')) {
+                return value.isNotBlank() &&
+                    value.none(Char::isWhitespace)
+            }
+
+            val parts = value.split('.')
+            if (parts.size != 4) {
+                return false
+            }
+
+            return parts.all { part ->
+                part.isNotEmpty() &&
+                    part.length <= 3 &&
+                    part.all(Char::isDigit) &&
+                    part.toIntOrNull()?.let { it in 0..255 } == true
+            }
+        }
     }
 }
 
