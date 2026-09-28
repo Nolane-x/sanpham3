@@ -270,9 +270,9 @@ pub fn tiny_https_head_device(
     server_name: &str,
     path: &str,
     timeout: Duration,
-    probe.max_response_bytes: usize,
+    max_response_bytes: usize,
 ) -> io::Result<TinyHttpsResult> {
-    validate_https_args(path, probe.max_response_bytes)?;
+    validate_https_args(path, max_response_bytes)?;
 
     let started = Instant::now();
     let tcp_started = Instant::now();
@@ -300,7 +300,7 @@ pub fn tiny_https_head_device(
     _server_name: &str,
     _path: &str,
     _timeout: Duration,
-    _probe.max_response_bytes: usize,
+    _max_response_bytes: usize,
 ) -> io::Result<TinyHttpsResult> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -310,12 +310,12 @@ pub fn tiny_https_head_device(
 
 fn validate_https_args(
     path: &str,
-    probe.max_response_bytes: usize,
+    max_response_bytes: usize,
 ) -> io::Result<()> {
-    if probe.max_response_bytes < 16 {
+    if max_response_bytes < 16 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "probe.max_response_bytes must be at least 16",
+            "max_response_bytes must be at least 16",
         ));
     }
     if !path.starts_with('/') {
@@ -333,7 +333,7 @@ struct HttpsStreamProbe<'a> {
     server_name: &'a str,
     path: &'a str,
     timeout: Duration,
-    probe.max_response_bytes: usize,
+    max_response_bytes: usize,
     tcp_connect_elapsed: Duration,
     started: Instant,
 }
