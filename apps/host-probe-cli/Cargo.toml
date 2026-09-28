@@ -1,0 +1,8 @@
+[package]
+name = "host-probe-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+connectivity-core = { path = "../../crates/connectivity-core" }
+linux-host = { path = "../../adapters/linux-host" }
