@@ -487,8 +487,8 @@ pub extern "system" fn Java_dev_nolane_sanpham3_androidhost_AndroidRecoveryPlann
 mod tests {
     use super::*;
 
-    fn push_path(
-        out: &mut Vec<u8>,
+    #[derive(Clone, Copy)]
+    struct TestPath {
         kind: u8,
         transport: u8,
         state: u8,
@@ -497,15 +497,17 @@ mod tests {
         bitrate: u64,
         loss_ppm: u32,
         rtt_ms: u64,
-    ) {
-        out.push(kind);
-        out.push(transport);
-        out.push(state);
-        out.push(u8::from(metered));
-        out.extend_from_slice(&external_id.to_be_bytes());
-        out.extend_from_slice(&bitrate.to_be_bytes());
-        out.extend_from_slice(&loss_ppm.to_be_bytes());
-        out.extend_from_slice(&rtt_ms.to_be_bytes());
+    }
+
+    fn push_path(out: &mut Vec<u8>, path: TestPath) {
+        out.push(path.kind);
+        out.push(path.transport);
+        out.push(path.state);
+        out.push(u8::from(path.metered));
+        out.extend_from_slice(&path.external_id.to_be_bytes());
+        out.extend_from_slice(&path.bitrate.to_be_bytes());
+        out.extend_from_slice(&path.loss_ppm.to_be_bytes());
+        out.extend_from_slice(&path.rtt_ms.to_be_bytes());
     }
 
     fn request(
@@ -539,8 +541,32 @@ mod tests {
             232,
             u64::MAX,
             |out| {
-                push_path(out, 0, 0, 2, false, 11, 50_000_000, 1_000_000, 2_000);
-                push_path(out, 1, 0, 0, false, 300, 100, 100_000, 180);
+                push_path(
+                    out,
+                    TestPath {
+                        kind: 0,
+                        transport: 0,
+                        state: 2,
+                        metered: false,
+                        external_id: 11,
+                        bitrate: 50_000_000,
+                        loss_ppm: 1_000_000,
+                        rtt_ms: 2_000,
+                    },
+                );
+                push_path(
+                    out,
+                    TestPath {
+                        kind: 1,
+                        transport: 0,
+                        state: 0,
+                        metered: false,
+                        external_id: 300,
+                        bitrate: 100,
+                        loss_ppm: 100_000,
+                        rtt_ms: 180,
+                    },
+                );
             },
             2,
         );
@@ -573,7 +599,19 @@ mod tests {
             1_000_000,
             u64::MAX,
             |out| {
-                push_path(out, 0, 1, 0, true, 77, 5_000_000, 0, 50);
+                push_path(
+                    out,
+                    TestPath {
+                        kind: 0,
+                        transport: 1,
+                        state: 0,
+                        metered: true,
+                        external_id: 77,
+                        bitrate: 5_000_000,
+                        loss_ppm: 0,
+                        rtt_ms: 50,
+                    },
+                );
             },
             1,
         );
