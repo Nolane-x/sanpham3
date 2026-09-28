@@ -26,7 +26,7 @@ impl PlatformScanner for WindowsScanner {
                     interface: None,
                     transport: Transport::Other,
                     available: false,
-                    permission: PermissionState::Blocked,
+                    permission: PermissionState::Denied,
                     can_scan: false,
                     can_connect: false,
                     can_advertise: false,
