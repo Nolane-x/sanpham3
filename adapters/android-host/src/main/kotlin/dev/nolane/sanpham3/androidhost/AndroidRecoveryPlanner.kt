@@ -42,15 +42,55 @@ sealed interface AndroidRecoverySelectedPath {
     ) : AndroidRecoverySelectedPath
 }
 
-data class AndroidPeerEgressCandidate(
+data class AndroidPeerEgressCandidate private constructor(
     val peerNodeId: Long,
     val transport: AndroidTransport,
     val state: AndroidMeasuredLinkState,
     val estimatedBitrateBps: Long,
     val lossPpm: Int,
     val rttMillis: Long,
-    val metered: Boolean = false,
+    val metered: Boolean,
 ) {
+    companion object {
+        fun fromAuthenticatedSession(
+            session: AndroidPeerSession,
+            transport: AndroidTransport,
+            state: AndroidMeasuredLinkState,
+            estimatedBitrateBps: Long,
+            lossPpm: Int,
+            rttMillis: Long,
+            metered: Boolean = false,
+        ): AndroidPeerEgressCandidate =
+            AndroidPeerEgressCandidate(
+                peerNodeId = session.peerNodeId,
+                transport = transport,
+                state = state,
+                estimatedBitrateBps = estimatedBitrateBps,
+                lossPpm = lossPpm,
+                rttMillis = rttMillis,
+                metered = metered,
+            )
+
+        internal fun forTest(
+            peerNodeId: Long,
+            transport: AndroidTransport,
+            state: AndroidMeasuredLinkState,
+            estimatedBitrateBps: Long,
+            lossPpm: Int,
+            rttMillis: Long,
+            metered: Boolean = false,
+        ): AndroidPeerEgressCandidate =
+            AndroidPeerEgressCandidate(
+                peerNodeId = peerNodeId,
+                transport = transport,
+                state = state,
+                estimatedBitrateBps = estimatedBitrateBps,
+                lossPpm = lossPpm,
+                rttMillis = rttMillis,
+                metered = metered,
+            )
+    }
+
     init {
         require(peerNodeId >= 0)
         require(estimatedBitrateBps >= 0)
@@ -338,6 +378,7 @@ internal object AndroidRecoveryPlannerCodec {
             AndroidTransport.SATELLITE -> 6
             AndroidTransport.USB -> 7
             AndroidTransport.OTHER -> 8
+            AndroidTransport.WIFI_DIRECT -> 9
         }
 
     private fun stateCode(state: AndroidMeasuredLinkState): Int =
