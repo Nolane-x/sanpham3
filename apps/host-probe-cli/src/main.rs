@@ -60,9 +60,48 @@ fn run_windows() {
     print_capabilities(&capabilities);
 
     println!();
-    println!(
-        "recovery_probe: Windows per-interface active probing is the next adapter lane"
-    );
+    println!("recovery_probe:");
+
+    match windows_host::WindowsRecoveryProbe::new().run() {
+        Ok(snapshot) => {
+            for adapter in &snapshot.adapters {
+                println!(
+                    "PATH name={} transport={:?} available={} gateway={} ipv4_metric={} ipv6_metric={} tx_bps={} rx_bps={} unicast={:?} dns={:?}",
+                    adapter.name,
+                    adapter.transport,
+                    adapter.available,
+                    adapter.has_gateway,
+                    adapter.ipv4_metric,
+                    adapter.ipv6_metric,
+                    adapter.tx_bps,
+                    adapter.rx_bps,
+                    adapter.unicast,
+                    adapter.dns_servers,
+                );
+            }
+
+            for record in snapshot.ledger.records() {
+                println!(
+                    "PROBE id={} kind={:?} status={:?} detail={}",
+                    record.id,
+                    record.kind,
+                    record.status,
+                    record.detail.as_deref().unwrap_or("-"),
+                );
+            }
+
+            println!(
+                "SUMMARY pending={} information_path={} local_only={}",
+                snapshot.ledger.pending_count(),
+                snapshot.ledger.any_information_path(),
+                snapshot.ledger.can_declare_local_only(),
+            );
+        }
+        Err(error) => {
+            eprintln!("Windows recovery probe failed: {error}");
+            std::process::exit(2);
+        }
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
