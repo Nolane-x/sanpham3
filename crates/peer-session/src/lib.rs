@@ -361,6 +361,46 @@ impl SecureSession {
 
         Ok((kind, plaintext))
     }
+
+    pub fn send<W: Write>(
+        &mut self,
+        writer: &mut W,
+        kind: u8,
+        plaintext: &[u8],
+    ) -> Result<(), SessionError> {
+        let frame = self.seal(kind, plaintext)?;
+        writer.write_all(&frame)?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    pub fn receive<R: Read>(
+        &mut self,
+        reader: &mut R,
+    ) -> Result<(u8, Vec<u8>), SessionError> {
+        let mut header = [0_u8; FRAME_HEADER_LEN];
+        reader.read_exact(&mut header)?;
+
+        if header[0..4] != MAGIC {
+            return Err(SessionError::WrongMagic);
+        }
+        if header[4] != VERSION {
+            return Err(SessionError::WrongVersion(header[4]));
+        }
+
+        let ciphertext_len =
+            u16::from_be_bytes([header[14], header[15]]) as usize;
+        if ciphertext_len < AEAD_TAG_LEN {
+            return Err(SessionError::WrongLength);
+        }
+
+        let mut frame = Vec::with_capacity(FRAME_HEADER_LEN + ciphertext_len);
+        frame.extend_from_slice(&header);
+        frame.resize(FRAME_HEADER_LEN + ciphertext_len, 0);
+        reader.read_exact(&mut frame[FRAME_HEADER_LEN..])?;
+
+        self.open(&frame)
+    }
 }
 
 pub fn perform_client_handshake<S: Read + Write>(
@@ -697,6 +737,46 @@ mod tests {
                 got: 0
             })
         ));
+    }
+
+
+    #[test]
+    fn tcp_loopback_handshake_and_encrypted_exchange() {
+        use std::net::{TcpListener, TcpStream};
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let key = PeerKey::new([0x42; 32]);
+            let mut replay = NonceReplayCache::new(16);
+
+            let (client_id, mut session) =
+                perform_server_handshake(&mut stream, 200, &key, &mut replay)
+                    .unwrap();
+            assert_eq!(client_id, 100);
+
+            let (kind, payload) = session.receive(&mut stream).unwrap();
+            assert_eq!(kind, 7);
+            assert_eq!(payload, b"probe:tiny");
+
+            session.send(&mut stream, 8, b"result:ok").unwrap();
+        });
+
+        let mut stream = TcpStream::connect(address).unwrap();
+        let key = PeerKey::new([0x42; 32]);
+        let (server_id, mut session) =
+            perform_client_handshake(&mut stream, 100, &key).unwrap();
+        assert_eq!(server_id, 200);
+
+        session.send(&mut stream, 7, b"probe:tiny").unwrap();
+        let (kind, payload) = session.receive(&mut stream).unwrap();
+        assert_eq!(kind, 8);
+        assert_eq!(payload, b"result:ok");
+
+        server.join().unwrap();
     }
 
     #[test]
