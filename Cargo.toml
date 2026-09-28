@@ -2,6 +2,7 @@
 members = [
     "crates/connectivity-core",
     "crates/peer-lan",
+    "crates/peer-session",
     "adapters/linux-host",
     "apps/scavenger-cli",
     "apps/host-probe-cli",
