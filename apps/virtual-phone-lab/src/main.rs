@@ -437,9 +437,34 @@ fn acoustic_synthetic() -> Result<(), String> {
 
     let clean = signal_frontier::encode_fsk(&bits, config)
         .map_err(|error| format!("{error:?}"))?;
-    let impaired = signal_frontier::apply_acoustic_channel(
+    let multipath = signal_frontier::apply_acoustic_impulse_response(
         &clean,
-        signal_frontier::AcousticChannel::mild_room(),
+        &[
+            signal_frontier::AcousticImpulseTap {
+                delay_samples: 0,
+                gain: 0.72,
+            },
+            signal_frontier::AcousticImpulseTap {
+                delay_samples: 7,
+                gain: 0.16,
+            },
+            signal_frontier::AcousticImpulseTap {
+                delay_samples: 19,
+                gain: -0.07,
+            },
+        ],
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let drifted =
+        signal_frontier::apply_clock_drift_resampling(&multipath, 80)
+            .map_err(|error| format!("{error:?}"))?;
+    let impaired = signal_frontier::apply_acoustic_channel(
+        &drifted,
+        signal_frontier::AcousticChannel {
+            gain: 0.90,
+            white_noise_amplitude: 0.025,
+            clip_level: 0.95,
+        },
         42,
     )
     .map_err(|error| format!("{error:?}"))?;
@@ -449,7 +474,7 @@ fn acoustic_synthetic() -> Result<(), String> {
     let errors = signal_frontier::bit_error_count(&bits, &decoded.bits);
 
     println!(
-        "ACOUSTIC_SYNTHETIC bits={} samples={} errors={} min_confidence={:.4}",
+        "ACOUSTIC_SYNTHETIC bits={} samples={} errors={} min_confidence={:.4} multipath=true drift_ppm=80",
         bits.len(),
         impaired.len(),
         errors,
