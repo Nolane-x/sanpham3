@@ -510,7 +510,9 @@ mod tests {
         const NFC_SHORT_PAYLOAD_BUDGET: usize = 240;
         const G8_CHALLENGE_BYTES: usize = 36;
 
-        assert!(HANDSHAKE_LEN <= NFC_SHORT_PAYLOAD_BUDGET);
+        const {
+            assert!(HANDSHAKE_LEN <= NFC_SHORT_PAYLOAD_BUDGET);
+        }
 
         let mut client_bridge = BridgeState::default();
         let mut server_bridge = BridgeState::default();
