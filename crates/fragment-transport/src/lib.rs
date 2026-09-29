@@ -560,16 +560,6 @@ impl RatelessDecoder {
         let envelope = RatelessSymbolEnvelope::open(wire, key)?;
         let wire_digest = sha256(wire);
 
-        if let Some(existing) = self.seen_symbols.get(&envelope.symbol_id) {
-            return if existing == &wire_digest {
-                Ok(RatelessAcceptOutcome::DuplicateSymbol {
-                    rank: self.rank(),
-                })
-            } else {
-                Err(FragmentError::ConflictingRatelessSymbol)
-            };
-        }
-
         if envelope.total_len > self.max_total_len {
             return Err(FragmentError::ResourceLimit);
         }
@@ -588,9 +578,17 @@ impl RatelessDecoder {
             Some(_) => return Err(FragmentError::TransferMismatch),
         }
 
-        self.seen_symbols
-            .insert(envelope.symbol_id, wire_digest);
+        if let Some(existing) = self.seen_symbols.get(&envelope.symbol_id) {
+            return if existing == &wire_digest {
+                Ok(RatelessAcceptOutcome::DuplicateSymbol {
+                    rank: self.rank(),
+                })
+            } else {
+                Err(FragmentError::ConflictingRatelessSymbol)
+            };
+        }
 
+        let symbol_id = envelope.symbol_id;
         let mut row = RatelessRow {
             coefficients: rateless_coefficients(
                 envelope.transfer_id,
@@ -617,12 +615,14 @@ impl RatelessDecoder {
             if row.payload.iter().any(|&byte| byte != 0) {
                 return Err(FragmentError::InconsistentRatelessEquation);
             }
+            self.seen_symbols.insert(symbol_id, wire_digest);
             return Ok(RatelessAcceptOutcome::Dependent {
                 rank: self.rank(),
             });
         };
 
         self.rows.insert(pivot, row);
+        self.seen_symbols.insert(symbol_id, wire_digest);
         Ok(RatelessAcceptOutcome::Innovative {
             rank: self.rank(),
         })
