@@ -75,8 +75,8 @@ Near-ultrasonic:
 - [x] deterministic room/noise impairment
 - [x] correlation decoder
 - [x] BER check
-- [ ] multipath impulse-response convolution
-- [ ] clock drift/resampling
+- [x] multipath impulse-response convolution
+- [x] clock drift/resampling
 - [ ] AGC/nonlinear filtering
 - [ ] real recorded impulse-response replay
 
@@ -114,8 +114,8 @@ Future:
 - [x] single-loss XOR erasure stripe baseline
 - [ ] fountain/rateless coding
 - [ ] source/provenance merge
-- [ ] deadline/freshness-aware fragment scheduler
-- [ ] correlated-failure model
+- [x] deadline/freshness-aware fragment scheduler baseline
+- [x] correlated-failure model baseline
 - [ ] energy-per-useful-bit objective
 
 ## F5 — Android AVD twin lab
@@ -230,12 +230,12 @@ Implemented baseline:
 
 Future work:
 
-- [ ] local search index
-- [ ] multi-source conflict/reconciliation
-- [ ] signed source receipts
-- [ ] persistent cache store and eviction policy
-- [ ] source-specific validity rules
-- [ ] automatic transition from local-only to fresh remote when a carrier returns
+- [x] local search index
+- [x] multi-source conflict/reconciliation baseline
+- [x] signed source receipts
+- [x] persistent cache store and eviction policy baseline
+- [x] source-specific validity rules
+- [x] automatic transition from local-only to fresh remote when a carrier returns
 
 
 ### F4 authenticated fragment baseline
@@ -285,3 +285,77 @@ URT wire and decodes it back to the original logical payload.
 This closes only a systematic single-erasure baseline. It does **not** close
 fountain/rateless coding, correlated-loss resilience, provenance merge,
 deadline/freshness scheduling, or energy optimization.
+
+
+### F3 acoustic impairment reconciliation
+
+The near-ultrasonic synthetic court now includes deterministic causal
+impulse-response convolution and sampling-clock drift/resampling before the
+existing gain/noise/clipping stage.
+
+The reference court still requires zero BER for its fixture after:
+
+```text
+FSK
+-> multipath
+-> clock drift
+-> gain/noise/clipping
+-> correlation decode
+```
+
+This closes only the synthetic multipath and clock-drift baselines. AGC,
+device/OEM nonlinear filtering and recorded real-room impulse-response replay
+remain open.
+
+Evidence: `docs/F3-ACOUSTIC-MULTIPATH-CLOCK-DRIFT.md`.
+
+### F4 scheduler and correlated-failure reconciliation
+
+The authenticated fragment layer now has a deterministic
+deadline/freshness-aware scheduler that advances time as wire bytes are
+assigned, refuses to start a fragment that would finish after freshness
+expiry, and preserves partial progress across later contacts.
+
+Carrier redundancy planning also models primary physical failure domains, so
+multiple APIs sharing one radio are not counted as independent paths. In
+particular BLE GATT/L2CAP/RFCOMM share the Bluetooth domain, while Wi-Fi
+Direct/Aware/Local-Only Hotspot share the Wi-Fi domain.
+
+These are software baselines only. Fountain/rateless coding,
+source/provenance merge and energy-per-useful-bit optimization remain open.
+
+Evidence:
+
+- `docs/F4-DEADLINE-SCHEDULER.md`
+- `docs/F4-CORRELATED-FAILURE-MODEL.md`
+
+### F8 continuity software closure
+
+The F8 software future list now has implemented baselines for all recorded
+items while preserving the invariant that zero-carrier operation is not
+Internet access.
+
+Implemented:
+
+- bounded versioned persistent snapshots with deterministic eviction;
+- source-defined validity horizons enforced in cache admission;
+- Ed25519 signed source receipts with persisted verifying keys/signatures and
+  backward-compatible unsigned snapshot loading;
+- exact multi-source quorum/conflict reconciliation with one source ID equal
+  to at most one vote;
+- a live-return state machine that labels actual live observations
+  `FreshRemote`, refreshes the cache, and labels later offline use
+  `CachedRemote`;
+- a local inverted search index whose query-time results are revalidated
+  against current digest, age, source validity and optional signatures.
+
+This does not change F0: cached, reconciled, searched or locally transformed
+data never becomes fresh remote truth without an actual information carrier.
+
+Evidence:
+
+- `docs/F8-PERSISTENT-CONTINUITY-STORE.md`
+- `docs/F8-SIGNED-SOURCE-RECEIPTS.md`
+- `docs/F8-MULTISOURCE-RECONCILIATION.md`
+- `docs/F8-LIVE-RETURN-TRANSITION.md`
+- `docs/F8-LOCAL-SEARCH-INDEX.md`
