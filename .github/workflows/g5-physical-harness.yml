@@ -1,0 +1,42 @@
+name: g5-physical-harness
+
+on:
+  push:
+    paths:
+      - "scripts/g5-physical-role.sh"
+      - "scripts/g5-physical-role.ps1"
+      - "docs/G5-PHYSICAL-MULTIHOP-COURT.md"
+      - ".github/workflows/g5-physical-harness.yml"
+  pull_request:
+    paths:
+      - "scripts/g5-physical-role.sh"
+      - "scripts/g5-physical-role.ps1"
+      - "docs/G5-PHYSICAL-MULTIHOP-COURT.md"
+      - ".github/workflows/g5-physical-harness.yml"
+
+jobs:
+  linux-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Parse Linux harness
+        run: bash -n scripts/g5-physical-role.sh
+
+  powershell-syntax:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Parse PowerShell harness
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "scripts/g5-physical-role.ps1"),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
