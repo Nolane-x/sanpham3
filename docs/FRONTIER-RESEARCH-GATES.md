@@ -113,7 +113,7 @@ Future:
 - [x] authenticated fragment envelope
 - [x] single-loss XOR erasure stripe baseline
 - [ ] fountain/rateless coding
-- [ ] source/provenance merge
+- [x] source/provenance merge baseline
 - [x] deadline/freshness-aware fragment scheduler baseline
 - [x] correlated-failure model baseline
 - [ ] energy-per-useful-bit objective
@@ -182,7 +182,7 @@ Priority order:
    - [x] physical court authored
    - [ ] two-device physical interoperability
    - [ ] measured startup/join/G8 latency, useful bits/s, concurrent-Internet behavior and energy
-5. [ ] near-ultrasonic request capsule prototype
+5. [x] near-ultrasonic authenticated request capsule software prototype
 6. [ ] screen-camera optical capsule prototype
 7. [ ] SMS gateway capsule prototype
 8. [ ] vibration tiny-capsule prototype
@@ -359,3 +359,35 @@ Evidence:
 - `docs/F8-MULTISOURCE-RECONCILIATION.md`
 - `docs/F8-LIVE-RETURN-TRANSITION.md`
 - `docs/F8-LOCAL-SEARCH-INDEX.md`
+
+
+### F4 fragment provenance reconciliation
+
+The authenticated fragment path now preserves caller-supplied source/carrier
+provenance while assembling exact ranges from multiple contacts.
+
+Different source IDs and carrier labels may contribute to one transfer only
+while the transfer ID, total length and whole-object SHA-256 remain identical.
+An exact duplicate observed through another source is still idempotent for data
+bytes but enriches the provenance summary.
+
+The current baseline does not cryptographically sign the provenance labels
+themselves.
+
+Evidence: `docs/F4-FRAGMENT-PROVENANCE-MERGE.md`.
+
+### F6 near-ultrasonic request capsule software prototype
+
+The synthetic near-ultrasonic path now carries a useful constrained
+`peer-egress::ResolveRequest` inside the authenticated SP3A capsule.
+
+SP3A supplies sender ID, 64-bit sequence, bounded payload, HMAC-SHA256/128
+integrity and a bounded replay window. The software court passes the complete
+capsule through FSK, multipath, clock drift and noise, reconstructs the exact
+request, and rejects a repeated capsule.
+
+This closes only the software/synthetic prototype item. Physical setup time,
+useful bits/s, range, energy, real microphone/speaker filtering and two-device
+interoperability remain measurement requirements.
+
+Evidence: `docs/F6-ACOUSTIC-REQUEST-CAPSULE.md`.
