@@ -12,11 +12,11 @@ Two physical Android devices:
 - Bluetooth enabled;
 - app granted the Bluetooth permissions required by the OS version.
 
-The feature scanner must report:
+Before attempting the court, the feature scanner should report:
 
 ```text
 bluetoothLeHardware = true
-bluetoothLeL2capCocAvailable = true
+bluetoothLeL2capCocApiSupported = true
 bluetoothScanPermission = true
 bluetoothAdvertisePermission = true
 bluetoothConnectPermission = true
