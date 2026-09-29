@@ -1,0 +1,9 @@
+[package]
+name = "fragment-transport"
+version = "0.1.0"
+edition = "2021"
+description = "Authenticated exact fragment envelopes for intermittent sanpham3 contacts"
+
+[dependencies]
+hmac = "0.13"
+sha2 = "0.11"

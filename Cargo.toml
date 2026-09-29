@@ -11,6 +11,7 @@ members = [
     "crates/signal-frontier",
     "crates/zero-carrier-continuity",
     "crates/urt-core",
+    "crates/fragment-transport",
     "adapters/linux-host",
     "adapters/android-peer-session-jni",
     "adapters/windows-host",
@@ -24,5 +25,6 @@ members = [
     "apps/weak-link-court-cli",
     "apps/virtual-phone-lab",
     "apps/urt-lab-cli",
+    "apps/fragment-court-cli",
 ]
 resolver = "2"

@@ -1,0 +1,7 @@
+[package]
+name = "fragment-court-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fragment-transport = { path = "../../crates/fragment-transport" }

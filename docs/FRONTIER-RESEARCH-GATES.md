@@ -109,8 +109,8 @@ Required:
 
 Future:
 
-- [ ] fragment IDs/ranges
-- [ ] authenticated fragment envelope
+- [x] fragment IDs/ranges
+- [x] authenticated fragment envelope
 - [ ] erasure/fountain coding
 - [ ] source/provenance merge
 - [ ] deadline/freshness-aware fragment scheduler
@@ -235,3 +235,26 @@ Future work:
 - [ ] persistent cache store and eviction policy
 - [ ] source-specific validity rules
 - [ ] automatic transition from local-only to fresh remote when a carrier returns
+
+
+### F4 authenticated fragment baseline
+
+The closed baseline uses `fragment-transport`:
+
+- deterministic transfer ID derived from the whole-object SHA-256;
+- explicit byte offset and total length on every fragment;
+- full whole-object SHA-256 carried in every envelope;
+- HMAC-SHA256 authentication truncated to a 128-bit wire tag;
+- bounded wire-budget fragmentation;
+- out-of-order assembly;
+- idempotent exact duplicates;
+- conflicting duplicates and overlapping ranges rejected;
+- missing byte ranges reported explicitly;
+- final reconstruction accepted only if the whole-object SHA-256 matches.
+
+The software court deliberately reverses fragment order and injects a duplicate
+before requiring exact reconstruction.
+
+This closes authenticated fragment identity/range mechanics only. It does not
+close fountain/erasure coding, provenance merge, deadline scheduling, correlated
+failure or energy optimization.
