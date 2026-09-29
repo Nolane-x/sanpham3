@@ -1,6 +1,6 @@
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -391,6 +391,105 @@ pub fn fragment_for_wire_budget(
     Ok(wires)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FragmentProvenance {
+    pub source_id: String,
+    pub carrier: String,
+    pub observed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvenanceSummary {
+    pub unique_sources: Vec<String>,
+    pub unique_carriers: Vec<String>,
+    pub first_observed_at_ms: u64,
+    pub last_observed_at_ms: u64,
+    pub fragments_tracked: usize,
+    pub fragment_offsets_with_multiple_sources: usize,
+}
+
+pub struct ProvenanceAssembler {
+    inner: FragmentAssembler,
+    provenance_by_offset: BTreeMap<u64, BTreeSet<FragmentProvenance>>,
+}
+
+impl ProvenanceAssembler {
+    pub fn new(max_total_len: u64) -> Self {
+        Self {
+            inner: FragmentAssembler::new(max_total_len),
+            provenance_by_offset: BTreeMap::new(),
+        }
+    }
+
+    pub fn accept_wire_from(
+        &mut self,
+        wire: &[u8],
+        key: &FragmentKey,
+        provenance: FragmentProvenance,
+    ) -> Result<AcceptOutcome, FragmentError> {
+        validate_provenance(&provenance)?;
+        let envelope = FragmentEnvelope::open(wire, key)?;
+        let offset = envelope.offset;
+        let outcome = self.inner.accept(envelope)?;
+
+        self.provenance_by_offset
+            .entry(offset)
+            .or_default()
+            .insert(provenance);
+
+        Ok(outcome)
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.inner.is_complete()
+    }
+
+    pub fn reconstruct_with_summary(
+        &self,
+    ) -> Result<(Vec<u8>, ProvenanceSummary), FragmentError> {
+        let bytes = self.inner.reconstruct()?;
+        if self.provenance_by_offset.is_empty() {
+            return Err(FragmentError::InvalidProvenance);
+        }
+
+        let mut sources = BTreeSet::new();
+        let mut carriers = BTreeSet::new();
+        let mut first_observed = u64::MAX;
+        let mut last_observed = 0_u64;
+        let mut multi_source_offsets = 0_usize;
+
+        for provenances in self.provenance_by_offset.values() {
+            let mut offset_sources = BTreeSet::new();
+
+            for provenance in provenances {
+                sources.insert(provenance.source_id.clone());
+                carriers.insert(provenance.carrier.clone());
+                offset_sources.insert(provenance.source_id.clone());
+                first_observed =
+                    first_observed.min(provenance.observed_at_ms);
+                last_observed =
+                    last_observed.max(provenance.observed_at_ms);
+            }
+
+            if offset_sources.len() > 1 {
+                multi_source_offsets += 1;
+            }
+        }
+
+        Ok((
+            bytes,
+            ProvenanceSummary {
+                unique_sources: sources.into_iter().collect(),
+                unique_carriers: carriers.into_iter().collect(),
+                first_observed_at_ms: first_observed,
+                last_observed_at_ms: last_observed,
+                fragments_tracked: self.provenance_by_offset.len(),
+                fragment_offsets_with_multiple_sources: multi_source_offsets,
+            },
+        ))
+    }
+}
+
 pub struct FragmentAssembler {
     max_total_len: u64,
     descriptor: Option<TransferDescriptor>,
@@ -664,6 +763,7 @@ pub enum FragmentError {
     TrailingBytes,
     InvalidStripeWidth,
     InvalidParity,
+    InvalidProvenance,
 }
 
 impl fmt::Display for FragmentError {
@@ -703,6 +803,9 @@ impl fmt::Display for FragmentError {
             Self::TrailingBytes => write!(f, "fragment envelope contains trailing bytes"),
             Self::InvalidStripeWidth => write!(f, "erasure stripe width is invalid"),
             Self::InvalidParity => write!(f, "erasure parity metadata is invalid"),
+            Self::InvalidProvenance => {
+                write!(f, "fragment provenance metadata is invalid")
+            }
         }
     }
 }
@@ -711,6 +814,17 @@ impl std::error::Error for FragmentError {}
 
 pub fn sha256(bytes: &[u8]) -> Digest32 {
     Sha256::digest(bytes).into()
+}
+
+fn validate_provenance(
+    provenance: &FragmentProvenance,
+) -> Result<(), FragmentError> {
+    if provenance.source_id.trim().is_empty()
+        || provenance.carrier.trim().is_empty()
+    {
+        return Err(FragmentError::InvalidProvenance);
+    }
+    Ok(())
 }
 
 fn validate_envelope(envelope: &FragmentEnvelope) -> Result<(), FragmentError> {
@@ -1048,6 +1162,126 @@ mod tests {
                 .recover_with_parity_wire(&transfer.parity_wires[0], &key)
                 .unwrap_err(),
             FragmentError::AuthenticationFailed,
+        );
+    }
+
+    #[test]
+    fn provenance_assembler_merges_fragments_from_multiple_sources() {
+        let input = (0..8 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let key = key();
+        let wires = fragment_for_wire_budget(&input, 220, &key).unwrap();
+
+        let mut assembler = ProvenanceAssembler::new(16 * 1024);
+        for (index, wire) in wires.iter().enumerate() {
+            let (source_id, carrier) = match index % 3 {
+                0 => ("peer-a", "ble-gatt"),
+                1 => ("peer-b", "wifi-direct"),
+                _ => ("peer-c", "acoustic"),
+            };
+            assembler
+                .accept_wire_from(
+                    wire,
+                    &key,
+                    FragmentProvenance {
+                        source_id: source_id.to_owned(),
+                        carrier: carrier.to_owned(),
+                        observed_at_ms: 1_000 + index as u64,
+                    },
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            assembler
+                .accept_wire_from(
+                    &wires[0],
+                    &key,
+                    FragmentProvenance {
+                        source_id: "peer-d".to_owned(),
+                        carrier: "nfc".to_owned(),
+                        observed_at_ms: 9_999,
+                    },
+                )
+                .unwrap(),
+            AcceptOutcome::Duplicate,
+        );
+
+        let (output, summary) = assembler.reconstruct_with_summary().unwrap();
+        assert_eq!(output, input);
+        assert_eq!(
+            summary.unique_sources,
+            vec![
+                "peer-a".to_owned(),
+                "peer-b".to_owned(),
+                "peer-c".to_owned(),
+                "peer-d".to_owned(),
+            ],
+        );
+        assert!(summary.unique_carriers.contains(&"acoustic".to_owned()));
+        assert!(summary.unique_carriers.contains(&"nfc".to_owned()));
+        assert_eq!(summary.fragment_offsets_with_multiple_sources, 1);
+        assert_eq!(summary.fragments_tracked, wires.len());
+    }
+
+    #[test]
+    fn provenance_does_not_merge_mismatched_transfers() {
+        let key = key();
+        let first =
+            fragment_for_wire_budget(b"first transfer", 220, &key).unwrap();
+        let second =
+            fragment_for_wire_budget(b"second transfer", 220, &key).unwrap();
+
+        let mut assembler = ProvenanceAssembler::new(1_024);
+        assembler
+            .accept_wire_from(
+                &first[0],
+                &key,
+                FragmentProvenance {
+                    source_id: "peer-a".to_owned(),
+                    carrier: "ble".to_owned(),
+                    observed_at_ms: 1,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            assembler
+                .accept_wire_from(
+                    &second[0],
+                    &key,
+                    FragmentProvenance {
+                        source_id: "peer-b".to_owned(),
+                        carrier: "wifi".to_owned(),
+                        observed_at_ms: 2,
+                    },
+                )
+                .unwrap_err(),
+            FragmentError::TransferMismatch,
+        );
+    }
+
+    #[test]
+    fn provenance_requires_nonempty_source_and_carrier() {
+        let key = key();
+        let wire =
+            fragment_for_wire_budget(b"payload", 220, &key).unwrap();
+        let mut assembler = ProvenanceAssembler::new(1_024);
+
+        assert_eq!(
+            assembler
+                .accept_wire_from(
+                    &wire[0],
+                    &key,
+                    FragmentProvenance {
+                        source_id: String::new(),
+                        carrier: "ble".to_owned(),
+                        observed_at_ms: 1,
+                    },
+                )
+                .unwrap_err(),
+            FragmentError::InvalidProvenance,
         );
     }
 
