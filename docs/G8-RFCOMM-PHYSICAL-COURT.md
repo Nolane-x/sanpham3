@@ -48,15 +48,35 @@ val evidence = AndroidG8PairCourt.serveOnce(session)
 
 ## Client discovery
 
+Try already bonded/known peers first:
+
 ```kotlin
 val discovery = AndroidBluetoothClassicDiscovery(context)
+val knownPeers = discovery.bondedPeers()
+```
 
+For unknown nearby peers, start Classic discovery:
+
+```kotlin
 discovery.start { event ->
     if (event is AndroidBluetoothClassicEvent.PeerDiscovered) {
         // event.peer is only a route candidate.
     }
 }
 ```
+
+A server that must be discoverable to unknown peers requires normal Android
+user approval. The app can launch:
+
+```kotlin
+startActivity(
+    AndroidBluetoothClassicDiscovery.requestDiscoverableIntent(
+        durationSeconds = 120,
+    ),
+)
+```
+
+Do not silently claim that an arbitrary hidden Classic device is discoverable.
 
 The discovery layer intentionally does not claim that every discovered Classic
 Bluetooth device runs sanpham3. Service discovery/connect decides whether the
