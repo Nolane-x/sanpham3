@@ -9,7 +9,7 @@ running AVDs.
 ## Command
 
 ```bash
-scripts/virtual-phone-avd-scenarios.sh \
+bash scripts/virtual-phone-avd-scenarios.sh \
   emulator-5554 \
   emulator-5556 \
   <android.package.name> \
