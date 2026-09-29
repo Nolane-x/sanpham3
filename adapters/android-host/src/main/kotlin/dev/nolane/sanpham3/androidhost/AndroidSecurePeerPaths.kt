@@ -74,3 +74,26 @@ fun AndroidBleL2capClientDataPath.connectPeerSession(
         peerKey = peerKey,
     )
 }
+
+
+fun AndroidLocalHotspotServerDataPath.acceptPeerSession(
+    timeoutMillis: Int,
+    nodeId: Long,
+    peerKey: ByteArray,
+): AndroidPeerSession =
+    AndroidPeerSession.server(
+        socket = accept(timeoutMillis),
+        nodeId = nodeId,
+        peerKey = peerKey,
+    )
+
+fun AndroidLocalHotspotClientDataPath.connectPeerSession(
+    timeoutMillis: Int,
+    nodeId: Long,
+    peerKey: ByteArray,
+): AndroidPeerSession =
+    AndroidPeerSession.client(
+        socket = connect(timeoutMillis),
+        nodeId = nodeId,
+        peerKey = peerKey,
+    )
