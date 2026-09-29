@@ -1,5 +1,6 @@
 package dev.nolane.sanpham3.androidhost
 
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
@@ -18,6 +19,7 @@ data class AndroidBlePeer(
     val addressHint: String,
     val rssi: Int,
     val serviceData: ByteArray,
+    internal val device: BluetoothDevice? = null,
 )
 
 sealed interface AndroidBleEvent {
@@ -84,12 +86,20 @@ class AndroidBleDiscovery(
                 ?.copyOf()
                 ?: return
 
+            val device = result.device
+            val addressHint = try {
+                device.address.orEmpty()
+            } catch (_: SecurityException) {
+                ""
+            }
+
             listener?.invoke(
                 AndroidBleEvent.PeerDiscovered(
                     AndroidBlePeer(
-                        addressHint = result.device.address.orEmpty(),
+                        addressHint = addressHint,
                         rssi = result.rssi,
                         serviceData = payload,
+                        device = device,
                     ),
                 ),
             )
