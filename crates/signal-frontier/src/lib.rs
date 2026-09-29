@@ -26,7 +26,7 @@ impl AcousticFskConfig {
                 "sample and bit rates must be non-zero",
             ));
         }
-        if self.sample_rate_hz % self.bit_rate_bps != 0 {
+        if !self.sample_rate_hz.is_multiple_of(self.bit_rate_bps) {
             return Err(SignalError::InvalidConfig(
                 "sample_rate_hz must be divisible by bit_rate_bps",
             ));
@@ -161,7 +161,7 @@ pub fn decode_fsk(
     config: AcousticFskConfig,
 ) -> Result<DecodeResult, SignalError> {
     let samples_per_bit = config.samples_per_bit()?;
-    if samples.len() % samples_per_bit != 0 {
+    if !samples.len().is_multiple_of(samples_per_bit) {
         return Err(SignalError::MisalignedSamples);
     }
 
