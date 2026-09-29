@@ -1,6 +1,7 @@
 use fragment_transport::{
-    fragment_with_xor_parity, sha256, AcceptOutcome, FragmentAssembler,
-    FragmentKey, ParityRecoveryOutcome,
+    fragment_for_wire_budget, fragment_with_xor_parity, sha256, AcceptOutcome,
+    FragmentAssembler, FragmentKey, FragmentProvenance, ParityRecoveryOutcome,
+    ProvenanceAssembler,
 };
 use std::collections::HashMap;
 use urt_core::{decode_exact, encode_exact, DecodeBudget, Digest32};
@@ -108,5 +109,69 @@ fn main() {
         duplicates,
         urt.report.strategy,
         &sha256(&output)[..8],
+    );
+
+    // Independent provenance court: fragments for the same exact URT object
+    // arrive through multiple source/carrier identities. An exact duplicate
+    // is observed through a fourth source and must enrich provenance without
+    // changing the reconstructed bytes.
+    let provenance_wires =
+        fragment_for_wire_budget(&urt_wire, 240, &key)
+            .expect("provenance fragments");
+    let mut provenance_assembler =
+        ProvenanceAssembler::new(4 * 1024 * 1024);
+
+    for (index, wire) in provenance_wires.iter().enumerate().rev() {
+        let (source_id, carrier) = match index % 3 {
+            0 => ("peer-a", "ble-gatt"),
+            1 => ("peer-b", "wifi-direct"),
+            _ => ("peer-c", "acoustic"),
+        };
+        provenance_assembler
+            .accept_wire_from(
+                wire,
+                &key,
+                FragmentProvenance {
+                    source_id: source_id.to_owned(),
+                    carrier: carrier.to_owned(),
+                    observed_at_ms: 50_000 + index as u64,
+                },
+            )
+            .expect("provenanced fragment");
+    }
+
+    assert_eq!(
+        provenance_assembler
+            .accept_wire_from(
+                &provenance_wires[0],
+                &key,
+                FragmentProvenance {
+                    source_id: "peer-d".to_owned(),
+                    carrier: "nfc".to_owned(),
+                    observed_at_ms: 99_000,
+                },
+            )
+            .expect("duplicate provenance"),
+        AcceptOutcome::Duplicate,
+    );
+
+    let (provenance_output, summary) = provenance_assembler
+        .reconstruct_with_summary()
+        .expect("provenance reconstruction");
+    assert_eq!(provenance_output, urt_wire);
+    assert_eq!(summary.unique_sources.len(), 4);
+    assert_eq!(summary.fragment_offsets_with_multiple_sources, 1);
+    assert!(summary.unique_carriers.contains(&"acoustic".to_owned()));
+    assert!(summary.unique_carriers.contains(&"nfc".to_owned()));
+
+    println!(
+        "F4_PROVENANCE_PASS urt_bytes={} fragments={} unique_sources={} unique_carriers={} multi_source_offsets={} first_observed_ms={} last_observed_ms={}",
+        urt_wire.len(),
+        summary.fragments_tracked,
+        summary.unique_sources.len(),
+        summary.unique_carriers.len(),
+        summary.fragment_offsets_with_multiple_sources,
+        summary.first_observed_at_ms,
+        summary.last_observed_at_ms,
     );
 }
