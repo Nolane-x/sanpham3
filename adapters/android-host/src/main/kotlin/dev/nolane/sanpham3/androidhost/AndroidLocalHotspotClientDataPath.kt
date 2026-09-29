@@ -6,6 +6,7 @@ import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import java.io.Closeable
@@ -36,12 +37,17 @@ sealed interface AndroidLocalHotspotClientEvent {
 class AndroidLocalHotspotClientDataPath(
     context: Context,
 ) : Closeable {
+    private val appContext = context.applicationContext
     private val connectivityManager =
-        context.applicationContext.getSystemService(
+        appContext.getSystemService(
             ConnectivityManager::class.java,
         )
+    private val wifiManager =
+        appContext.getSystemService(WifiManager::class.java)
     private val started = AtomicBoolean(false)
     private var callback: ConnectivityManager.NetworkCallback? = null
+    private var failureListener:
+        WifiManager.LocalOnlyConnectionFailureListener? = null
 
     @Volatile
     private var route: AndroidLocalHotspotClientRoute? = null
@@ -75,10 +81,34 @@ class AndroidLocalHotspotClientDataPath(
             }
         }
 
+        val specifier = specifierBuilder.build()
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .setNetworkSpecifier(specifierBuilder.build())
+            .setNetworkSpecifier(specifier)
             .build()
+
+        if (Build.VERSION.SDK_INT >= 34) {
+            val listener =
+                object : WifiManager.LocalOnlyConnectionFailureListener {
+                    override fun onConnectionFailed(
+                        wifiNetworkSpecifier: WifiNetworkSpecifier,
+                        failureReason: Int,
+                    ) {
+                        if (wifiNetworkSpecifier != specifier) return
+                        onEvent(
+                            AndroidLocalHotspotClientEvent.Unavailable(
+                                "Local-only Wi-Fi failure: " +
+                                    describeLocalOnlyFailure(failureReason),
+                            ),
+                        )
+                    }
+                }
+            failureListener = listener
+            wifiManager?.addLocalOnlyConnectionFailureListener(
+                appContext.mainExecutor,
+                listener,
+            )
+        }
 
         val networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
@@ -161,6 +191,18 @@ class AndroidLocalHotspotClientDataPath(
             }
         }
         callback = null
+
+        if (Build.VERSION.SDK_INT >= 34) {
+            failureListener?.let { listener ->
+                try {
+                    wifiManager?.removeLocalOnlyConnectionFailureListener(
+                        listener,
+                    )
+                } catch (_: IllegalArgumentException) {
+                }
+            }
+        }
+        failureListener = null
         route = null
     }
 
@@ -197,3 +239,20 @@ class AndroidLocalHotspotClientDataPath(
             .firstOrNull()
     }
 }
+
+internal fun describeLocalOnlyFailure(reason: Int): String =
+    when (reason) {
+        WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_ASSOCIATION ->
+            "association"
+        WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_AUTHENTICATION ->
+            "authentication"
+        WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_IP_PROVISIONING ->
+            "ip-provisioning"
+        WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_NOT_FOUND ->
+            "not-found"
+        WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_NO_RESPONSE ->
+            "no-response"
+        WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_USER_REJECT ->
+            "user-reject"
+        else -> "unknown($reason)"
+    }
