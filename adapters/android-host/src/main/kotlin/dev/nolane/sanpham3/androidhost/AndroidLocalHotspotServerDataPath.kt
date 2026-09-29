@@ -161,10 +161,14 @@ private fun WifiManager.LocalOnlyHotspotReservation.toEndpoint(
         }
         val passphrase = config.passphrase
         val security = when (config.securityType) {
-            SoftApConfiguration.SECURITY_TYPE_OPEN,
+            SoftApConfiguration.SECURITY_TYPE_OPEN ->
+                AndroidLocalHotspotSecurity.OPEN
+
             SoftApConfiguration.SECURITY_TYPE_WPA3_OWE,
             SoftApConfiguration.SECURITY_TYPE_WPA3_OWE_TRANSITION ->
-                AndroidLocalHotspotSecurity.OPEN
+                error(
+                    "OWE Local-Only Hotspot bootstrap is not implemented yet",
+                )
 
             SoftApConfiguration.SECURITY_TYPE_WPA2_PSK,
             SoftApConfiguration.SECURITY_TYPE_WPA3_SAE_TRANSITION ->
