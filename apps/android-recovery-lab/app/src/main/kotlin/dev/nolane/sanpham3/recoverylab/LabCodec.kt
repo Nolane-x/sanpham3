@@ -25,7 +25,7 @@ object LabCodec {
 
     fun parseHex(value: String): ByteArray {
         val normalized = value.filterNot(Char::isWhitespace)
-        require(normalized.length.isEven()) {
+        require(normalized.length % 2 == 0) {
             "hex input must contain an even number of characters"
         }
         return ByteArray(normalized.length / 2) { index ->
