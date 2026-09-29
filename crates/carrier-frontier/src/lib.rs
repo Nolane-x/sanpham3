@@ -361,6 +361,130 @@ impl InformationTask {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContactWindow {
+    pub carrier: CarrierProfile,
+    pub duration: Duration,
+    pub peer_has_internet_egress: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScavengeStep {
+    pub carrier: CarrierKind,
+    pub window: Duration,
+    pub delivered_bits: u64,
+    pub cumulative_bits: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScavengeOutcome {
+    pub feasible: bool,
+    pub completed_at: Option<Duration>,
+    pub delivered_bits: u64,
+    pub required_bits: u64,
+    pub freshness: Option<InformationFreshness>,
+    pub steps: Vec<ScavengeStep>,
+    pub reason: &'static str,
+}
+
+/// Models app-layer fragment accumulation across intermittent contacts.
+///
+/// This is intentionally not transparent TCP striping. Each window simply
+/// contributes authenticated application fragments to the same task until the
+/// minimum information product is complete.
+pub fn scavenge_across_contacts(
+    device: &DeviceCapabilities,
+    task: &InformationTask,
+    windows: &[ContactWindow],
+) -> ScavengeOutcome {
+    let required_bits = task.total_bits();
+    let mut delivered_bits = 0_u64;
+    let mut elapsed = Duration::ZERO;
+    let mut steps = Vec::new();
+    let mut any_remote_egress = false;
+
+    for window in windows {
+        elapsed = elapsed.saturating_add(window.carrier.setup_latency);
+
+        if !window.carrier.supported_by(device)
+            || window.carrier.requires_extra_hardware
+            || window.carrier.kind == CarrierKind::None
+            || window.carrier.kind == CarrierKind::LocalCacheTwin
+            || window.carrier.nominal_bps == 0
+        {
+            elapsed = elapsed.saturating_add(window.duration);
+            steps.push(ScavengeStep {
+                carrier: window.carrier.kind,
+                window: window.duration,
+                delivered_bits: 0,
+                cumulative_bits: delivered_bits,
+            });
+            continue;
+        }
+
+        any_remote_egress |= window.carrier.fresh_remote_capable
+            || window.peer_has_internet_egress;
+
+        let capacity = (u128::from(window.carrier.nominal_bps)
+            .saturating_mul(window.duration.as_nanos())
+            / 1_000_000_000_u128)
+            .min(u128::from(u64::MAX)) as u64;
+
+        let remaining = required_bits.saturating_sub(delivered_bits);
+        let delivered = capacity.min(remaining);
+        delivered_bits = delivered_bits.saturating_add(delivered);
+
+        steps.push(ScavengeStep {
+            carrier: window.carrier.kind,
+            window: window.duration,
+            delivered_bits: delivered,
+            cumulative_bits: delivered_bits,
+        });
+
+        if delivered_bits >= required_bits {
+            let freshness = if task.require_fresh_remote {
+                if !any_remote_egress {
+                    return ScavengeOutcome {
+                        feasible: false,
+                        completed_at: None,
+                        delivered_bits,
+                        required_bits,
+                        freshness: None,
+                        steps,
+                        reason:
+                            "bits accumulated, but no contributing contact had Internet egress",
+                    };
+                }
+                InformationFreshness::FreshRemote
+            } else {
+                InformationFreshness::DelayedRemote
+            };
+
+            return ScavengeOutcome {
+                feasible: true,
+                completed_at: Some(elapsed.saturating_add(window.duration)),
+                delivered_bits,
+                required_bits,
+                freshness: Some(freshness),
+                steps,
+                reason: "task completed by app-layer fragment accumulation",
+            };
+        }
+
+        elapsed = elapsed.saturating_add(window.duration);
+    }
+
+    ScavengeOutcome {
+        feasible: false,
+        completed_at: None,
+        delivered_bits,
+        required_bits,
+        freshness: None,
+        steps,
+        reason: "contact windows ended before enough task bits were accumulated",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SimulationOutcome {
     pub carrier: CarrierKind,
     pub feasible: bool,
@@ -710,6 +834,79 @@ mod tests {
             allowed.freshness,
             Some(InformationFreshness::DelayedRemote)
         );
+    }
+
+    #[test]
+    fn fragments_can_accumulate_across_different_contacts() {
+        let device = DeviceCapabilities::conservative_android();
+        let task = InformationTask {
+            request_bits: 40,
+            response_bits: 80,
+            require_fresh_remote: true,
+            tolerate_delay: true,
+            allow_generated: false,
+        };
+
+        let windows = vec![
+            ContactWindow {
+                carrier: CarrierProfile {
+                    nominal_bps: 10,
+                    setup_latency: Duration::ZERO,
+                    ..CarrierProfile::baseline(
+                        CarrierKind::AcousticNearUltrasonic,
+                    )
+                },
+                duration: Duration::from_secs(4),
+                peer_has_internet_egress: true,
+            },
+            ContactWindow {
+                carrier: CarrierProfile {
+                    nominal_bps: 20,
+                    setup_latency: Duration::ZERO,
+                    ..CarrierProfile::baseline(
+                        CarrierKind::BluetoothLeL2cap,
+                    )
+                },
+                duration: Duration::from_secs(4),
+                peer_has_internet_egress: true,
+            },
+        ];
+
+        let outcome = scavenge_across_contacts(&device, &task, &windows);
+        assert!(outcome.feasible);
+        assert_eq!(outcome.delivered_bits, 120);
+        assert_eq!(outcome.steps.len(), 2);
+        assert_eq!(outcome.steps[0].delivered_bits, 40);
+        assert_eq!(outcome.steps[1].delivered_bits, 80);
+    }
+
+    #[test]
+    fn accumulated_bits_without_any_egress_do_not_become_fresh_internet() {
+        let device = DeviceCapabilities::conservative_android();
+        let task = InformationTask {
+            request_bits: 8,
+            response_bits: 8,
+            require_fresh_remote: true,
+            tolerate_delay: true,
+            allow_generated: false,
+        };
+
+        let windows = vec![ContactWindow {
+            carrier: CarrierProfile {
+                nominal_bps: 100,
+                setup_latency: Duration::ZERO,
+                ..CarrierProfile::baseline(
+                    CarrierKind::AcousticNearUltrasonic,
+                )
+            },
+            duration: Duration::from_secs(1),
+            peer_has_internet_egress: false,
+        }];
+
+        let outcome = scavenge_across_contacts(&device, &task, &windows);
+        assert!(!outcome.feasible);
+        assert_eq!(outcome.delivered_bits, 16);
+        assert_eq!(outcome.freshness, None);
     }
 
     #[test]
