@@ -22,6 +22,7 @@ fn run() -> Result<(), String> {
         Some("acoustic-synthetic") => acoustic_synthetic(),
         Some("optical-synthetic") => optical_synthetic(),
         Some("vibration-synthetic") => vibration_synthetic(),
+        Some("continuity") => continuity_demo(),
         _ => Err(usage()),
     }
 }
@@ -208,6 +209,97 @@ fn android_minimal_sweep() -> Result<(), String> {
             outcome.reason,
         );
     }
+
+    Ok(())
+}
+
+fn continuity_demo() -> Result<(), String> {
+    use std::time::Duration;
+    use zero_carrier_continuity::{
+        CachedObject, ContinuityContract, ContinuityFreshness,
+        ContinuityMiss, ContinuityStore, ServiceTwinRecipe,
+        SourceReceipt, run_service_twin,
+    };
+
+    let mut store = ContinuityStore::new();
+    let weather = b"temp=30;humidity=70";
+    store
+        .insert_verified(CachedObject {
+            key: "weather.raw".to_owned(),
+            bytes: weather.to_vec(),
+            receipt: SourceReceipt::for_bytes(
+                "weather-source",
+                10_000,
+                weather,
+                "last successful remote observation",
+            ),
+            valid_for: Duration::from_secs(300),
+        })
+        .map_err(str::to_owned)?;
+
+    let current_required =
+        store.resolve_zero_carrier::<fn(&str) -> Vec<u8>>(
+            "weather.raw",
+            20_000,
+            ContinuityContract {
+                require_current_remote_observation: true,
+                max_cache_age: Some(Duration::from_secs(60)),
+                allow_generated: true,
+            },
+            None,
+        );
+
+    if current_required != Err(ContinuityMiss::CurrentRemoteRequired) {
+        return Err(
+            "zero-carrier continuity incorrectly satisfied a current-remote contract"
+                .to_owned(),
+        );
+    }
+
+    let cached = store
+        .resolve_zero_carrier::<fn(&str) -> Vec<u8>>(
+            "weather.raw",
+            20_000,
+            ContinuityContract::cached_ok(Duration::from_secs(60)),
+            None,
+        )
+        .map_err(|error| format!("{error:?}"))?;
+
+    if cached.freshness != ContinuityFreshness::CachedRemote {
+        return Err("cached continuity answer lost freshness typing".to_owned());
+    }
+
+    let twin = run_service_twin(
+        &store,
+        &ServiceTwinRecipe {
+            recipe_id: "weather-card-v1".to_owned(),
+            required_keys: vec!["weather.raw".to_owned()],
+        },
+        20_000,
+        Duration::from_secs(60),
+        |inputs| {
+            format!(
+                "offline-card:{}",
+                String::from_utf8_lossy(inputs[0].1),
+            )
+            .into_bytes()
+        },
+    )
+    .map_err(|error| format!("{error:?}"))?;
+
+    println!(
+        "CONTINUITY current_remote=false cached_label={:?} age_ms={} receipt_source={} twin_label={:?} twin_inputs={} twin_bytes={}",
+        cached.freshness,
+        cached.age.unwrap_or_default().as_millis(),
+        cached
+            .source_receipt
+            .as_ref()
+            .map(|receipt| receipt.source_id.as_str())
+            .unwrap_or("-"),
+        twin.freshness,
+        twin.inputs.len(),
+        String::from_utf8_lossy(&twin.bytes),
+    );
 
     Ok(())
 }
@@ -433,6 +525,7 @@ fn usage() -> String {
         "  virtual-phone-lab acoustic-synthetic",
         "  virtual-phone-lab optical-synthetic",
         "  virtual-phone-lab vibration-synthetic",
+        "  virtual-phone-lab continuity",
         "",
         "This is a simulation/research tool. It does not convert simulated",
         "carrier success into physical evidence.",
