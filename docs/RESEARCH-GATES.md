@@ -59,6 +59,25 @@ A -> B -> C -> Internet
 
 where A cannot directly reach C.
 
+Software evidence:
+
+- [x] encrypted three-node relay path is covered by peer-egress tests;
+- [x] application relay budget prevents unbounded forwarding;
+- [x] relay authenticates downstream and upstream peer-session identities;
+- [x] constrained public-host result can return C -> B -> A;
+- [x] Linux and Windows physical role harnesses authored;
+- [x] harness syntax is checked on both operating systems.
+
+Physical closure:
+
+- [ ] run A, B and C on three real machines/devices;
+- [ ] preserve proof that A cannot directly use C;
+- [ ] preserve evidence from all three authenticated roles;
+- [ ] return new remote information to A through B and C;
+- [ ] preserve tested commit and binary hashes.
+
+Physical evidence must follow `docs/G5-PHYSICAL-MULTIHOP-COURT.md`.
+
 ## G6 — partition / DTN
 
 A queues a request while no route exists. A later contact or moving peer carries it to an egress and the result survives the return path.
