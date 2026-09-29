@@ -15,13 +15,7 @@ fn verify(name: &str, input: &[u8], base: Option<&[u8]>) {
     let decoded = decode_exact(
         &wire,
         &cache,
-        DecodeBudget {
-            max_output_bytes: input.len() as u64,
-            max_decode_ops: (input.len() as u64)
-                .saturating_mul(2)
-                .saturating_add(1024),
-            max_extra_working_bytes: input.len().max(8 * 1024),
-        },
+        DecodeBudget::permissive_for(input.len() as u64),
     )
     .expect("exact URT reconstruction");
 
