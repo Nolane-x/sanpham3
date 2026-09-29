@@ -647,12 +647,16 @@ impl RatelessDecoder {
                 .ok_or(FragmentError::Incomplete)?;
             let mut recovered = row.payload.clone();
 
-            for source_index in (pivot + 1)..descriptor.source_count {
+            for (source_index, known) in shards
+                .iter()
+                .enumerate()
+                .skip(pivot + 1)
+            {
                 if coefficient_is_set(
                     &row.coefficients,
                     source_index,
                 ) {
-                    let known = shards[source_index]
+                    let known = known
                         .as_ref()
                         .ok_or(FragmentError::Incomplete)?;
                     xor_bytes(&mut recovered, known);
@@ -1648,7 +1652,7 @@ mod tests {
 
         // Deliberately lose every fourth systematic source shard.
         for symbol_id in 0..source_count as u64 {
-            if symbol_id % 4 == 0 {
+            if symbol_id.is_multiple_of(4) {
                 continue;
             }
             let wire = rateless_symbol_for_wire_budget(
@@ -1667,7 +1671,7 @@ mod tests {
         let max_symbol_id = source_count as u64 * 8;
         while !decoder.is_decodable() && symbol_id < max_symbol_id {
             // Model additional repair-symbol loss without changing the code.
-            if symbol_id % 7 != 0 {
+            if !symbol_id.is_multiple_of(7) {
                 let wire = rateless_symbol_for_wire_budget(
                     &input,
                     220,
