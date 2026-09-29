@@ -15,8 +15,15 @@ internal object AndroidBleGattProtocol {
 
     const val OPCODE_HANDSHAKE: Int = 0x01
     const val OPCODE_FRAME: Int = 0x02
-    const val TARGET_MTU: Int = 128
+    const val TARGET_MTU: Int = 160
     const val MIN_REQUIRED_MTU: Int = 96
+
+    // Current peer-session wire overhead:
+    // 16-byte frame header + 16-byte XChaCha20-Poly1305 tag.
+    // Keep this guarded by tests when the Rust frame format changes.
+    private const val PEER_SESSION_FRAME_OVERHEAD: Int = 32
+    private const val ATT_VALUE_OVERHEAD: Int = 3
+    private const val ENVELOPE_HEADER_BYTES: Int = 3
 
     data class Envelope(
         val opcode: Int,
@@ -57,7 +64,18 @@ internal object AndroidBleGattProtocol {
     }
 
     fun usablePayloadBytes(mtu: Int): Int =
-        (mtu - 3 - 3).coerceAtLeast(0)
+        (mtu - ATT_VALUE_OVERHEAD - ENVELOPE_HEADER_BYTES)
+            .coerceAtLeast(0)
+
+    fun requiredMtuForEncryptedProjectPayload(
+        plaintextBytes: Int,
+    ): Int {
+        require(plaintextBytes >= 0)
+        return ATT_VALUE_OVERHEAD +
+            ENVELOPE_HEADER_BYTES +
+            PEER_SESSION_FRAME_OVERHEAD +
+            plaintextBytes
+    }
 
     fun requireFitsMtu(
         envelope: ByteArray,
