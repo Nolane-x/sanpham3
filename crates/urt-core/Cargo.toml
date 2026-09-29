@@ -1,0 +1,8 @@
+[package]
+name = "urt-core"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic transport-aware reconstruction primitives for sanpham3"
+
+[dependencies]
+sha2 = "0.11"
