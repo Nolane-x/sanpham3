@@ -1,5 +1,10 @@
-use fragment_scheduler::{schedule_contact, ContactBudget, PendingTransfer};
-use fragment_transport::{FragmentAssembler, FragmentKey};
+use fragment_scheduler::{
+    choose_energy_efficient_path, schedule_contact, ContactBudget,
+    EnergyPathMeasurement, EnergyTransferCandidate, PendingTransfer,
+};
+use fragment_transport::{
+    fragment_for_wire_budget, FragmentAssembler, FragmentKey,
+};
 use std::collections::HashMap;
 use std::time::Duration;
 use urt_core::{decode_exact, encode_exact, DecodeBudget, Digest32};
@@ -117,5 +122,73 @@ fn main() {
         early.used_bytes,
         early.capacity_bytes,
         urgent_urt.report.strategy,
+    );
+
+    // Energy court: objective consumes externally supplied measurements rather
+    // than inventing carrier energy. Expected wire bytes include the real SP3F
+    // overhead generated for this URT object.
+    let energy_wires = fragment_for_wire_budget(
+        &urgent_wire,
+        220,
+        &key,
+    )
+    .expect("energy wire accounting");
+    let expected_wire_bytes = energy_wires
+        .iter()
+        .map(|wire| wire.len() as u64)
+        .sum::<u64>();
+    let useful_bits = (urgent_wire.len() as u64).saturating_mul(8);
+
+    let candidates = vec![
+        EnergyTransferCandidate {
+            measurement: EnergyPathMeasurement {
+                path_id: "wifi-fast".to_owned(),
+                setup_time: Duration::from_millis(20),
+                setup_microjoules: 4_000,
+                active_microwatts: 2_000_000,
+                bitrate_bps: 10_000_000,
+            },
+            useful_bits,
+            expected_wire_bytes,
+        },
+        EnergyTransferCandidate {
+            measurement: EnergyPathMeasurement {
+                path_id: "ble-efficient".to_owned(),
+                setup_time: Duration::from_millis(500),
+                setup_microjoules: 500,
+                active_microwatts: 10_000,
+                bitrate_bps: 100_000,
+            },
+            useful_bits,
+            expected_wire_bytes,
+        },
+    ];
+
+    let efficient = choose_energy_efficient_path(
+        &candidates,
+        Duration::from_secs(5),
+    )
+    .expect("energy efficient candidate");
+    assert_eq!(efficient.path_id, "ble-efficient");
+
+    let tight = choose_energy_efficient_path(
+        &candidates,
+        Duration::from_millis(200),
+    )
+    .expect("deadline-constrained energy candidate");
+    assert_eq!(tight.path_id, "wifi-fast");
+
+    let (energy_numerator, useful_denominator) =
+        efficient.energy_per_useful_bit_ratio();
+    println!(
+        "F4_ENERGY_OBJECTIVE_PASS useful_bits={} expected_wire_bytes={} selected={} estimated_energy_uj={} ratio_uj_over_useful_bit={}/{} completion_ms={} tight_deadline_selected={}",
+        useful_bits,
+        expected_wire_bytes,
+        efficient.path_id,
+        efficient.estimated_energy_microjoules,
+        energy_numerator,
+        useful_denominator,
+        efficient.completion_time.as_millis(),
+        tight.path_id,
     );
 }
