@@ -100,7 +100,26 @@ Reference:
 
 https://developer.android.com/develop/connectivity/wifi/localonlyhotspot
 
-### Bluetooth LE L2CAP CoC
+### Bluetooth LE layered fallbacks
+
+BLE should not be treated as one binary capability.
+
+#### BLE advertising / scan response
+
+The current project already has a deliberately tiny service-data budget for
+discovery. The frontier model treats this as a separate one-way control carrier
+for hints, SOS-sized state and fragment metadata when a connected stream cannot
+be established.
+
+#### BLE GATT
+
+GATT is a separate connected fallback worth implementing before declaring BLE
+unusable on devices where L2CAP CoC is unavailable or unreliable.
+
+The simulator currently uses a conservative placeholder goodput until the
+project measures its own implementation.
+
+#### Bluetooth LE L2CAP CoC
 
 Current Android tiny-stream carrier.
 
@@ -110,6 +129,10 @@ Project status:
 - L2CAP CoC;
 - shared Rust peer-session;
 - physical court authored.
+
+The recovery order should be measured rather than hard-coded, but conceptually
+the project can degrade from L2CAP -> GATT -> advertisement/control fragments
+instead of collapsing BLE into a single yes/no state.
 
 ### Bluetooth Classic RFCOMM
 
