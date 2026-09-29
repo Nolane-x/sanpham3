@@ -63,6 +63,25 @@ class AndroidLocalHotspotDataPathTest {
     }
 
     @Test
+    fun mapsTypedLocalOnlyFailureReasons() {
+        assertEquals(
+            "authentication",
+            describeLocalOnlyFailure(
+                android.net.wifi.WifiManager
+                    .STATUS_LOCAL_ONLY_CONNECTION_FAILURE_AUTHENTICATION,
+            ),
+        )
+        assertEquals(
+            "not-found",
+            describeLocalOnlyFailure(
+                android.net.wifi.WifiManager
+                    .STATUS_LOCAL_ONLY_CONNECTION_FAILURE_NOT_FOUND,
+            ),
+        )
+        assertEquals("unknown(999)", describeLocalOnlyFailure(999))
+    }
+
+    @Test
     fun rejectsPrivilegedOrInvalidPorts() {
         assertThrows(IllegalArgumentException::class.java) {
             validateLocalHotspotPort(80)
