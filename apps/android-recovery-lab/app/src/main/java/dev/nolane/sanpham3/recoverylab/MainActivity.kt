@@ -24,6 +24,9 @@ import dev.nolane.sanpham3.androidhost.AndroidG8PairCourt
 import dev.nolane.sanpham3.androidhost.AndroidPeerSession
 import dev.nolane.sanpham3.androidhost.acceptPeerSession
 import dev.nolane.sanpham3.androidhost.connectPeerSession
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.security.SecureRandom
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
@@ -35,6 +38,7 @@ class MainActivity : Activity() {
         private const val PERMISSION_REQUEST = 1001
         private const val BLE_ACCEPT_TIMEOUT_MS = 60_000
         private const val BLE_SCAN_TIMEOUT_SECONDS = 60L
+        private const val TCP_CONNECT_TIMEOUT_MS = 10_000
     }
 
     private val executor = Executors.newCachedThreadPool()
@@ -42,6 +46,7 @@ class MainActivity : Activity() {
 
     private lateinit var nodeIdInput: EditText
     private lateinit var pskInput: EditText
+    private lateinit var tcpEndpointInput: EditText
     private lateinit var logView: TextView
 
     @Volatile
@@ -52,6 +57,9 @@ class MainActivity : Activity() {
 
     @Volatile
     private var peerSession: AndroidPeerSession? = null
+
+    @Volatile
+    private var tcpServer: ServerSocket? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -107,6 +115,13 @@ class MainActivity : Activity() {
         }
         column.addView(pskInput)
 
+        tcpEndpointInput = EditText(this).apply {
+            hint = "TCP bind/peer endpoint (host:port)"
+            setText("0.0.0.0:39080")
+            isSingleLine = true
+        }
+        column.addView(tcpEndpointInput)
+
         column.addView(button("Generate lab PSK") {
             val bytes = ByteArray(32)
             SecureRandom().nextBytes(bytes)
@@ -149,6 +164,14 @@ class MainActivity : Activity() {
 
         column.addView(button("BLE G8 Client") {
             startBleClient()
+        })
+
+        column.addView(button("TCP G8 Server") {
+            startTcpServer()
+        })
+
+        column.addView(button("TCP G8 Client") {
+            startTcpClient()
         })
 
         column.addView(button("Stop current operation") {
@@ -312,6 +335,116 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun startTcpServer() {
+        val config = readConfig() ?: return
+        val endpoint = readTcpEndpoint() ?: return
+
+        runOperation("TCP G8 server") {
+            val (nodeId, key) = config
+
+            try {
+                val server = ServerSocket()
+                tcpServer = server
+                server.reuseAddress = true
+                server.bind(endpoint)
+
+                log(
+                    "TCP_SERVER_LISTEN node=$nodeId " +
+                        "addr=${server.localSocketAddress}",
+                )
+
+                val socket = server.accept()
+                log(
+                    "TCP_SERVER_ACCEPT remote=${socket.remoteSocketAddress}",
+                )
+
+                val session = AndroidPeerSession.server(
+                    socket = socket,
+                    nodeId = nodeId,
+                    peerKey = key,
+                )
+                peerSession = session
+
+                log(
+                    "TCP_SERVER_AUTH local_node=$nodeId " +
+                        "peer_node=${session.peerNodeId}",
+                )
+
+                val evidence = AndroidG8PairCourt.serveOnce(session)
+                log(
+                    "G8_TCP_PASS role=server local_node=$nodeId " +
+                        "peer_node=${evidence.peerNodeId} " +
+                        "challenge=${evidence.challenge.toHex()}",
+                )
+            } finally {
+                key.fill(0)
+                closeOperationResources()
+            }
+        }
+    }
+
+    private fun startTcpClient() {
+        val config = readConfig() ?: return
+        val endpoint = readTcpEndpoint() ?: return
+
+        runOperation("TCP G8 client") {
+            val (nodeId, key) = config
+
+            try {
+                val socket = Socket()
+                socket.connect(endpoint, TCP_CONNECT_TIMEOUT_MS)
+                socket.tcpNoDelay = true
+
+                log(
+                    "TCP_CLIENT_CONNECTED local_node=$nodeId " +
+                        "remote=${socket.remoteSocketAddress}",
+                )
+
+                val session = AndroidPeerSession.client(
+                    socket = socket,
+                    nodeId = nodeId,
+                    peerKey = key,
+                )
+                peerSession = session
+
+                log(
+                    "TCP_CLIENT_AUTH local_node=$nodeId " +
+                        "peer_node=${session.peerNodeId}",
+                )
+
+                val evidence = AndroidG8PairCourt.runClient(session)
+                log(
+                    "G8_TCP_PASS role=client local_node=$nodeId " +
+                        "peer_node=${evidence.peerNodeId} " +
+                        "challenge=${evidence.challenge.toHex()}",
+                )
+            } finally {
+                key.fill(0)
+                closeOperationResources()
+            }
+        }
+    }
+
+    private fun readTcpEndpoint(): InetSocketAddress? {
+        val text = tcpEndpointInput.text.toString().trim()
+        val split = text.lastIndexOf(':')
+
+        if (split <= 0 || split == text.lastIndex) {
+            log("TCP endpoint must be host:port.")
+            return null
+        }
+
+        val host = text.substring(0, split).trim()
+        val port = text.substring(split + 1).toIntOrNull()
+
+        if (host.isEmpty() || port == null || port !in 1..65535) {
+            log("TCP endpoint must contain a valid host and port.")
+            return null
+        }
+
+        return InetSocketAddress(host, port)
+    }
+
     private fun runOperation(
         name: String,
         operation: () -> Unit,
@@ -380,6 +513,13 @@ class MainActivity : Activity() {
         l2capServer = null
         try {
             server?.close()
+        } catch (_: Throwable) {
+        }
+
+        val tcp = tcpServer
+        tcpServer = null
+        try {
+            tcp?.close()
         } catch (_: Throwable) {
         }
     }
