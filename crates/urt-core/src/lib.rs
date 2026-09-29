@@ -578,7 +578,7 @@ fn detect_repeat_pattern(input: &[u8]) -> Option<(Vec<u8>, u64)> {
     }
 
     let period = input.len() - prefix[input.len() - 1];
-    if period == input.len() || input.len() % period != 0 {
+    if period == input.len() || !input.len().is_multiple_of(period) {
         return None;
     }
     let repeats = input.len() / period;
@@ -740,7 +740,7 @@ mod tests {
 
     #[test]
     fn repeated_structure_collapses_to_small_exact_program() {
-        let input = vec![b'A'; 1024 * 1024];
+        let input = b"ABCD".repeat(256 * 1024);
         let encoded = round_trip(&input, None);
 
         assert_eq!(encoded.report.strategy, ExactStrategy::RepeatPattern);
