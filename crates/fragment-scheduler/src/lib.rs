@@ -108,6 +108,147 @@ impl ContactSchedule {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnergyPathMeasurement {
+    pub path_id: String,
+    /// Energy paid once to establish/wake the path, in microjoules.
+    pub setup_microjoules: u64,
+    /// Measured active transmit power while this path is moving bytes.
+    pub active_microwatts: u64,
+    /// Measured or evidence-backed usable wire bitrate.
+    pub bitrate_bps: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnergyTransferCandidate {
+    pub measurement: EnergyPathMeasurement,
+    /// Logical payload bits that satisfy the task.
+    pub useful_bits: u64,
+    /// Expected bytes crossing the path, including envelopes, parity and
+    /// expected retransmission overhead supplied by the caller.
+    pub expected_wire_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnergyEvaluation {
+    pub path_id: String,
+    pub useful_bits: u64,
+    pub expected_wire_bytes: u64,
+    pub serialization_time: Duration,
+    pub estimated_energy_microjoules: u128,
+}
+
+impl EnergyEvaluation {
+    /// Exact rational score numerator/denominator:
+    /// estimated_energy_microjoules / useful_bits.
+    pub fn energy_per_useful_bit_ratio(&self) -> (u128, u64) {
+        (self.estimated_energy_microjoules, self.useful_bits)
+    }
+}
+
+pub fn evaluate_energy_per_useful_bit(
+    candidate: &EnergyTransferCandidate,
+) -> Result<EnergyEvaluation, ScheduleError> {
+    if candidate.useful_bits == 0 {
+        return Err(ScheduleError::ZeroUsefulBits);
+    }
+    if candidate.expected_wire_bytes == 0 {
+        return Err(ScheduleError::ZeroWireBytes);
+    }
+    if candidate.measurement.bitrate_bps == 0 {
+        return Err(ScheduleError::ZeroCapacity);
+    }
+
+    let wire_bits = u128::from(candidate.expected_wire_bytes)
+        .checked_mul(8)
+        .ok_or(ScheduleError::EnergyOverflow)?;
+    let duration_nanos = wire_bits
+        .checked_mul(1_000_000_000)
+        .ok_or(ScheduleError::EnergyOverflow)?
+        .div_ceil(u128::from(candidate.measurement.bitrate_bps));
+
+    let serialization_time = duration_from_nanos(duration_nanos)?;
+
+    // microwatts * seconds == microjoules.
+    // Keep integer arithmetic by multiplying power by nanoseconds and
+    // ceiling-dividing by 1e9.
+    let active_energy = u128::from(candidate.measurement.active_microwatts)
+        .checked_mul(duration_nanos)
+        .ok_or(ScheduleError::EnergyOverflow)?
+        .div_ceil(1_000_000_000);
+
+    let estimated_energy_microjoules =
+        u128::from(candidate.measurement.setup_microjoules)
+            .checked_add(active_energy)
+            .ok_or(ScheduleError::EnergyOverflow)?;
+
+    Ok(EnergyEvaluation {
+        path_id: candidate.measurement.path_id.clone(),
+        useful_bits: candidate.useful_bits,
+        expected_wire_bytes: candidate.expected_wire_bytes,
+        serialization_time,
+        estimated_energy_microjoules,
+    })
+}
+
+/// Selects the feasible path with the minimum exact energy-per-useful-bit
+/// ratio. Inputs are measurements/evidence supplied by callers; this function
+/// does not invent physical energy values.
+///
+/// Ties prefer lower absolute energy, then shorter serialization time, then
+/// lexical path ID for deterministic output.
+pub fn choose_energy_efficient_path(
+    candidates: &[EnergyTransferCandidate],
+    max_completion_time: Duration,
+) -> Result<EnergyEvaluation, ScheduleError> {
+    let mut evaluations = Vec::new();
+
+    for candidate in candidates {
+        let evaluation = evaluate_energy_per_useful_bit(candidate)?;
+        if evaluation.serialization_time <= max_completion_time {
+            evaluations.push(evaluation);
+        }
+    }
+
+    let Some(best) = evaluations.into_iter().min_by(compare_energy) else {
+        return Err(ScheduleError::NoEnergyCandidateMeetsDeadline);
+    };
+
+    Ok(best)
+}
+
+fn compare_energy(
+    left: &EnergyEvaluation,
+    right: &EnergyEvaluation,
+) -> Ordering {
+    let left_scaled = left
+        .estimated_energy_microjoules
+        .saturating_mul(u128::from(right.useful_bits));
+    let right_scaled = right
+        .estimated_energy_microjoules
+        .saturating_mul(u128::from(left.useful_bits));
+
+    left_scaled
+        .cmp(&right_scaled)
+        .then_with(|| {
+            left.estimated_energy_microjoules
+                .cmp(&right.estimated_energy_microjoules)
+        })
+        .then_with(|| left.serialization_time.cmp(&right.serialization_time))
+        .then_with(|| left.path_id.cmp(&right.path_id))
+}
+
+fn duration_from_nanos(nanos: u128) -> Result<Duration, ScheduleError> {
+    let seconds = nanos / 1_000_000_000;
+    if seconds > u128::from(u64::MAX) {
+        return Err(ScheduleError::EnergyOverflow);
+    }
+    Ok(Duration::new(
+        seconds as u64,
+        (nanos % 1_000_000_000) as u32,
+    ))
+}
+
 /// Schedules already-authenticated fragment wires into one contact.
 ///
 /// Baseline policy:
@@ -271,6 +412,10 @@ pub enum ScheduleError {
     Fragment(FragmentError),
     EmptyTransfer,
     ZeroCapacity,
+    ZeroUsefulBits,
+    ZeroWireBytes,
+    EnergyOverflow,
+    NoEnergyCandidateMeetsDeadline,
 }
 
 impl fmt::Display for ScheduleError {
@@ -278,7 +423,13 @@ impl fmt::Display for ScheduleError {
         match self {
             Self::Fragment(error) => write!(f, "fragment scheduling input: {error}"),
             Self::EmptyTransfer => write!(f, "scheduled transfer has no fragment wires"),
-            Self::ZeroCapacity => write!(f, "contact has zero usable wire capacity"),
+            Self::ZeroCapacity => write!(f, "contact/path has zero usable wire capacity"),
+            Self::ZeroUsefulBits => write!(f, "energy objective requires non-zero useful bits"),
+            Self::ZeroWireBytes => write!(f, "energy objective requires non-zero wire bytes"),
+            Self::EnergyOverflow => write!(f, "energy objective arithmetic overflow"),
+            Self::NoEnergyCandidateMeetsDeadline => {
+                write!(f, "no energy candidate can complete before the deadline")
+            }
         }
     }
 }
@@ -435,6 +586,144 @@ mod tests {
 
         assert!(assembler.is_complete());
         assert_eq!(assembler.reconstruct().unwrap(), input);
+    }
+
+    #[test]
+    fn energy_objective_selects_lower_microjoules_per_useful_bit() {
+        let useful_bits = 8_000;
+        let candidates = vec![
+            EnergyTransferCandidate {
+                measurement: EnergyPathMeasurement {
+                    path_id: "fast-hot".to_owned(),
+                    setup_microjoules: 1_000,
+                    active_microwatts: 2_000_000,
+                    bitrate_bps: 1_000_000,
+                },
+                useful_bits,
+                expected_wire_bytes: 1_200,
+            },
+            EnergyTransferCandidate {
+                measurement: EnergyPathMeasurement {
+                    path_id: "slow-efficient".to_owned(),
+                    setup_microjoules: 200,
+                    active_microwatts: 100_000,
+                    bitrate_bps: 100_000,
+                },
+                useful_bits,
+                expected_wire_bytes: 1_200,
+            },
+        ];
+
+        let best = choose_energy_efficient_path(
+            &candidates,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+
+        assert_eq!(best.path_id, "slow-efficient");
+        assert!(best.estimated_energy_microjoules > 0);
+    }
+
+    #[test]
+    fn energy_objective_respects_completion_deadline() {
+        let candidates = vec![
+            EnergyTransferCandidate {
+                measurement: EnergyPathMeasurement {
+                    path_id: "slow-efficient".to_owned(),
+                    setup_microjoules: 10,
+                    active_microwatts: 10_000,
+                    bitrate_bps: 1_000,
+                },
+                useful_bits: 8_000,
+                expected_wire_bytes: 1_000,
+            },
+            EnergyTransferCandidate {
+                measurement: EnergyPathMeasurement {
+                    path_id: "fast-expensive".to_owned(),
+                    setup_microjoules: 1_000,
+                    active_microwatts: 1_000_000,
+                    bitrate_bps: 1_000_000,
+                },
+                useful_bits: 8_000,
+                expected_wire_bytes: 1_000,
+            },
+        ];
+
+        let best = choose_energy_efficient_path(
+            &candidates,
+            Duration::from_millis(100),
+        )
+        .unwrap();
+
+        assert_eq!(best.path_id, "fast-expensive");
+    }
+
+    #[test]
+    fn wire_overhead_increases_energy_score() {
+        let measurement = EnergyPathMeasurement {
+            path_id: "same-path".to_owned(),
+            setup_microjoules: 100,
+            active_microwatts: 500_000,
+            bitrate_bps: 100_000,
+        };
+
+        let lean = evaluate_energy_per_useful_bit(
+            &EnergyTransferCandidate {
+                measurement: measurement.clone(),
+                useful_bits: 8_000,
+                expected_wire_bytes: 1_000,
+            },
+        )
+        .unwrap();
+        let overhead = evaluate_energy_per_useful_bit(
+            &EnergyTransferCandidate {
+                measurement,
+                useful_bits: 8_000,
+                expected_wire_bytes: 2_000,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            overhead.estimated_energy_microjoules
+                > lean.estimated_energy_microjoules
+        );
+    }
+
+    #[test]
+    fn energy_objective_rejects_invalid_or_impossible_inputs() {
+        let zero_useful = EnergyTransferCandidate {
+            measurement: EnergyPathMeasurement {
+                path_id: "x".to_owned(),
+                setup_microjoules: 0,
+                active_microwatts: 1,
+                bitrate_bps: 1,
+            },
+            useful_bits: 0,
+            expected_wire_bytes: 1,
+        };
+        assert!(matches!(
+            evaluate_energy_per_useful_bit(&zero_useful),
+            Err(ScheduleError::ZeroUsefulBits),
+        ));
+
+        let too_slow = EnergyTransferCandidate {
+            measurement: EnergyPathMeasurement {
+                path_id: "slow".to_owned(),
+                setup_microjoules: 0,
+                active_microwatts: 1,
+                bitrate_bps: 1,
+            },
+            useful_bits: 8,
+            expected_wire_bytes: 1,
+        };
+        assert!(matches!(
+            choose_energy_efficient_path(
+                &[too_slow],
+                Duration::from_millis(1),
+            ),
+            Err(ScheduleError::NoEnergyCandidateMeetsDeadline),
+        ));
     }
 
     #[test]
