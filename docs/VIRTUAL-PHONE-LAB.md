@@ -39,6 +39,10 @@ cargo run -p virtual-phone-lab -- android-minimal
 cargo run -p virtual-phone-lab -- android-matrix
 cargo run -p virtual-phone-lab -- scavenge
 cargo run -p virtual-phone-lab -- zero-carrier
+cargo run -p virtual-phone-lab -- continuity
+cargo run -p virtual-phone-lab -- acoustic-synthetic
+cargo run -p virtual-phone-lab -- optical-synthetic
+cargo run -p virtual-phone-lab -- vibration-synthetic
 ```
 
 ### Layer 2 — Android Virtual Device twins
@@ -89,6 +93,10 @@ https://developer.android.com/studio/run/managing-avds
 Nontraditional carriers need more than API simulation.
 
 Before physical devices, create deterministic signal datasets.
+
+Current implementation already includes deterministic courts for near-ultrasonic
+FSK, optical repetition/erasure, and vibration OOK. These are MODEL_ONLY
+evidence and deliberately do not count as physical carrier proof.
 
 #### Acoustic
 
