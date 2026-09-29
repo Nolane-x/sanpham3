@@ -1,0 +1,33 @@
+name: f4-fragment-court
+
+on:
+  push:
+    paths:
+      - "crates/fragment-transport/**"
+      - "apps/fragment-court-cli/**"
+      - "Cargo.toml"
+      - ".github/workflows/f4-fragment-court.yml"
+  pull_request:
+    paths:
+      - "crates/fragment-transport/**"
+      - "apps/fragment-court-cli/**"
+      - "Cargo.toml"
+      - ".github/workflows/f4-fragment-court.yml"
+
+jobs:
+  authenticated-fragments:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy -p fragment-transport -p fragment-court-cli --all-targets -- -D warnings
+      - run: cargo test -p fragment-transport
+      - run: cargo run -p fragment-court-cli
