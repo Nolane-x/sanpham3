@@ -74,3 +74,34 @@ fun AndroidBleL2capClientDataPath.connectPeerSession(
         peerKey = peerKey,
     )
 }
+
+
+fun AndroidBluetoothRfcommServerDataPath.acceptPeerSession(
+    timeoutMillis: Int,
+    nodeId: Long,
+    peerKey: ByteArray,
+): AndroidPeerSession {
+    val socket = accept(timeoutMillis)
+    return AndroidPeerSession.server(
+        input = socket.inputStream,
+        output = socket.outputStream,
+        transport = socket,
+        nodeId = nodeId,
+        peerKey = peerKey,
+    )
+}
+
+fun AndroidBluetoothRfcommClientDataPath.connectPeerSession(
+    peer: AndroidBluetoothClassicPeer,
+    nodeId: Long,
+    peerKey: ByteArray,
+): AndroidPeerSession {
+    val socket = connect(peer)
+    return AndroidPeerSession.client(
+        input = socket.inputStream,
+        output = socket.outputStream,
+        transport = socket,
+        nodeId = nodeId,
+        peerKey = peerKey,
+    )
+}
