@@ -82,6 +82,18 @@ Useful emulator options include:
 -port
 ```
 
+Automated permission/application scenarios for already-running twins:
+
+```bash
+scripts/virtual-phone-avd-scenarios.sh \
+  emulator-5554 emulator-5556 <package> [evidence_dir]
+```
+
+The scenario driver detects the initial grant/deny state, flips it, launches
+the app, captures evidence and restores the original state. See
+`docs/F5-AVD-SCENARIO-DRIVER.md`.
+
+
 References:
 
 https://developer.android.com/studio/run/emulator-commandline
