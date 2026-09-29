@@ -62,5 +62,18 @@ fn main() {
     }
     verify("high-entropy-like-64kib", &noisy, None);
 
-    println!("URT_V0_PASS exact_cases=4");
+    valueless_structured_text_case();
+
+    println!("URT_V1_PASS exact_cases=5");
+}
+
+fn valueless_structured_text_case() {
+    let mut text = Vec::new();
+    for index in 0..20_000_u32 {
+        let line = format!(
+            "{{\"id\":{index},\"kind\":\"weather\",\"city\":\"Hai Phong\",\"unit\":\"celsius\",\"valid\":true}}\n"
+        );
+        text.extend_from_slice(line.as_bytes());
+    }
+    verify("structured-text-zstandard", &text, None);
 }
