@@ -1,6 +1,6 @@
 use carrier_frontier::{
     rank_candidates, CarrierKind, CarrierProfile, DeviceCapabilities,
-    InformationTask, Platform,
+    ContactWindow, InformationTask, Platform, scavenge_across_contacts,
 };
 
 fn main() {
@@ -16,6 +16,7 @@ fn run() -> Result<(), String> {
         None | Some("frontier") => frontier_sweep(),
         Some("zero-carrier") => zero_carrier_demo(),
         Some("android-minimal") => android_minimal_sweep(),
+        Some("scavenge") => scavenge_demo(),
         _ => Err(usage()),
     }
 }
@@ -92,6 +93,85 @@ fn zero_carrier_demo() -> Result<(), String> {
         cached_outcome.freshness,
         cached_outcome.reason,
     );
+
+    Ok(())
+}
+
+fn scavenge_demo() -> Result<(), String> {
+    let device = broad_android_profile();
+    let task = InformationTask {
+        request_bits: 80,
+        response_bits: 240,
+        require_fresh_remote: true,
+        tolerate_delay: true,
+        allow_generated: false,
+    };
+
+    let windows = vec![
+        ContactWindow {
+            carrier: CarrierProfile {
+                nominal_bps: 10,
+                setup_latency: std::time::Duration::ZERO,
+                ..CarrierProfile::baseline(
+                    CarrierKind::VibrationSurface,
+                )
+            },
+            duration: std::time::Duration::from_secs(8),
+            peer_has_internet_egress: true,
+        },
+        ContactWindow {
+            carrier: CarrierProfile {
+                nominal_bps: 20,
+                setup_latency: std::time::Duration::ZERO,
+                ..CarrierProfile::baseline(
+                    CarrierKind::AcousticNearUltrasonic,
+                )
+            },
+            duration: std::time::Duration::from_secs(6),
+            peer_has_internet_egress: true,
+        },
+        ContactWindow {
+            carrier: CarrierProfile {
+                nominal_bps: 60,
+                setup_latency: std::time::Duration::ZERO,
+                ..CarrierProfile::baseline(
+                    CarrierKind::OpticalScreenCamera,
+                )
+            },
+            duration: std::time::Duration::from_secs(2),
+            peer_has_internet_egress: true,
+        },
+    ];
+
+    let outcome = scavenge_across_contacts(
+        &device,
+        &task,
+        &windows,
+    );
+
+    println!(
+        "SCAVENGE feasible={} delivered_bits={} required_bits={} completed_ms={} freshness={:?} reason={}",
+        outcome.feasible,
+        outcome.delivered_bits,
+        outcome.required_bits,
+        outcome
+            .completed_at
+            .map(|value| value.as_millis().to_string())
+            .unwrap_or_else(|| "-".to_owned()),
+        outcome.freshness,
+        outcome.reason,
+    );
+
+    for (index, step) in outcome.steps.iter().enumerate() {
+        println!(
+            "STEP index={} carrier={:?} window_ms={} delivered_bits={} cumulative_bits={}",
+            index + 1,
+            step.carrier,
+            step.window.as_millis(),
+            step.delivered_bits,
+            step.cumulative_bits,
+        );
+    }
 
     Ok(())
 }
@@ -178,6 +258,7 @@ fn usage() -> String {
         "  virtual-phone-lab frontier",
         "  virtual-phone-lab zero-carrier",
         "  virtual-phone-lab android-minimal",
+        "  virtual-phone-lab scavenge",
         "",
         "This is a simulation/research tool. It does not convert simulated",
         "carrier success into physical evidence.",
