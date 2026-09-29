@@ -84,3 +84,10 @@ jobs:
           grep -q 'lib/x86_64/libsp3_android_peer_session.so' /tmp/recovery-lab-apk.txt
           test -s "$APK"
           sha256sum "$APK"
+
+      - name: Upload Recovery Lab APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanpham3-android-recovery-lab-debug
+          path: apps/android-recovery-lab/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
