@@ -20,6 +20,8 @@ fn run() -> Result<(), String> {
         Some("scavenge") => scavenge_demo(),
         Some("android-matrix") => android_matrix(),
         Some("acoustic-synthetic") => acoustic_synthetic(),
+        Some("optical-synthetic") => optical_synthetic(),
+        Some("vibration-synthetic") => vibration_synthetic(),
         _ => Err(usage()),
     }
 }
@@ -210,6 +212,81 @@ fn android_minimal_sweep() -> Result<(), String> {
     Ok(())
 }
 
+fn optical_synthetic() -> Result<(), String> {
+    let bits = vec![
+        1, 0, 1, 1, 0, 0, 1, 0,
+        0, 1, 1, 0, 1, 0, 0, 1,
+    ];
+    let config = signal_frontier::OpticalRepetitionConfig::robust_default();
+    let encoded = signal_frontier::encode_optical_repetition(
+        &bits,
+        config,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let impaired = signal_frontier::apply_optical_impairment(
+        &encoded,
+        signal_frontier::OpticalImpairment {
+            drop_every: Some(7),
+            flip_every: Some(11),
+        },
+    );
+    let decoded = signal_frontier::decode_optical_repetition(
+        &impaired,
+        config,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let errors = signal_frontier::bit_error_count(&bits, &decoded);
+
+    println!(
+        "OPTICAL_SYNTHETIC bits={} symbols={} errors={}",
+        bits.len(),
+        impaired.len(),
+        errors,
+    );
+
+    if errors != 0 {
+        return Err("synthetic optical payload did not roundtrip".to_owned());
+    }
+    Ok(())
+}
+
+fn vibration_synthetic() -> Result<(), String> {
+    let bits = vec![
+        1, 0, 1, 1, 0, 0, 1, 0,
+        0, 1, 1, 0, 1, 0, 0, 1,
+    ];
+    let config = signal_frontier::VibrationOokConfig::surface_2_5bps();
+    let encoded = signal_frontier::encode_vibration_ook(
+        &bits,
+        config,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let impaired = signal_frontier::apply_mechanical_channel(
+        &encoded,
+        signal_frontier::MechanicalChannel::shared_table(),
+        99,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let decoded = signal_frontier::decode_vibration_ook(
+        &impaired,
+        config,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let errors = signal_frontier::bit_error_count(&bits, &decoded);
+
+    println!(
+        "VIBRATION_SYNTHETIC bits={} samples={} errors={}",
+        bits.len(),
+        impaired.len(),
+        errors,
+    );
+
+    if errors != 0 {
+        return Err("synthetic vibration payload did not roundtrip".to_owned());
+    }
+    Ok(())
+}
+
 fn acoustic_synthetic() -> Result<(), String> {
     let config = signal_frontier::AcousticFskConfig::near_ultrasonic_50bps();
     let bits = vec![
@@ -352,6 +429,8 @@ fn usage() -> String {
         "  virtual-phone-lab scavenge",
         "  virtual-phone-lab android-matrix",
         "  virtual-phone-lab acoustic-synthetic",
+        "  virtual-phone-lab optical-synthetic",
+        "  virtual-phone-lab vibration-synthetic",
         "",
         "This is a simulation/research tool. It does not convert simulated",
         "carrier success into physical evidence.",
