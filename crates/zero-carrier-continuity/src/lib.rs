@@ -1,6 +1,6 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -198,6 +198,185 @@ pub enum ContinuityMiss {
     CurrentRemoteRequired,
     NoAdmissibleCache,
     GenerationDisallowed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReconciliationPolicy {
+    pub max_age: Duration,
+    pub min_distinct_sources: usize,
+    pub require_valid_signature: bool,
+}
+
+impl ReconciliationPolicy {
+    pub fn quorum(
+        max_age: Duration,
+        min_distinct_sources: usize,
+        require_valid_signature: bool,
+    ) -> Self {
+        Self {
+            max_age,
+            min_distinct_sources,
+            require_valid_signature,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReconciliationError {
+    InvalidPolicy,
+    NoAdmissibleCandidates,
+    InsufficientConsensus {
+        required_sources: usize,
+        best_support: usize,
+    },
+    Conflict {
+        support_per_value: usize,
+        competing_values: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconciledObservation {
+    pub bytes: Vec<u8>,
+    pub content_sha256: [u8; 32],
+    pub agreeing_sources: Vec<String>,
+    pub oldest_observed_at_ms: u64,
+    pub newest_observed_at_ms: u64,
+    pub freshness: ContinuityFreshness,
+}
+
+/// Reconciles multiple cached observations of the same logical remote value.
+///
+/// The baseline is intentionally exact and conservative:
+/// - invalid hashes, stale/source-invalid entries and (optionally) unsigned or
+///   invalid signatures are excluded;
+/// - one source ID contributes at most one vote;
+/// - if one source presents different digests, that source is excluded for
+///   this reconciliation;
+/// - values are grouped by exact SHA-256 digest;
+/// - a unique highest-support digest must meet the configured quorum;
+/// - equal top support for different digests is an explicit conflict.
+pub fn reconcile_cached_observations(
+    candidates: &[CachedObject],
+    now_ms: u64,
+    policy: ReconciliationPolicy,
+) -> Result<ReconciledObservation, ReconciliationError> {
+    if policy.min_distinct_sources == 0 {
+        return Err(ReconciliationError::InvalidPolicy);
+    }
+
+    let mut source_choice = HashMap::<String, &CachedObject>::new();
+    let mut conflicted_sources = HashSet::<String>::new();
+
+    for candidate in candidates {
+        if !candidate.receipt.verify(&candidate.bytes)
+            || !candidate.within_source_validity(now_ms)
+            || candidate.age_at(now_ms) > policy.max_age
+        {
+            continue;
+        }
+
+        if policy.require_valid_signature
+            && candidate.receipt.verify_signature().is_err()
+        {
+            continue;
+        }
+
+        let source = candidate.receipt.source_id.clone();
+        if conflicted_sources.contains(&source) {
+            continue;
+        }
+
+        match source_choice.get(&source).copied() {
+            None => {
+                source_choice.insert(source, candidate);
+            }
+            Some(existing)
+                if existing.receipt.content_sha256
+                    == candidate.receipt.content_sha256 =>
+            {
+                if candidate.receipt.observed_at_ms
+                    > existing.receipt.observed_at_ms
+                {
+                    source_choice.insert(source, candidate);
+                }
+            }
+            Some(_) => {
+                source_choice.remove(&source);
+                conflicted_sources.insert(source);
+            }
+        }
+    }
+
+    if source_choice.is_empty() {
+        return Err(ReconciliationError::NoAdmissibleCandidates);
+    }
+
+    #[derive(Debug)]
+    struct Group {
+        bytes: Vec<u8>,
+        sources: Vec<String>,
+        oldest_observed_at_ms: u64,
+        newest_observed_at_ms: u64,
+    }
+
+    let mut groups = HashMap::<[u8; 32], Group>::new();
+    for (source, candidate) in source_choice {
+        let digest = candidate.receipt.content_sha256;
+        let observed = candidate.receipt.observed_at_ms;
+        let group = groups.entry(digest).or_insert_with(|| Group {
+            bytes: candidate.bytes.clone(),
+            sources: Vec::new(),
+            oldest_observed_at_ms: observed,
+            newest_observed_at_ms: observed,
+        });
+        group.sources.push(source);
+        group.oldest_observed_at_ms =
+            group.oldest_observed_at_ms.min(observed);
+        group.newest_observed_at_ms =
+            group.newest_observed_at_ms.max(observed);
+    }
+
+    let best_support = groups
+        .values()
+        .map(|group| group.sources.len())
+        .max()
+        .unwrap_or(0);
+
+    if best_support < policy.min_distinct_sources {
+        return Err(ReconciliationError::InsufficientConsensus {
+            required_sources: policy.min_distinct_sources,
+            best_support,
+        });
+    }
+
+    let competing_values = groups
+        .values()
+        .filter(|group| group.sources.len() == best_support)
+        .count();
+
+    if competing_values > 1 {
+        return Err(ReconciliationError::Conflict {
+            support_per_value: best_support,
+            competing_values,
+        });
+    }
+
+    let (content_sha256, mut group) = groups
+        .into_iter()
+        .find(|(_, group)| group.sources.len() == best_support)
+        .ok_or(ReconciliationError::NoAdmissibleCandidates)?;
+
+    group.sources.sort();
+
+    Ok(ReconciledObservation {
+        bytes: group.bytes,
+        content_sha256,
+        agreeing_sources: group.sources,
+        oldest_observed_at_ms: group.oldest_observed_at_ms,
+        newest_observed_at_ms: group.newest_observed_at_ms,
+        freshness: ContinuityFreshness::CachedRemote,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -804,6 +983,28 @@ mod tests {
         }
     }
 
+    fn signed_object(
+        key: &str,
+        source: &str,
+        observed_at_ms: u64,
+        value: &[u8],
+        signing_seed: u8,
+    ) -> CachedObject {
+        let signing_key = SigningKey::from_bytes(&[signing_seed; 32]);
+        CachedObject {
+            key: key.to_owned(),
+            bytes: value.to_vec(),
+            receipt: SourceReceipt::signed_for_bytes(
+                source,
+                observed_at_ms,
+                value,
+                "signed test fixture",
+                &signing_key,
+            ),
+            valid_for: Duration::from_secs(300),
+        }
+    }
+
     #[test]
     fn current_remote_contract_cannot_be_satisfied_without_carrier() {
         let mut store = ContinuityStore::new();
@@ -1107,6 +1308,146 @@ mod tests {
         );
 
         assert_eq!(result, Err(ContinuityMiss::NoAdmissibleCache));
+    }
+
+    #[test]
+    fn multisource_quorum_selects_unique_exact_majority() {
+        let candidates = vec![
+            signed_object("weather", "source-a", 10_000, b"sunny", 1),
+            signed_object("weather", "source-b", 11_000, b"sunny", 2),
+            signed_object("weather", "source-c", 12_000, b"rainy", 3),
+        ];
+
+        let reconciled = reconcile_cached_observations(
+            &candidates,
+            20_000,
+            ReconciliationPolicy::quorum(
+                Duration::from_secs(60),
+                2,
+                true,
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(reconciled.bytes, b"sunny");
+        assert_eq!(
+            reconciled.agreeing_sources,
+            vec!["source-a".to_owned(), "source-b".to_owned()],
+        );
+        assert_eq!(
+            reconciled.freshness,
+            ContinuityFreshness::CachedRemote,
+        );
+    }
+
+    #[test]
+    fn multisource_equal_top_support_is_explicit_conflict() {
+        let candidates = vec![
+            signed_object("weather", "source-a", 10_000, b"sunny", 1),
+            signed_object("weather", "source-b", 10_000, b"rainy", 2),
+        ];
+
+        assert_eq!(
+            reconcile_cached_observations(
+                &candidates,
+                20_000,
+                ReconciliationPolicy::quorum(
+                    Duration::from_secs(60),
+                    1,
+                    true,
+                ),
+            ),
+            Err(ReconciliationError::Conflict {
+                support_per_value: 1,
+                competing_values: 2,
+            }),
+        );
+    }
+
+    #[test]
+    fn repeated_observations_from_one_source_do_not_fake_quorum() {
+        let candidates = vec![
+            signed_object("weather", "source-a", 10_000, b"sunny", 1),
+            signed_object("weather", "source-a", 11_000, b"sunny", 1),
+        ];
+
+        assert_eq!(
+            reconcile_cached_observations(
+                &candidates,
+                20_000,
+                ReconciliationPolicy::quorum(
+                    Duration::from_secs(60),
+                    2,
+                    true,
+                ),
+            ),
+            Err(ReconciliationError::InsufficientConsensus {
+                required_sources: 2,
+                best_support: 1,
+            }),
+        );
+    }
+
+    #[test]
+    fn internally_conflicting_source_is_excluded_from_quorum() {
+        let candidates = vec![
+            signed_object("weather", "source-a", 10_000, b"sunny", 1),
+            signed_object("weather", "source-a", 11_000, b"rainy", 1),
+            signed_object("weather", "source-b", 12_000, b"sunny", 2),
+            signed_object("weather", "source-c", 13_000, b"sunny", 3),
+        ];
+
+        let reconciled = reconcile_cached_observations(
+            &candidates,
+            20_000,
+            ReconciliationPolicy::quorum(
+                Duration::from_secs(60),
+                2,
+                true,
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(reconciled.bytes, b"sunny");
+        assert_eq!(
+            reconciled.agreeing_sources,
+            vec!["source-b".to_owned(), "source-c".to_owned()],
+        );
+    }
+
+    #[test]
+    fn signed_quorum_excludes_unsigned_and_stale_candidates() {
+        let signed = signed_object(
+            "weather",
+            "source-a",
+            50_000,
+            b"sunny",
+            1,
+        );
+        let unsigned = object("weather", "source-b", 50_000, b"sunny");
+        let stale = signed_object(
+            "weather",
+            "source-c",
+            0,
+            b"sunny",
+            3,
+        );
+
+        assert_eq!(
+            reconcile_cached_observations(
+                &[signed, unsigned, stale],
+                60_000,
+                ReconciliationPolicy::quorum(
+                    Duration::from_secs(30),
+                    2,
+                    true,
+                ),
+            ),
+            Err(ReconciliationError::InsufficientConsensus {
+                required_sources: 2,
+                best_support: 1,
+            }),
+        );
     }
 
     #[test]
