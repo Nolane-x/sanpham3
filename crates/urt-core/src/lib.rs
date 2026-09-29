@@ -1213,8 +1213,8 @@ mod tests {
         index_exact_object(&mut cache, &source);
 
         let mut target = source.clone();
-        for index in 200_000..202_000 {
-            target[index] ^= 0x3C;
+        for byte in target.iter_mut().take(202_000).skip(200_000) {
+            *byte ^= 0x3C;
         }
 
         let encoded = encode_exact_with_cache(&target, None, &cache);
