@@ -1,7 +1,9 @@
 use carrier_frontier::{
-    rank_candidates, CarrierKind, CarrierProfile, DeviceCapabilities,
-    AndroidHardwareProfile, AndroidPermissionProfile, ContactWindow,
-    InformationTask, Platform, VirtualAndroidPhone, scavenge_across_contacts,
+    choose_failure_diverse_carriers, primary_failure_domain, rank_candidates,
+    scavenge_across_contacts, AndroidHardwareProfile, AndroidPermissionProfile,
+    CarrierKind, CarrierProfile, ContactWindow, DeviceCapabilities,
+    FailureDomain, FailureScenario, InformationTask, Platform,
+    VirtualAndroidPhone,
 };
 
 fn main() {
@@ -23,6 +25,7 @@ fn run() -> Result<(), String> {
         Some("optical-synthetic") => optical_synthetic(),
         Some("vibration-synthetic") => vibration_synthetic(),
         Some("continuity") => continuity_demo(),
+        Some("failure-domains") => failure_domain_demo(),
         _ => Err(usage()),
     }
 }
@@ -57,6 +60,52 @@ fn frontier_sweep() -> Result<(), String> {
             outcome.reason,
         );
     }
+
+    Ok(())
+}
+
+fn failure_domain_demo() -> Result<(), String> {
+    let mut device = broad_android_profile();
+    device.ble_l2cap_coc = true;
+
+    let profiles = vec![
+        CarrierProfile::baseline(CarrierKind::WifiDirect),
+        CarrierProfile::baseline(CarrierKind::WifiAware),
+        CarrierProfile::baseline(CarrierKind::BluetoothLeGatt),
+        CarrierProfile::baseline(CarrierKind::BluetoothLeL2cap),
+        CarrierProfile::baseline(CarrierKind::BluetoothRfcomm),
+        CarrierProfile::baseline(CarrierKind::NfcHce),
+        CarrierProfile::baseline(CarrierKind::OpticalScreenCamera),
+    ];
+
+    let selection =
+        choose_failure_diverse_carriers(&profiles, &device, 4);
+
+    println!(
+        "F4_FAILURE_DIVERSITY selected={:?} distinct_domains={}",
+        selection.carriers,
+        selection.distinct_failure_domains,
+    );
+
+    for carrier in &selection.carriers {
+        println!(
+            "F4_FAILURE_DOMAIN carrier={carrier:?} domain={:?}",
+            primary_failure_domain(*carrier),
+        );
+    }
+
+    let bluetooth_failure = FailureScenario {
+        failed_domains: vec![FailureDomain::BluetoothRadio],
+    };
+    println!(
+        "F4_CORRELATED_FAILURE failed={:?} gatt_survives={} l2cap_survives={} rfcomm_survives={} wifi_survives={} optical_survives={}",
+        FailureDomain::BluetoothRadio,
+        bluetooth_failure.carrier_survives(CarrierKind::BluetoothLeGatt),
+        bluetooth_failure.carrier_survives(CarrierKind::BluetoothLeL2cap),
+        bluetooth_failure.carrier_survives(CarrierKind::BluetoothRfcomm),
+        bluetooth_failure.carrier_survives(CarrierKind::WifiDirect),
+        bluetooth_failure.carrier_survives(CarrierKind::OpticalScreenCamera),
+    );
 
     Ok(())
 }
@@ -528,6 +577,7 @@ fn usage() -> String {
         "  virtual-phone-lab optical-synthetic",
         "  virtual-phone-lab vibration-synthetic",
         "  virtual-phone-lab continuity",
+        "  virtual-phone-lab failure-domains",
         "",
         "This is a simulation/research tool. It does not convert simulated",
         "carrier success into physical evidence.",
