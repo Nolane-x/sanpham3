@@ -497,6 +497,180 @@ pub fn reconcile_cached_observations(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalSearchPolicy {
+    pub max_age: Duration,
+    pub require_valid_signature: bool,
+    pub max_results: usize,
+}
+
+impl LocalSearchPolicy {
+    pub fn new(
+        max_age: Duration,
+        require_valid_signature: bool,
+        max_results: usize,
+    ) -> Self {
+        Self {
+            max_age,
+            require_valid_signature,
+            max_results,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalSearchHit {
+    pub key: String,
+    pub source_id: String,
+    pub observed_at_ms: u64,
+    pub matched_terms: usize,
+    pub freshness: ContinuityFreshness,
+}
+
+#[derive(Debug, Default)]
+pub struct LocalSearchIndex {
+    postings: HashMap<String, Vec<String>>,
+    indexed_digests: HashMap<String, [u8; 32]>,
+}
+
+impl LocalSearchIndex {
+    pub fn build(store: &ContinuityStore) -> Self {
+        let mut postings = HashMap::<String, Vec<String>>::new();
+        let mut indexed_digests = HashMap::<String, [u8; 32]>::new();
+
+        for object in store.iter() {
+            let Ok(text) = std::str::from_utf8(&object.bytes) else {
+                continue;
+            };
+
+            let mut terms = tokenize_local_search(text);
+            terms.extend(tokenize_local_search(&object.key));
+            terms.sort();
+            terms.dedup();
+
+            if terms.is_empty() {
+                continue;
+            }
+
+            indexed_digests.insert(
+                object.key.clone(),
+                object.receipt.content_sha256,
+            );
+
+            for term in terms {
+                postings
+                    .entry(term)
+                    .or_default()
+                    .push(object.key.clone());
+            }
+        }
+
+        for keys in postings.values_mut() {
+            keys.sort();
+            keys.dedup();
+        }
+
+        Self {
+            postings,
+            indexed_digests,
+        }
+    }
+
+    pub fn search(
+        &self,
+        store: &ContinuityStore,
+        query: &str,
+        now_ms: u64,
+        policy: LocalSearchPolicy,
+    ) -> Vec<LocalSearchHit> {
+        if policy.max_results == 0 {
+            return Vec::new();
+        }
+
+        let mut query_terms = tokenize_local_search(query);
+        query_terms.sort();
+        query_terms.dedup();
+        if query_terms.is_empty() {
+            return Vec::new();
+        }
+
+        let mut matches = HashMap::<String, usize>::new();
+        for term in query_terms {
+            let Some(keys) = self.postings.get(&term) else {
+                continue;
+            };
+            for key in keys {
+                *matches.entry(key.clone()).or_insert(0) += 1;
+            }
+        }
+
+        let mut hits = Vec::new();
+        for (key, matched_terms) in matches {
+            let Some(object) = store.get(&key) else {
+                continue;
+            };
+            let Some(indexed_digest) = self.indexed_digests.get(&key) else {
+                continue;
+            };
+
+            if indexed_digest != &object.receipt.content_sha256
+                || !object.receipt.verify(&object.bytes)
+                || !object.within_source_validity(now_ms)
+                || object.age_at(now_ms) > policy.max_age
+            {
+                continue;
+            }
+
+            if policy.require_valid_signature
+                && object.receipt.verify_signature().is_err()
+            {
+                continue;
+            }
+
+            hits.push(LocalSearchHit {
+                key: object.key.clone(),
+                source_id: object.receipt.source_id.clone(),
+                observed_at_ms: object.receipt.observed_at_ms,
+                matched_terms,
+                freshness: ContinuityFreshness::CachedRemote,
+            });
+        }
+
+        hits.sort_by(|left, right| {
+            right
+                .matched_terms
+                .cmp(&left.matched_terms)
+                .then_with(|| {
+                    right
+                        .observed_at_ms
+                        .cmp(&left.observed_at_ms)
+                })
+                .then_with(|| left.key.cmp(&right.key))
+        });
+        hits.truncate(policy.max_results);
+        hits
+    }
+}
+
+fn tokenize_local_search(text: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    let mut current = String::new();
+
+    for ch in text.chars() {
+        if ch.is_alphanumeric() {
+            current.extend(ch.to_lowercase());
+        } else if !current.is_empty() {
+            terms.push(std::mem::take(&mut current));
+        }
+    }
+
+    if !current.is_empty() {
+        terms.push(current);
+    }
+
+    terms
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PersistenceLimits {
     pub max_store_bytes: u64,
     pub max_entries: usize,
@@ -887,6 +1061,10 @@ impl ContinuityStore {
 
     pub fn get(&self, key: &str) -> Option<&CachedObject> {
         self.entries.get(key)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &CachedObject> {
+        self.entries.values()
     }
 
     /// Resolves a request when there is currently no remote information path.
@@ -1425,6 +1603,171 @@ mod tests {
         );
 
         assert_eq!(result, Err(ContinuityMiss::NoAdmissibleCache));
+    }
+
+    #[test]
+    fn local_search_index_finds_cached_text_with_cached_label() {
+        let mut store = ContinuityStore::new();
+        store
+            .insert_verified(object(
+                "mesh-note",
+                "remote-a",
+                10_000,
+                b"recovery mesh carries tiny fragments across contacts",
+            ))
+            .unwrap();
+        store
+            .insert_verified(object(
+                "weather-note",
+                "remote-b",
+                11_000,
+                b"sunny weather tomorrow",
+            ))
+            .unwrap();
+
+        let index = LocalSearchIndex::build(&store);
+        let hits = index.search(
+            &store,
+            "recovery fragments",
+            20_000,
+            LocalSearchPolicy::new(
+                Duration::from_secs(60),
+                false,
+                10,
+            ),
+        );
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].key, "mesh-note");
+        assert_eq!(hits[0].matched_terms, 2);
+        assert_eq!(
+            hits[0].freshness,
+            ContinuityFreshness::CachedRemote,
+        );
+    }
+
+    #[test]
+    fn local_search_filters_stale_or_unsigned_entries_by_policy() {
+        let mut store = ContinuityStore::new();
+        let mut stale = signed_object(
+            "stale",
+            "source-a",
+            0,
+            b"mesh stale result",
+            1,
+        );
+        stale.valid_for = Duration::from_secs(1);
+        store.insert_verified(stale).unwrap();
+        store
+            .insert_verified(object(
+                "unsigned",
+                "source-b",
+                9_000,
+                b"mesh unsigned result",
+            ))
+            .unwrap();
+        store
+            .insert_verified(signed_object(
+                "signed",
+                "source-c",
+                9_500,
+                b"mesh signed result",
+                3,
+            ))
+            .unwrap();
+
+        let index = LocalSearchIndex::build(&store);
+        let hits = index.search(
+            &store,
+            "mesh",
+            10_000,
+            LocalSearchPolicy::new(
+                Duration::from_secs(30),
+                true,
+                10,
+            ),
+        );
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].key, "signed");
+    }
+
+    #[test]
+    fn local_search_index_never_serves_postings_for_replaced_digest() {
+        let mut store = ContinuityStore::new();
+        store
+            .insert_verified(object(
+                "status",
+                "source-a",
+                10_000,
+                b"alpha old value",
+            ))
+            .unwrap();
+
+        let old_index = LocalSearchIndex::build(&store);
+
+        store
+            .insert_verified(object(
+                "status",
+                "source-a",
+                11_000,
+                b"beta new value",
+            ))
+            .unwrap();
+
+        assert!(old_index
+            .search(
+                &store,
+                "alpha",
+                12_000,
+                LocalSearchPolicy::new(
+                    Duration::from_secs(60),
+                    false,
+                    10,
+                ),
+            )
+            .is_empty());
+
+        let rebuilt = LocalSearchIndex::build(&store);
+        let hits = rebuilt.search(
+            &store,
+            "beta",
+            12_000,
+            LocalSearchPolicy::new(
+                Duration::from_secs(60),
+                false,
+                10,
+            ),
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].key, "status");
+    }
+
+    #[test]
+    fn local_search_skips_non_utf8_cache_objects() {
+        let mut store = ContinuityStore::new();
+        store
+            .insert_verified(object(
+                "binary",
+                "source-a",
+                10_000,
+                &[0xFF, 0xFE, 0xFD],
+            ))
+            .unwrap();
+
+        let index = LocalSearchIndex::build(&store);
+        assert!(index
+            .search(
+                &store,
+                "binary",
+                11_000,
+                LocalSearchPolicy::new(
+                    Duration::from_secs(60),
+                    false,
+                    10,
+                ),
+            )
+            .is_empty());
     }
 
     #[test]
