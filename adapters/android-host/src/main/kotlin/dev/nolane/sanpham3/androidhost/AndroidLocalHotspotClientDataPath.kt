@@ -2,6 +2,7 @@ package dev.nolane.sanpham3.androidhost
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -81,24 +82,25 @@ class AndroidLocalHotspotClientDataPath(
 
         val networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                val address = findHotspotHost(network)
-                if (address == null) {
-                    onEvent(
-                        AndroidLocalHotspotClientEvent.Unavailable(
-                            "local hotspot network has no DHCP server/gateway address",
-                        ),
+                connectivityManager.getLinkProperties(network)?.let {
+                    publishRoute(
+                        network = network,
+                        properties = it,
+                        port = endpoint.port,
+                        onEvent = onEvent,
                     )
-                    return
                 }
+            }
 
-                val value = AndroidLocalHotspotClientRoute(
+            override fun onLinkPropertiesChanged(
+                network: Network,
+                linkProperties: LinkProperties,
+            ) {
+                publishRoute(
                     network = network,
-                    serverAddress = address,
+                    properties = linkProperties,
                     port = endpoint.port,
-                )
-                route = value
-                onEvent(
-                    AndroidLocalHotspotClientEvent.NetworkAvailable(value),
+                    onEvent = onEvent,
                 )
             }
 
@@ -162,10 +164,27 @@ class AndroidLocalHotspotClientDataPath(
         route = null
     }
 
-    private fun findHotspotHost(network: Network): InetAddress? {
-        val properties =
-            connectivityManager.getLinkProperties(network) ?: return null
+    private fun publishRoute(
+        network: Network,
+        properties: LinkProperties,
+        port: Int,
+        onEvent: (AndroidLocalHotspotClientEvent) -> Unit,
+    ) {
+        val address = findHotspotHost(properties) ?: return
+        val value = AndroidLocalHotspotClientRoute(
+            network = network,
+            serverAddress = address,
+            port = port,
+        )
 
+        if (route == value) return
+        route = value
+        onEvent(AndroidLocalHotspotClientEvent.NetworkAvailable(value))
+    }
+
+    private fun findHotspotHost(
+        properties: LinkProperties,
+    ): InetAddress? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             properties.dhcpServerAddress?.let { return it }
         }
