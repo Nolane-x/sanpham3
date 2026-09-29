@@ -445,13 +445,7 @@ pub fn run_urt_exact_court(
     let decoded = decode_exact(
         &delivered,
         &cache,
-        DecodeBudget {
-            max_output_bytes: input.len() as u64,
-            max_decode_ops: (input.len() as u64)
-                .saturating_mul(2)
-                .saturating_add(1024),
-            max_extra_working_bytes: input.len().max(8 * 1024),
-        },
+        DecodeBudget::permissive_for(input.len() as u64),
     )
     .map_err(|error| CourtError::Urt(error.to_string()))?;
 
