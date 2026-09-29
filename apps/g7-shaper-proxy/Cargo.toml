@@ -1,0 +1,4 @@
+[package]
+name = "g7-shaper-proxy"
+version = "0.1.0"
+edition = "2021"
