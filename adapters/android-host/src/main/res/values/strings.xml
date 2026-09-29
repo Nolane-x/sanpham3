@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="sp3_nfc_service_description">sanpham3 recovery NFC carrier</string>
+    <string name="sp3_nfc_aid_description">sanpham3 recovery capsule</string>
+</resources>
