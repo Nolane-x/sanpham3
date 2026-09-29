@@ -143,7 +143,15 @@ Future:
 Priority order:
 
 1. [ ] NFC HCE <-> Reader peer-session bootstrap
-2. [ ] BLE GATT fallback data path
+2. BLE GATT fallback data path
+   - [x] request/response envelope
+   - [x] shared Rust peer-session authentication
+   - [x] encrypted G8 challenge/ACK
+   - [x] conservative MTU boundary; fails instead of pretending fragmentation
+   - [x] Android server/client compile and unit tests
+   - [x] physical court authored
+   - [ ] two-device physical interoperability
+   - [ ] measured useful bits/s, setup latency, failures and energy
 3. [ ] Bluetooth RFCOMM peer-session path
 4. [ ] Local-Only Hotspot peer-session path
 5. [ ] near-ultrasonic request capsule prototype
