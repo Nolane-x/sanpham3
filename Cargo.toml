@@ -9,6 +9,7 @@ members = [
     "crates/weak-link-court",
     "crates/carrier-frontier",
     "crates/signal-frontier",
+    "crates/zero-carrier-continuity",
     "adapters/linux-host",
     "adapters/android-peer-session-jni",
     "adapters/windows-host",
