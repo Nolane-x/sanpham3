@@ -144,7 +144,16 @@ Priority order:
 
 1. [ ] NFC HCE <-> Reader peer-session bootstrap
 2. [ ] BLE GATT fallback data path
-3. [ ] Bluetooth RFCOMM peer-session path
+3. Bluetooth RFCOMM peer-session path
+   - [x] Classic discovery and bonded-peer inventory
+   - [x] user-approved discoverability helper
+   - [x] insecure RFCOMM server/client data path
+   - [x] shared Rust peer-session authentication
+   - [x] G8 compatibility through AndroidPeerSession
+   - [x] Bluetooth Classic feature reporting
+   - [x] physical court authored
+   - [ ] two-device physical interoperability
+   - [ ] measured setup latency, reliability, range, useful bits/s and energy
 4. [ ] Local-Only Hotspot peer-session path
 5. [ ] near-ultrasonic request capsule prototype
 6. [ ] screen-camera optical capsule prototype
