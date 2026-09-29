@@ -58,6 +58,7 @@ pub struct DeviceCapabilities {
     pub wifi_direct: bool,
     pub wifi_aware: bool,
     pub bluetooth_le: bool,
+    pub ble_l2cap_coc: bool,
     pub bluetooth_classic: bool,
     pub local_only_hotspot: bool,
     pub telephony_messaging: bool,
@@ -79,6 +80,7 @@ impl DeviceCapabilities {
             wifi_direct: true,
             wifi_aware: false,
             bluetooth_le: true,
+            ble_l2cap_coc: false,
             bluetooth_classic: true,
             local_only_hotspot: true,
             telephony_messaging: false,
@@ -91,6 +93,125 @@ impl DeviceCapabilities {
             accelerometer: true,
             magnetometer: true,
             usb: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AndroidHardwareProfile {
+    pub wifi_direct: bool,
+    pub wifi_aware: bool,
+    pub bluetooth_le: bool,
+    pub bluetooth_classic: bool,
+    pub nfc_hce_or_reader: bool,
+    pub telephony_messaging: bool,
+    pub microphone: bool,
+    pub speaker: bool,
+    pub camera: bool,
+    pub screen: bool,
+    pub vibrator: bool,
+    pub accelerometer: bool,
+    pub magnetometer: bool,
+    pub usb: bool,
+}
+
+impl AndroidHardwareProfile {
+    pub fn broad_phone() -> Self {
+        Self {
+            wifi_direct: true,
+            wifi_aware: true,
+            bluetooth_le: true,
+            bluetooth_classic: true,
+            nfc_hce_or_reader: true,
+            telephony_messaging: true,
+            microphone: true,
+            speaker: true,
+            camera: true,
+            screen: true,
+            vibrator: true,
+            accelerometer: true,
+            magnetometer: true,
+            usb: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AndroidPermissionProfile {
+    pub legacy_location: bool,
+    pub nearby_wifi_devices: bool,
+    pub bluetooth_scan: bool,
+    pub bluetooth_connect: bool,
+    pub bluetooth_advertise: bool,
+    pub send_sms: bool,
+}
+
+impl AndroidPermissionProfile {
+    pub fn all_granted() -> Self {
+        Self {
+            legacy_location: true,
+            nearby_wifi_devices: true,
+            bluetooth_scan: true,
+            bluetooth_connect: true,
+            bluetooth_advertise: true,
+            send_sms: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VirtualAndroidPhone {
+    pub api_level: u16,
+    pub hardware: AndroidHardwareProfile,
+    pub permissions: AndroidPermissionProfile,
+}
+
+impl VirtualAndroidPhone {
+    pub fn capabilities(&self) -> DeviceCapabilities {
+        let wifi_permission = if self.api_level >= 33 {
+            self.permissions.nearby_wifi_devices
+        } else {
+            self.permissions.legacy_location
+        };
+        let bluetooth_scan_permission = if self.api_level >= 31 {
+            self.permissions.bluetooth_scan
+        } else {
+            self.permissions.legacy_location
+        };
+        let bluetooth_connect_permission = if self.api_level >= 31 {
+            self.permissions.bluetooth_connect
+        } else {
+            true
+        };
+
+        DeviceCapabilities {
+            platform: Platform::Android,
+            wifi_direct: self.hardware.wifi_direct && wifi_permission,
+            wifi_aware: self.api_level >= 26
+                && self.hardware.wifi_aware
+                && wifi_permission,
+            bluetooth_le: self.hardware.bluetooth_le
+                && bluetooth_scan_permission,
+            ble_l2cap_coc: self.api_level >= 29
+                && self.hardware.bluetooth_le
+                && bluetooth_connect_permission,
+            bluetooth_classic: self.hardware.bluetooth_classic
+                && bluetooth_connect_permission,
+            local_only_hotspot: self.api_level >= 26
+                && self.hardware.wifi_direct
+                && wifi_permission,
+            telephony_messaging: self.hardware.telephony_messaging
+                && self.permissions.send_sms,
+            nfc_hce_or_reader: self.api_level >= 19
+                && self.hardware.nfc_hce_or_reader,
+            microphone: self.hardware.microphone,
+            speaker: self.hardware.speaker,
+            camera: self.hardware.camera,
+            screen: self.hardware.screen,
+            vibrator: self.hardware.vibrator,
+            accelerometer: self.hardware.accelerometer,
+            magnetometer: self.hardware.magnetometer,
+            usb: self.hardware.usb,
         }
     }
 }
@@ -380,7 +501,7 @@ impl CarrierProfile {
             CarrierKind::InternetIp => true,
             CarrierKind::WifiDirect => device.wifi_direct,
             CarrierKind::WifiAware => device.wifi_aware,
-            CarrierKind::BluetoothLeL2cap => device.bluetooth_le,
+            CarrierKind::BluetoothLeL2cap => device.ble_l2cap_coc,
             CarrierKind::BluetoothRfcomm => device.bluetooth_classic,
             CarrierKind::LocalOnlyHotspot => device.local_only_hotspot,
             CarrierKind::CellularSms => device.telephony_messaging,
@@ -774,6 +895,65 @@ fn duration_from_fraction(bits: u64, bps: u64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn virtual_android_phone_models_api_and_permission_gates() {
+        let hardware = AndroidHardwareProfile::broad_phone();
+        let permissions = AndroidPermissionProfile::all_granted();
+
+        let api28 = VirtualAndroidPhone {
+            api_level: 28,
+            hardware,
+            permissions,
+        }
+        .capabilities();
+        assert!(api28.bluetooth_le);
+        assert!(!api28.ble_l2cap_coc);
+        assert!(api28.wifi_aware);
+
+        let api29 = VirtualAndroidPhone {
+            api_level: 29,
+            hardware,
+            permissions,
+        }
+        .capabilities();
+        assert!(api29.ble_l2cap_coc);
+
+        let mut denied = permissions;
+        denied.nearby_wifi_devices = false;
+        let api33 = VirtualAndroidPhone {
+            api_level: 33,
+            hardware,
+            permissions: denied,
+        }
+        .capabilities();
+        assert!(!api33.wifi_direct);
+        assert!(!api33.wifi_aware);
+        assert!(!api33.local_only_hotspot);
+    }
+
+    #[test]
+    fn sms_fallback_requires_permission_and_telephony() {
+        let hardware = AndroidHardwareProfile::broad_phone();
+        let mut permissions = AndroidPermissionProfile::all_granted();
+        permissions.send_sms = false;
+
+        let denied = VirtualAndroidPhone {
+            api_level: 36,
+            hardware,
+            permissions,
+        }
+        .capabilities();
+        assert!(!denied.telephony_messaging);
+
+        let allowed = VirtualAndroidPhone {
+            api_level: 36,
+            hardware,
+            permissions: AndroidPermissionProfile::all_granted(),
+        }
+        .capabilities();
+        assert!(allowed.telephony_messaging);
+    }
 
     #[test]
     fn zero_carrier_cannot_produce_fresh_remote_information() {
