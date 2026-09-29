@@ -114,7 +114,7 @@ Future:
 - [x] single-loss XOR erasure stripe baseline
 - [ ] fountain/rateless coding
 - [ ] source/provenance merge
-- [ ] deadline/freshness-aware fragment scheduler
+- [x] deadline/freshness-aware fragment scheduler baseline
 - [ ] correlated-failure model
 - [ ] energy-per-useful-bit objective
 
@@ -285,3 +285,37 @@ URT wire and decodes it back to the original logical payload.
 This closes only a systematic single-erasure baseline. It does **not** close
 fountain/rateless coding, correlated-loss resilience, provenance merge,
 deadline/freshness scheduling, or energy optimization.
+
+
+### F4 deadline / freshness scheduler baseline
+
+The `fragment-scheduler` crate schedules already-authenticated SP3F wires
+without weakening their authentication or exact reconstruction contract.
+
+The baseline uses measured contact start/duration/bitrate plus each pending
+transfer's `fresh_until` deadline and application priority.
+
+Policy:
+
+- never spend a contact on a transfer already stale at the current scheduler
+  time;
+- prefer transfers that can finish inside the remaining contact and before
+  freshness expiry;
+- then prefer earlier freshness deadline;
+- then higher application priority;
+- then smaller remaining wire cost;
+- retain partial progress across later contacts when completion is not
+  possible now.
+
+Scheduler time advances as bytes are assigned inside the contact; it is not
+re-evaluated as though every decision still occurs at contact start.
+
+The court deliberately puts a large high-priority background transfer before a
+freshness-limited URT recovery result. The early constrained contact must still
+finish and exactly decode the fresh result first; a later contact resumes the
+background transfer.
+
+This closes a deterministic deadline/freshness scheduling baseline only.
+Correlated-failure prediction, probabilistic future-contact planning,
+parity/fountain marginal utility, provenance merge and energy optimization
+remain open.
