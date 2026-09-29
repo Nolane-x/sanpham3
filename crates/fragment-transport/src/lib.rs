@@ -6,10 +6,13 @@ use std::fmt;
 type HmacSha256 = Hmac<Sha256>;
 
 pub const MAGIC: [u8; 4] = *b"SP3F";
+pub const PARITY_MAGIC: [u8; 4] = *b"SP3E";
 pub const VERSION: u8 = 1;
 pub const TAG_BYTES: usize = 16;
 pub const HEADER_BYTES: usize = 4 + 1 + 16 + 8 + 8 + 32 + 4;
 pub const MIN_WIRE_BYTES: usize = HEADER_BYTES + TAG_BYTES;
+pub const PARITY_HEADER_BYTES: usize = 4 + 1 + 16 + 8 + 32 + 4 + 8 + 4 + 2;
+pub const MIN_PARITY_WIRE_BYTES: usize = PARITY_HEADER_BYTES + TAG_BYTES;
 
 pub type Digest32 = [u8; 32];
 pub type TransferId = [u8; 16];
@@ -134,6 +137,215 @@ impl TransferDescriptor {
     }
 }
 
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParityEnvelope {
+    pub transfer_id: TransferId,
+    pub total_len: u64,
+    pub whole_digest: Digest32,
+    pub stripe_index: u32,
+    pub stripe_start_offset: u64,
+    pub shard_payload_bytes: u32,
+    pub data_count: u16,
+    pub parity: Vec<u8>,
+}
+
+impl ParityEnvelope {
+    pub fn seal(&self, key: &FragmentKey) -> Result<Vec<u8>, FragmentError> {
+        validate_parity(self)?;
+
+        let mut wire =
+            Vec::with_capacity(PARITY_HEADER_BYTES + self.parity.len() + TAG_BYTES);
+        wire.extend_from_slice(&PARITY_MAGIC);
+        wire.push(VERSION);
+        wire.extend_from_slice(&self.transfer_id);
+        wire.extend_from_slice(&self.total_len.to_be_bytes());
+        wire.extend_from_slice(&self.whole_digest);
+        wire.extend_from_slice(&self.stripe_index.to_be_bytes());
+        wire.extend_from_slice(&self.stripe_start_offset.to_be_bytes());
+        wire.extend_from_slice(&self.shard_payload_bytes.to_be_bytes());
+        wire.extend_from_slice(&self.data_count.to_be_bytes());
+        wire.extend_from_slice(&self.parity);
+
+        let tag = authentication_tag(&wire, key);
+        wire.extend_from_slice(&tag);
+        Ok(wire)
+    }
+
+    pub fn open(wire: &[u8], key: &FragmentKey) -> Result<Self, FragmentError> {
+        if wire.len() < MIN_PARITY_WIRE_BYTES {
+            return Err(FragmentError::Truncated);
+        }
+
+        let authenticated_len = wire.len() - TAG_BYTES;
+        let provided_tag = &wire[authenticated_len..];
+        let expected_tag = authentication_tag(&wire[..authenticated_len], key);
+        if !constant_time_eq(provided_tag, &expected_tag) {
+            return Err(FragmentError::AuthenticationFailed);
+        }
+
+        let mut cursor = Cursor::new(&wire[..authenticated_len]);
+        if cursor.take(4)? != PARITY_MAGIC {
+            return Err(FragmentError::WrongMagic);
+        }
+        let version = cursor.u8()?;
+        if version != VERSION {
+            return Err(FragmentError::WrongVersion(version));
+        }
+
+        let transfer_id = cursor.array16()?;
+        let total_len = cursor.u64()?;
+        let whole_digest = cursor.array32()?;
+        let stripe_index = cursor.u32()?;
+        let stripe_start_offset = cursor.u64()?;
+        let shard_payload_bytes = cursor.u32()?;
+        let data_count = cursor.u16()?;
+        let parity = cursor
+            .take(shard_payload_bytes as usize)?
+            .to_vec();
+
+        if cursor.remaining() != 0 {
+            return Err(FragmentError::TrailingBytes);
+        }
+
+        let envelope = Self {
+            transfer_id,
+            total_len,
+            whole_digest,
+            stripe_index,
+            stripe_start_offset,
+            shard_payload_bytes,
+            data_count,
+            parity,
+        };
+        validate_parity(&envelope)?;
+        Ok(envelope)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErasureTransfer {
+    pub data_wires: Vec<Vec<u8>>,
+    pub parity_wires: Vec<Vec<u8>>,
+    pub shard_payload_bytes: usize,
+    pub stripe_width: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParityRecoveryOutcome {
+    NotNeeded,
+    Recovered { offset: u64, payload_bytes: usize },
+    Insufficient { missing_shards: usize },
+}
+
+/// Systematic one-parity-per-stripe erasure baseline.
+///
+/// All data shards remain normal authenticated SP3F fragments. Each SP3E
+/// parity shard is the XOR of one stripe of padded data payloads. A stripe can
+/// recover exactly one missing data shard; two or more missing shards remain
+/// explicitly unrecoverable.
+pub fn fragment_with_xor_parity(
+    bytes: &[u8],
+    wire_budget: usize,
+    stripe_width: usize,
+    key: &FragmentKey,
+) -> Result<ErasureTransfer, FragmentError> {
+    if stripe_width < 2 || stripe_width > u16::MAX as usize {
+        return Err(FragmentError::InvalidStripeWidth);
+    }
+
+    let fixed_overhead = MIN_WIRE_BYTES.max(MIN_PARITY_WIRE_BYTES);
+    if wire_budget <= fixed_overhead {
+        return Err(FragmentError::WireBudgetTooSmall {
+            minimum: fixed_overhead + 1,
+            got: wire_budget,
+        });
+    }
+
+    let shard_payload_bytes = wire_budget - fixed_overhead;
+    let descriptor = TransferDescriptor::from_bytes(bytes);
+    let mut data_wires = Vec::new();
+    let mut parity_wires = Vec::new();
+
+    if bytes.is_empty() {
+        let envelope = FragmentEnvelope {
+            transfer_id: descriptor.transfer_id,
+            offset: 0,
+            total_len: 0,
+            whole_digest: descriptor.whole_digest,
+            payload: Vec::new(),
+        };
+        data_wires.push(envelope.seal(key)?);
+        return Ok(ErasureTransfer {
+            data_wires,
+            parity_wires,
+            shard_payload_bytes,
+            stripe_width,
+        });
+    }
+
+    let chunks = bytes.chunks(shard_payload_bytes).collect::<Vec<_>>();
+
+    for (index, payload) in chunks.iter().enumerate() {
+        let offset = (index as u64)
+            .checked_mul(shard_payload_bytes as u64)
+            .ok_or(FragmentError::RangeOverflow)?;
+        let envelope = FragmentEnvelope {
+            transfer_id: descriptor.transfer_id,
+            offset,
+            total_len: descriptor.total_len,
+            whole_digest: descriptor.whole_digest,
+            payload: (*payload).to_vec(),
+        };
+        data_wires.push(envelope.seal(key)?);
+    }
+
+    for (stripe_index, stripe) in chunks.chunks(stripe_width).enumerate() {
+        let mut parity = vec![0_u8; shard_payload_bytes];
+        for shard in stripe {
+            for (slot, &byte) in parity.iter_mut().zip(shard.iter()) {
+                *slot ^= byte;
+            }
+        }
+
+        let stripe_start_shard = stripe_index
+            .checked_mul(stripe_width)
+            .ok_or(FragmentError::RangeOverflow)?;
+        let stripe_start_offset = (stripe_start_shard as u64)
+            .checked_mul(shard_payload_bytes as u64)
+            .ok_or(FragmentError::RangeOverflow)?;
+
+        let envelope = ParityEnvelope {
+            transfer_id: descriptor.transfer_id,
+            total_len: descriptor.total_len,
+            whole_digest: descriptor.whole_digest,
+            stripe_index: u32::try_from(stripe_index)
+                .map_err(|_| FragmentError::RangeOverflow)?,
+            stripe_start_offset,
+            shard_payload_bytes: u32::try_from(shard_payload_bytes)
+                .map_err(|_| FragmentError::PayloadTooLarge)?,
+            data_count: u16::try_from(stripe.len())
+                .map_err(|_| FragmentError::PayloadTooLarge)?,
+            parity,
+        };
+        let wire = envelope.seal(key)?;
+        if wire.len() > wire_budget {
+            return Err(FragmentError::WireBudgetTooSmall {
+                minimum: wire.len(),
+                got: wire_budget,
+            });
+        }
+        parity_wires.push(wire);
+    }
+
+    Ok(ErasureTransfer {
+        data_wires,
+        parity_wires,
+        shard_payload_bytes,
+        stripe_width,
+    })
+}
+
 pub fn fragment_for_wire_budget(
     bytes: &[u8],
     wire_budget: usize,
@@ -247,6 +459,120 @@ impl FragmentAssembler {
         Ok(AcceptOutcome::Accepted)
     }
 
+    pub fn recover_with_parity_wire(
+        &mut self,
+        wire: &[u8],
+        key: &FragmentKey,
+    ) -> Result<ParityRecoveryOutcome, FragmentError> {
+        let parity = ParityEnvelope::open(wire, key)?;
+        self.recover_with_parity(parity)
+    }
+
+    pub fn recover_with_parity(
+        &mut self,
+        parity: ParityEnvelope,
+    ) -> Result<ParityRecoveryOutcome, FragmentError> {
+        validate_parity(&parity)?;
+        if parity.total_len > self.max_total_len {
+            return Err(FragmentError::ResourceLimit);
+        }
+
+        let descriptor = TransferDescriptor {
+            transfer_id: parity.transfer_id,
+            total_len: parity.total_len,
+            whole_digest: parity.whole_digest,
+        };
+
+        match &self.descriptor {
+            None => self.descriptor = Some(descriptor),
+            Some(existing) if existing == &descriptor => {}
+            Some(_) => return Err(FragmentError::TransferMismatch),
+        }
+
+        if parity.total_len == 0 {
+            return Ok(ParityRecoveryOutcome::NotNeeded);
+        }
+
+        let shard_bytes = parity.shard_payload_bytes as u64;
+        let mut missing = Vec::new();
+
+        for index in 0..parity.data_count as u64 {
+            let offset = parity
+                .stripe_start_offset
+                .checked_add(
+                    index
+                        .checked_mul(shard_bytes)
+                        .ok_or(FragmentError::RangeOverflow)?,
+                )
+                .ok_or(FragmentError::RangeOverflow)?;
+
+            if offset >= parity.total_len {
+                return Err(FragmentError::InvalidParity);
+            }
+
+            let expected_len = usize::try_from(
+                shard_bytes.min(parity.total_len - offset),
+            )
+            .map_err(|_| FragmentError::ResourceLimit)?;
+
+            match self.fragments.get(&offset) {
+                Some(payload) if payload.len() == expected_len => {}
+                Some(_) => return Err(FragmentError::InvalidParity),
+                None => missing.push((offset, expected_len)),
+            }
+        }
+
+        if missing.is_empty() {
+            return Ok(ParityRecoveryOutcome::NotNeeded);
+        }
+        if missing.len() > 1 {
+            return Ok(ParityRecoveryOutcome::Insufficient {
+                missing_shards: missing.len(),
+            });
+        }
+
+        let (missing_offset, missing_len) = missing[0];
+        let mut recovered = parity.parity.clone();
+
+        for index in 0..parity.data_count as u64 {
+            let offset = parity
+                .stripe_start_offset
+                .checked_add(
+                    index
+                        .checked_mul(shard_bytes)
+                        .ok_or(FragmentError::RangeOverflow)?,
+                )
+                .ok_or(FragmentError::RangeOverflow)?;
+            if offset == missing_offset {
+                continue;
+            }
+            let payload = self
+                .fragments
+                .get(&offset)
+                .ok_or(FragmentError::InvalidParity)?;
+            for (slot, &byte) in recovered.iter_mut().zip(payload.iter()) {
+                *slot ^= byte;
+            }
+        }
+
+        recovered.truncate(missing_len);
+        let outcome = self.accept(FragmentEnvelope {
+            transfer_id: parity.transfer_id,
+            offset: missing_offset,
+            total_len: parity.total_len,
+            whole_digest: parity.whole_digest,
+            payload: recovered,
+        })?;
+        if outcome != AcceptOutcome::Accepted {
+            return Err(FragmentError::InvalidParity);
+        }
+
+        Ok(ParityRecoveryOutcome::Recovered {
+            offset: missing_offset,
+            payload_bytes: missing_len,
+        })
+    }
+
     pub fn received_payload_bytes(&self) -> u64 {
         self.fragments
             .values()
@@ -336,6 +662,8 @@ pub enum FragmentError {
     Incomplete,
     WholeDigestMismatch,
     TrailingBytes,
+    InvalidStripeWidth,
+    InvalidParity,
 }
 
 impl fmt::Display for FragmentError {
@@ -373,6 +701,8 @@ impl fmt::Display for FragmentError {
                 write!(f, "reconstructed transfer digest mismatch")
             }
             Self::TrailingBytes => write!(f, "fragment envelope contains trailing bytes"),
+            Self::InvalidStripeWidth => write!(f, "erasure stripe width is invalid"),
+            Self::InvalidParity => write!(f, "erasure parity metadata is invalid"),
         }
     }
 }
@@ -398,6 +728,39 @@ fn validate_envelope(envelope: &FragmentEnvelope) -> Result<(), FragmentError> {
     let end = envelope.end_offset()?;
     if envelope.offset >= envelope.total_len || end > envelope.total_len {
         return Err(FragmentError::RangeOutsideTransfer);
+    }
+
+    Ok(())
+}
+
+fn validate_parity(envelope: &ParityEnvelope) -> Result<(), FragmentError> {
+    if envelope.shard_payload_bytes == 0
+        || envelope.data_count < 1
+        || envelope.parity.len() != envelope.shard_payload_bytes as usize
+    {
+        return Err(FragmentError::InvalidParity);
+    }
+
+    if envelope.total_len == 0 {
+        return Err(FragmentError::InvalidParity);
+    }
+
+    if envelope.stripe_start_offset >= envelope.total_len {
+        return Err(FragmentError::InvalidParity);
+    }
+
+    let stripe_capacity = (envelope.data_count as u64)
+        .checked_mul(envelope.shard_payload_bytes as u64)
+        .ok_or(FragmentError::RangeOverflow)?;
+    let stripe_end = envelope
+        .stripe_start_offset
+        .checked_add(stripe_capacity)
+        .ok_or(FragmentError::RangeOverflow)?;
+
+    if stripe_end.saturating_sub(envelope.shard_payload_bytes as u64)
+        >= envelope.total_len
+    {
+        return Err(FragmentError::InvalidParity);
     }
 
     Ok(())
@@ -453,6 +816,14 @@ impl<'a> Cursor<'a> {
 
     fn u8(&mut self) -> Result<u8, FragmentError> {
         Ok(self.take(1)?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16, FragmentError> {
+        Ok(u16::from_be_bytes(
+            self.take(2)?
+                .try_into()
+                .map_err(|_| FragmentError::Truncated)?,
+        ))
     }
 
     fn u32(&mut self) -> Result<u32, FragmentError> {
@@ -592,6 +963,91 @@ mod tests {
                 .accept_wire(&overlap.seal(&key).unwrap(), &key)
                 .unwrap_err(),
             FragmentError::OverlappingRange,
+        );
+    }
+
+    #[test]
+    fn xor_parity_recovers_one_missing_shard_per_stripe() {
+        let input = (0..96 * 1024)
+            .map(|index| ((index * 17 + 31) % 251) as u8)
+            .collect::<Vec<_>>();
+        let key = key();
+        let transfer =
+            fragment_with_xor_parity(&input, 240, 4, &key).unwrap();
+
+        assert!(!transfer.parity_wires.is_empty());
+        assert!(transfer
+            .data_wires
+            .iter()
+            .chain(transfer.parity_wires.iter())
+            .all(|wire| wire.len() <= 240));
+
+        let mut assembler = FragmentAssembler::new(128 * 1024);
+
+        for (index, wire) in transfer.data_wires.iter().enumerate() {
+            if index % transfer.stripe_width == 1 {
+                continue;
+            }
+            assembler.accept_wire(wire, &key).unwrap();
+        }
+
+        let mut recovered = 0_usize;
+        for parity in &transfer.parity_wires {
+            if matches!(
+                assembler.recover_with_parity_wire(parity, &key).unwrap(),
+                ParityRecoveryOutcome::Recovered { .. }
+            ) {
+                recovered += 1;
+            }
+        }
+
+        assert_eq!(recovered, transfer.parity_wires.len());
+        assert!(assembler.is_complete());
+        assert_eq!(assembler.reconstruct().unwrap(), input);
+    }
+
+    #[test]
+    fn xor_parity_refuses_two_missing_shards_in_same_stripe() {
+        let input = (0..16 * 1024)
+            .map(|index| (index % 239) as u8)
+            .collect::<Vec<_>>();
+        let key = key();
+        let transfer =
+            fragment_with_xor_parity(&input, 220, 4, &key).unwrap();
+
+        let mut assembler = FragmentAssembler::new(32 * 1024);
+        for (index, wire) in transfer.data_wires.iter().enumerate() {
+            if index == 0 || index == 1 {
+                continue;
+            }
+            assembler.accept_wire(wire, &key).unwrap();
+        }
+
+        assert_eq!(
+            assembler
+                .recover_with_parity_wire(&transfer.parity_wires[0], &key)
+                .unwrap(),
+            ParityRecoveryOutcome::Insufficient { missing_shards: 2 },
+        );
+        assert!(!assembler.is_complete());
+    }
+
+    #[test]
+    fn tampered_parity_is_rejected_before_recovery() {
+        let input = b"parity-authentication".repeat(1024);
+        let key = key();
+        let mut transfer =
+            fragment_with_xor_parity(&input, 220, 3, &key).unwrap();
+
+        let last = transfer.parity_wires[0].len() - 1;
+        transfer.parity_wires[0][last] ^= 1;
+
+        let mut assembler = FragmentAssembler::new(64 * 1024);
+        assert_eq!(
+            assembler
+                .recover_with_parity_wire(&transfer.parity_wires[0], &key)
+                .unwrap_err(),
+            FragmentError::AuthenticationFailed,
         );
     }
 
