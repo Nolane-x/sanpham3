@@ -172,12 +172,22 @@ BLE addresses are not trusted identities.
 
 ## Evidence files
 
-The app automatically saves PASS/FAIL files under its app-specific external
-files directory:
+The app automatically saves each PASS/FAIL record twice:
+
+1. in its app-specific external files directory:
 
 ```text
 .../files/evidence/
 ```
+
+2. in public Downloads using MediaStore:
+
+```text
+Downloads/SP3-Recovery-Lab/
+```
+
+The Downloads copy requires no broad storage permission and can be retrieved
+directly through the device's Files app.
 
 Each evidence file includes:
 
