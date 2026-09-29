@@ -43,3 +43,34 @@ fun AndroidWifiAwareClientDataPath.connectPeerSession(
         nodeId = nodeId,
         peerKey = peerKey,
     )
+
+
+fun AndroidBleL2capServerDataPath.acceptPeerSession(
+    timeoutMillis: Int,
+    nodeId: Long,
+    peerKey: ByteArray,
+): AndroidPeerSession {
+    val socket = accept(timeoutMillis)
+    return AndroidPeerSession.server(
+        input = socket.inputStream,
+        output = socket.outputStream,
+        transport = socket,
+        nodeId = nodeId,
+        peerKey = peerKey,
+    )
+}
+
+fun AndroidBleL2capClientDataPath.connectPeerSession(
+    peer: AndroidBlePeer,
+    nodeId: Long,
+    peerKey: ByteArray,
+): AndroidPeerSession {
+    val socket = connect(peer)
+    return AndroidPeerSession.client(
+        input = socket.inputStream,
+        output = socket.outputStream,
+        transport = socket,
+        nodeId = nodeId,
+        peerKey = peerKey,
+    )
+}
