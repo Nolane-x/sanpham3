@@ -82,6 +82,31 @@ Physical evidence must follow `docs/G5-PHYSICAL-MULTIHOP-COURT.md`.
 
 A queues a request while no route exists. A later contact or moving peer carries it to an egress and the result survives the return path.
 
+Software evidence:
+
+- [x] durable DTN spool persists queued bundles on disk;
+- [x] custody transfer removes the sender copy only after an authenticated ACK;
+- [x] duplicate bundle IDs are idempotently rejected;
+- [x] queued request can survive a simulated process restart before egress;
+- [x] later egress creates a separate return-result bundle;
+- [x] result can return during a later independent contact;
+- [x] `inspect-spool` exposes bundle metadata without requiring payload decoding;
+- [x] laboratory PSK can be supplied through `SP3_PEER_PSK_HEX` instead of argv;
+- [x] Linux and Windows phase evidence harnesses authored;
+- [x] dedicated harness CI validates Rust lab tests and script syntax.
+
+Physical closure:
+
+- [ ] A queues while it has no route to C;
+- [ ] A transfers custody to B and removes its local request only after ACK;
+- [ ] B restarts/reboots and bundle survives in the same spool;
+- [ ] B later meets C and obtains new remote information;
+- [ ] B stores a return bundle after C contact ends;
+- [ ] B later meets A and transfers the result back;
+- [ ] preserve per-phase spool hashes, commit, binary hashes and endpoint logs.
+
+Physical evidence must follow `docs/G6-PHYSICAL-DTN-LAB.md`.
+
 ## G7 — weak-path ladder
 
 Demonstrate useful behavior under measured caps:

@@ -1,0 +1,63 @@
+name: g6-physical-harness
+
+on:
+  push:
+    paths:
+      - "apps/recovery-lab-cli/**"
+      - "scripts/g6-physical-step.sh"
+      - "scripts/g6-physical-step.ps1"
+      - "docs/G6-PHYSICAL-DTN-LAB.md"
+      - ".github/workflows/g6-physical-harness.yml"
+  pull_request:
+    paths:
+      - "apps/recovery-lab-cli/**"
+      - "scripts/g6-physical-step.sh"
+      - "scripts/g6-physical-step.ps1"
+      - "docs/G6-PHYSICAL-DTN-LAB.md"
+      - ".github/workflows/g6-physical-harness.yml"
+
+jobs:
+  rust-lab:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Recovery lab tests
+        run: cargo test -p recovery-lab-cli
+
+      - name: Build recovery lab binaries
+        run: cargo build --release -p recovery-lab-cli -p peer-egress-cli
+
+  linux-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Parse Bash harness
+        run: bash -n scripts/g6-physical-step.sh
+
+  powershell-harness:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Parse PowerShell harness
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "scripts/g6-physical-step.ps1"),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }

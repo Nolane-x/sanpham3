@@ -32,6 +32,7 @@ fn run() -> Result<(), String> {
         Some("custody-send") => custody_send(&args),
         Some("dispatch") => dispatch(&args),
         Some("show-result") => show_result(&args),
+        Some("inspect-spool") => inspect_spool(&args),
         _ => Err(usage()),
     }
 }
@@ -259,6 +260,34 @@ fn dispatch(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn inspect_spool(args: &[String]) -> Result<(), String> {
+    if args.len() != 3 {
+        return Err(usage());
+    }
+
+    let spool = PathBuf::from(&args[2]);
+    let queue = open_queue(&spool, Instant::now(), SystemTime::now())?;
+
+    println!(
+        "spool path={} bundles={}",
+        spool.display(),
+        queue.len()
+    );
+
+    for bundle in queue.iter() {
+        println!(
+            "bundle_id={} priority={:?} ttl_secs={} attempts={} payload_bytes={}",
+            bundle.id,
+            bundle.priority,
+            bundle.ttl.as_secs(),
+            bundle.attempts,
+            bundle.payload.len(),
+        );
+    }
+
+    Ok(())
+}
+
 fn show_result(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(usage());
@@ -338,6 +367,21 @@ fn parse_u32(value: &str, name: &str) -> Result<u32, String> {
 }
 
 fn parse_key(value: &str) -> Result<PeerKey, String> {
+    if value == "-" {
+        let secret = env::var("SP3_PEER_PSK_HEX")
+            .map_err(|_| {
+                "PSK '-' requires SP3_PEER_PSK_HEX in the environment"
+                    .to_owned()
+            })?;
+        if secret == "-" {
+            return Err(
+                "SP3_PEER_PSK_HEX must contain hexadecimal key material"
+                    .to_owned(),
+            );
+        }
+        return parse_key(&secret);
+    }
+
     if value.len() != 64 {
         return Err("PSK must be exactly 64 hexadecimal characters".to_owned());
     }
@@ -368,10 +412,13 @@ fn usage() -> String {
         "physical DTN recovery lab:",
         "",
         "  enqueue <spool> <bundle_id> <request_id> <hostname> <bulk|normal|urgent> <ttl_secs>",
-        "  custody-receive <bind_addr> <node_id> <64_hex_psk> <spool>",
-        "  custody-send <peer_addr> <node_id> <64_hex_psk> <spool>",
-        "  dispatch <egress_addr> <node_id> <64_hex_psk> <request_spool> <return_spool> <return_bundle_id> <return_ttl_secs>",
+        "  custody-receive <bind_addr> <node_id> <64_hex_psk|-> <spool>",
+        "  custody-send <peer_addr> <node_id> <64_hex_psk|-> <spool>",
+        "  dispatch <egress_addr> <node_id> <64_hex_psk|-> <request_spool> <return_spool> <return_bundle_id> <return_ttl_secs>",
         "  show-result <spool>",
+        "  inspect-spool <spool>",
+        "",
+        "Use '-' for PSK to read SP3_PEER_PSK_HEX from the environment.",
         "",
         "A -> B request:",
         "  A: enqueue a.spool 1001 501 example.com urgent 3600",
@@ -403,5 +450,9 @@ mod tests {
         assert!(parse_priority("other").is_err());
         assert!(parse_key(&"42".repeat(32)).is_ok());
         assert!(parse_key("42").is_err());
+
+        std::env::set_var("SP3_PEER_PSK_HEX", "42".repeat(32));
+        assert!(parse_key("-").is_ok());
+        std::env::remove_var("SP3_PEER_PSK_HEX");
     }
 }

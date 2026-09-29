@@ -53,15 +53,49 @@ From the repository root:
 cargo build --release -p recovery-lab-cli -p peer-egress-cli
 ```
 
-Use the same 32-byte laboratory PSK on A, B, and C. The command-line representation is 64 hexadecimal characters.
+Use the same 32-byte laboratory PSK on A, B, and C.
 
-Example only:
+Prefer environment-backed key handling so the PSK is not exposed in argv.
 
-```text
-4242424242424242424242424242424242424242424242424242424242424242
+Linux:
+
+```bash
+export SP3_PEER_PSK_HEX=<64_hex_psk>
 ```
 
-Do not treat the lab PSK workflow as the final public pairing system.
+Windows PowerShell:
+
+```powershell
+$env:SP3_PEER_PSK_HEX = "<64_hex_psk>"
+```
+
+The manual commands below may still show `<PSK>` for readability, but the
+physical harnesses pass `-` to the binaries and read the key from the
+environment.
+
+Do not treat the laboratory PSK workflow as the final public pairing system.
+
+## Evidence harness
+
+For reproducible physical evidence, prefer:
+
+```text
+scripts/g6-physical-step.sh
+scripts/g6-physical-step.ps1
+```
+
+Each phase records:
+
+- UTC timestamp;
+- git commit;
+- OS/machine metadata;
+- recovery-lab and peer-egress binary SHA-256;
+- command output;
+- spool existence/size/hash;
+- decoded spool metadata without exposing payload contents;
+- SHA256SUMS over the evidence package.
+
+The `inspect` step is specifically intended for the required B restart proof.
 
 ## Phase 1 — A queues while offline
 
@@ -125,11 +159,31 @@ Disconnect A and B after this step.
 
 Stop the B process.
 
-Optionally reboot B.
+Prefer a full reboot of B for the strongest evidence.
 
 Do not recreate the request.
 
-The next command must load the existing `b-request.spool`.
+After restart, before contacting C, inspect the exact existing spool:
+
+Linux:
+
+```bash
+scripts/g6-physical-step.sh inspect \
+  b-request.spool \
+  1001 \
+  evidence/g6-b-after-restart
+```
+
+Windows:
+
+```powershell
+.\scripts\g6-physical-step.ps1 inspect `
+  b-request.spool `
+  1001 `
+  evidence\g6-b-after-restart
+```
+
+The evidence must still contain bundle 1001 and a spool hash after restart.
 
 This phase is required to distinguish durable DTN behavior from an in-memory retry queue.
 
