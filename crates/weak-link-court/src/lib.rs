@@ -498,6 +498,28 @@ mod tests {
     }
 
     #[test]
+    fn urt_zstandard_text_survives_hundred_bps_virtual_link() {
+        let mut input = Vec::new();
+        for index in 0..2_000_u32 {
+            let line = format!(
+                "node={index} route=peer-egress status=degraded freshness=fresh_remote\n"
+            );
+            input.extend_from_slice(line.as_bytes());
+        }
+
+        let result = run_urt_exact_court(
+            WeakLinkProfile::ladder(100),
+            &input,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(result.strategy, ExactStrategy::Zstandard);
+        assert_eq!(result.exact_hash, sha256(&input));
+        assert!(result.network_bytes < result.original_bytes / 3);
+    }
+
+    #[test]
     fn urt_exact_payload_survives_ten_bps_virtual_link() {
         let input = b"QWER".repeat(64 * 1024);
         let result = run_urt_exact_court(
