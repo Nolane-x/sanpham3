@@ -1,3 +1,4 @@
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt;
@@ -7,7 +8,9 @@ use std::path::Path;
 use std::time::Duration;
 
 const STORE_MAGIC: [u8; 4] = *b"SP3S";
-const STORE_VERSION: u8 = 1;
+const STORE_VERSION_UNSIGNED: u8 = 1;
+const STORE_VERSION: u8 = 2;
+const RECEIPT_SIGNATURE_DOMAIN: &[u8] = b"SP3-SOURCE-RECEIPT-V1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContinuityFreshness {
@@ -18,11 +21,26 @@ pub enum ContinuityFreshness {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceiptSignature {
+    pub verifying_key: [u8; 32],
+    pub signature: [u8; 64],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReceiptSignatureError {
+    MissingSignature,
+    InvalidVerifyingKey,
+    InvalidSignature,
+    ContentHashMismatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceReceipt {
     pub source_id: String,
     pub observed_at_ms: u64,
     pub content_sha256: [u8; 32],
     pub provenance_note: String,
+    pub signature: Option<ReceiptSignature>,
 }
 
 impl SourceReceipt {
@@ -41,11 +59,85 @@ impl SourceReceipt {
             observed_at_ms,
             content_sha256,
             provenance_note: provenance_note.into(),
+            signature: None,
         }
+    }
+
+    pub fn signed_for_bytes(
+        source_id: impl Into<String>,
+        observed_at_ms: u64,
+        bytes: &[u8],
+        provenance_note: impl Into<String>,
+        signing_key: &SigningKey,
+    ) -> Self {
+        let mut receipt = Self::for_bytes(
+            source_id,
+            observed_at_ms,
+            bytes,
+            provenance_note,
+        );
+        receipt.sign(signing_key);
+        receipt
+    }
+
+    pub fn sign(&mut self, signing_key: &SigningKey) {
+        let message = self.signing_message();
+        let signature = signing_key.sign(&message).to_bytes();
+        self.signature = Some(ReceiptSignature {
+            verifying_key: signing_key.verifying_key().to_bytes(),
+            signature,
+        });
     }
 
     pub fn verify(&self, bytes: &[u8]) -> bool {
         Sha256::digest(bytes).as_slice() == self.content_sha256
+    }
+
+    pub fn verify_signature(&self) -> Result<(), ReceiptSignatureError> {
+        let Some(signed) = &self.signature else {
+            return Err(ReceiptSignatureError::MissingSignature);
+        };
+        let verifying_key = VerifyingKey::from_bytes(&signed.verifying_key)
+            .map_err(|_| ReceiptSignatureError::InvalidVerifyingKey)?;
+        let signature = Signature::from_bytes(&signed.signature);
+        verifying_key
+            .verify_strict(&self.signing_message(), &signature)
+            .map_err(|_| ReceiptSignatureError::InvalidSignature)
+    }
+
+    pub fn verify_signed_bytes(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(), ReceiptSignatureError> {
+        if !self.verify(bytes) {
+            return Err(ReceiptSignatureError::ContentHashMismatch);
+        }
+        self.verify_signature()
+    }
+
+    fn signing_message(&self) -> Vec<u8> {
+        let source = self.source_id.as_bytes();
+        let note = self.provenance_note.as_bytes();
+        let source_len = u64::try_from(source.len()).unwrap_or(u64::MAX);
+        let note_len = u64::try_from(note.len()).unwrap_or(u64::MAX);
+
+        let mut message = Vec::with_capacity(
+            RECEIPT_SIGNATURE_DOMAIN.len()
+                + 8
+                + source.len()
+                + 8
+                + 32
+                + 8
+                + note.len(),
+        );
+        message.extend_from_slice(RECEIPT_SIGNATURE_DOMAIN);
+        message.extend_from_slice(&source_len.to_be_bytes());
+        message.extend_from_slice(source);
+        message.extend_from_slice(&self.observed_at_ms.to_be_bytes());
+        message.extend_from_slice(&self.content_sha256);
+        message.extend_from_slice(&note_len.to_be_bytes());
+        message.extend_from_slice(note);
+        message
     }
 }
 
@@ -148,6 +240,7 @@ pub enum PersistenceError {
     ResourceLimit(&'static str),
     InvalidUtf8,
     ReceiptMismatch,
+    InvalidSourceSignature,
 }
 
 impl fmt::Display for PersistenceError {
@@ -163,6 +256,9 @@ impl fmt::Display for PersistenceError {
             Self::InvalidUtf8 => write!(f, "continuity snapshot contains invalid UTF-8"),
             Self::ReceiptMismatch => {
                 write!(f, "continuity snapshot object does not match receipt hash")
+            }
+            Self::InvalidSourceSignature => {
+                write!(f, "continuity snapshot source receipt signature is invalid")
             }
         }
     }
@@ -291,6 +387,11 @@ impl ContinuityStore {
             if !object.receipt.verify(&object.bytes) {
                 return Err(PersistenceError::ReceiptMismatch);
             }
+            if object.receipt.signature.is_some()
+                && object.receipt.verify_signature().is_err()
+            {
+                return Err(PersistenceError::InvalidSourceSignature);
+            }
 
             let key = object.key.as_bytes();
             let source = object.receipt.source_id.as_bytes();
@@ -313,6 +414,14 @@ impl ContinuityStore {
             snapshot.extend_from_slice(&object.receipt.observed_at_ms.to_be_bytes());
             snapshot.extend_from_slice(&valid_for_ms.to_be_bytes());
             snapshot.extend_from_slice(&object.receipt.content_sha256);
+            match &object.receipt.signature {
+                None => snapshot.push(0),
+                Some(signed) => {
+                    snapshot.push(1);
+                    snapshot.extend_from_slice(&signed.verifying_key);
+                    snapshot.extend_from_slice(&signed.signature);
+                }
+            }
             snapshot.extend_from_slice(key);
             snapshot.extend_from_slice(source);
             snapshot.extend_from_slice(note);
@@ -374,7 +483,7 @@ impl ContinuityStore {
             return Err(PersistenceError::InvalidFormat("wrong snapshot magic"));
         }
         let version = cursor.u8()?;
-        if version != STORE_VERSION {
+        if version != STORE_VERSION_UNSIGNED && version != STORE_VERSION {
             return Err(PersistenceError::InvalidFormat(
                 "unsupported snapshot version",
             ));
@@ -403,6 +512,22 @@ impl ContinuityStore {
             let observed_at_ms = cursor.u64()?;
             let valid_for_ms = cursor.u64()?;
             let content_sha256 = cursor.array32()?;
+            let signature = if version >= STORE_VERSION {
+                match cursor.u8()? {
+                    0 => None,
+                    1 => Some(ReceiptSignature {
+                        verifying_key: cursor.array32()?,
+                        signature: cursor.array64()?,
+                    }),
+                    _ => {
+                        return Err(PersistenceError::InvalidFormat(
+                            "invalid receipt signature flag",
+                        ))
+                    }
+                }
+            } else {
+                None
+            };
 
             let key = decode_utf8(cursor.take(key_len)?)?;
             let source_id = decode_utf8(cursor.take(source_len)?)?;
@@ -423,12 +548,18 @@ impl ContinuityStore {
                     observed_at_ms,
                     content_sha256,
                     provenance_note,
+                    signature,
                 },
                 valid_for: Duration::from_millis(valid_for_ms),
             };
 
             if !object.receipt.verify(&object.bytes) {
                 return Err(PersistenceError::ReceiptMismatch);
+            }
+            if object.receipt.signature.is_some()
+                && object.receipt.verify_signature().is_err()
+            {
+                return Err(PersistenceError::InvalidSourceSignature);
             }
             store.entries.insert(key, object);
         }
@@ -448,6 +579,11 @@ impl ContinuityStore {
     ) -> Result<(), &'static str> {
         if !object.receipt.verify(&object.bytes) {
             return Err("cached object does not match source receipt hash");
+        }
+        if object.receipt.signature.is_some()
+            && object.receipt.verify_signature().is_err()
+        {
+            return Err("cached object source receipt signature is invalid");
         }
         self.entries.insert(object.key.clone(), object);
         Ok(())
@@ -577,6 +713,12 @@ impl<'a> StoreCursor<'a> {
         self.take(32)?
             .try_into()
             .map_err(|_| PersistenceError::InvalidFormat("truncated digest"))
+    }
+
+    fn array64(&mut self) -> Result<[u8; 64], PersistenceError> {
+        self.take(64)?
+            .try_into()
+            .map_err(|_| PersistenceError::InvalidFormat("truncated signature"))
     }
 }
 
@@ -756,6 +898,110 @@ mod tests {
             "sp3-continuity-{label}-{}-snapshot.bin",
             std::process::id(),
         ))
+    }
+
+    #[test]
+    fn signed_source_receipt_verifies_content_and_metadata() {
+        let signing_key = SigningKey::from_bytes(&[0x5A; 32]);
+        let bytes = b"remote observation";
+        let receipt = SourceReceipt::signed_for_bytes(
+            "resolver-a",
+            42_000,
+            bytes,
+            "peer-egress observation",
+            &signing_key,
+        );
+
+        assert!(receipt.verify_signed_bytes(bytes).is_ok());
+
+        let mut tampered_source = receipt.clone();
+        tampered_source.source_id.push('x');
+        assert_eq!(
+            tampered_source.verify_signature(),
+            Err(ReceiptSignatureError::InvalidSignature),
+        );
+
+        let mut tampered_time = receipt.clone();
+        tampered_time.observed_at_ms += 1;
+        assert_eq!(
+            tampered_time.verify_signature(),
+            Err(ReceiptSignatureError::InvalidSignature),
+        );
+
+        assert_eq!(
+            receipt.verify_signed_bytes(b"different bytes"),
+            Err(ReceiptSignatureError::ContentHashMismatch),
+        );
+    }
+
+    #[test]
+    fn insert_rejects_invalid_signed_metadata_even_when_content_hash_matches() {
+        let signing_key = SigningKey::from_bytes(&[0x44; 32]);
+        let bytes = b"signed object".to_vec();
+        let mut receipt = SourceReceipt::signed_for_bytes(
+            "source-a",
+            1_000,
+            &bytes,
+            "original provenance",
+            &signing_key,
+        );
+        receipt.provenance_note = "tampered provenance".to_owned();
+
+        let mut store = ContinuityStore::new();
+        assert_eq!(
+            store.insert_verified(CachedObject {
+                key: "signed".to_owned(),
+                bytes,
+                receipt,
+                valid_for: Duration::from_secs(60),
+            }),
+            Err("cached object source receipt signature is invalid"),
+        );
+    }
+
+    #[test]
+    fn signed_receipt_survives_snapshot_restart() {
+        let path = temp_snapshot_path("signed-roundtrip");
+        let _ = fs::remove_file(&path);
+        let signing_key = SigningKey::from_bytes(&[0x33; 32]);
+        let bytes = b"signed cached remote bytes".to_vec();
+
+        let mut store = ContinuityStore::new();
+        store
+            .insert_verified(CachedObject {
+                key: "signed".to_owned(),
+                bytes: bytes.clone(),
+                receipt: SourceReceipt::signed_for_bytes(
+                    "remote-signer",
+                    77_000,
+                    &bytes,
+                    "signed provenance",
+                    &signing_key,
+                ),
+                valid_for: Duration::from_secs(60),
+            })
+            .unwrap();
+
+        store.save_snapshot(&path).unwrap();
+        let loaded = ContinuityStore::load_snapshot(
+            &path,
+            PersistenceLimits::conservative(),
+        )
+        .unwrap();
+
+        let object = loaded.get("signed").unwrap();
+        assert!(object.receipt.verify_signed_bytes(&object.bytes).is_ok());
+        assert_eq!(
+            object
+                .receipt
+                .signature
+                .as_ref()
+                .unwrap()
+                .verifying_key,
+            signing_key.verifying_key().to_bytes(),
+        );
+
+        fs::remove_file(&path).unwrap();
     }
 
     #[test]
