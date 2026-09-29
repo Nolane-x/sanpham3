@@ -24,5 +24,9 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
+    <uses-feature
+        android:name="android.hardware.bluetooth"
+        android:required="false" />
+
     <application />
 </manifest>
