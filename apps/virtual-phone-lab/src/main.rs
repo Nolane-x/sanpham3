@@ -485,6 +485,7 @@ fn broad_android_profile() -> DeviceCapabilities {
         accelerometer: true,
         magnetometer: true,
         usb: true,
+        external_os_interface: false,
     }
 }
 
@@ -505,6 +506,7 @@ fn frontier_profiles() -> Vec<CarrierProfile> {
         CarrierKind::VibrationSurface,
         CarrierKind::MagneticSensor,
         CarrierKind::UsbLocal,
+        CarrierKind::ExternalOsInterface,
         CarrierKind::PhysicalDataMule,
         CarrierKind::LocalCacheTwin,
         CarrierKind::None,

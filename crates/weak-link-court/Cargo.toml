@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 peer-egress = { path = "../peer-egress" }
 peer-session = { path = "../peer-session" }
+urt-core = { path = "../urt-core" }

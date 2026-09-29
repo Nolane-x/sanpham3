@@ -113,3 +113,12 @@ This is a new product, not a continuation of the game.
 ## Rename gate
 
 The placeholder `sanpham3` stays until real devices demonstrate peer egress, multi-hop recovery, weak-path utility and cross-platform operation. Branding comes after evidence.
+
+
+## URT + optional external assistance
+
+The recovery engine now has an initial Universal Reconstruction Transport (URT) exact-data court. URT minimizes network bytes using deterministic reconstruction strategies while preserving SHA-256-verified byte identity and reporting shared cache/base state separately.
+
+The product still requires no external hardware. Recovery Mode may nevertheless scavenge an already-attached, OS-exposed user device or interface when present. Such paths are external-assisted evidence and do not count as app-only proof.
+
+See docs/URT-V0-COURT.md and docs/OPTIONAL-EXTERNAL-ASSIST.md.
