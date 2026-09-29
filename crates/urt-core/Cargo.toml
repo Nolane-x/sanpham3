@@ -6,3 +6,4 @@ description = "Deterministic transport-aware reconstruction primitives for sanph
 
 [dependencies]
 sha2 = "0.11"
+zstandard = "0.1"

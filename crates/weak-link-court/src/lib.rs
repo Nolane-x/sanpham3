@@ -445,13 +445,7 @@ pub fn run_urt_exact_court(
     let decoded = decode_exact(
         &delivered,
         &cache,
-        DecodeBudget {
-            max_output_bytes: input.len() as u64,
-            max_decode_ops: (input.len() as u64)
-                .saturating_mul(2)
-                .saturating_add(1024),
-            max_extra_working_bytes: input.len().max(8 * 1024),
-        },
+        DecodeBudget::permissive_for(input.len() as u64),
     )
     .map_err(|error| CourtError::Urt(error.to_string()))?;
 
@@ -495,6 +489,28 @@ mod tests {
                 "8.8.8.8".parse().unwrap(),
             ])
         }
+    }
+
+    #[test]
+    fn urt_zstandard_text_survives_hundred_bps_virtual_link() {
+        let mut input = Vec::new();
+        for index in 0..2_000_u32 {
+            let line = format!(
+                "node={index} route=peer-egress status=degraded freshness=fresh_remote\n"
+            );
+            input.extend_from_slice(line.as_bytes());
+        }
+
+        let result = run_urt_exact_court(
+            WeakLinkProfile::ladder(100),
+            &input,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(result.strategy, ExactStrategy::Zstandard);
+        assert_eq!(result.exact_hash, sha256(&input));
+        assert!(result.network_bytes < result.original_bytes / 3);
     }
 
     #[test]

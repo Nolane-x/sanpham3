@@ -12,11 +12,19 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Write};
 use std::time::Duration;
+use zstandard::{
+    parse_frame_header, CompressionLevel, DecoderOptions, EncoderOptions,
+    FrameHeader, ParameterOverrides, StreamingDecoder,
+};
 
 pub const MAGIC: [u8; 4] = *b"URT0";
 pub const FORMAT_VERSION: u8 = 1;
 pub const FIXED_HEADER_BYTES: usize = 54;
 const RLE_SCRATCH_BYTES: usize = 8 * 1024;
+const ZSTANDARD_MAX_WINDOW_LOG: u32 = 20;
+const ZSTANDARD_MAX_WINDOW_BYTES: usize = 1 << ZSTANDARD_MAX_WINDOW_LOG;
+const ZSTANDARD_DECODE_BUDGET_BYTES: usize =
+    ZSTANDARD_MAX_WINDOW_BYTES + (256 * 1024);
 
 pub type Digest32 = [u8; 32];
 
@@ -28,6 +36,7 @@ pub enum ExactStrategy {
     RepeatPattern = 2,
     CacheReference = 3,
     BaseDelta = 4,
+    Zstandard = 5,
 }
 
 impl ExactStrategy {
@@ -38,6 +47,7 @@ impl ExactStrategy {
             2 => Ok(Self::RepeatPattern),
             3 => Ok(Self::CacheReference),
             4 => Ok(Self::BaseDelta),
+            5 => Ok(Self::Zstandard),
             _ => Err(UrtError::InvalidFormat("unknown exact strategy")),
         }
     }
@@ -64,6 +74,7 @@ pub enum ExactRepresentation {
         suffix_len: u64,
         middle: Vec<u8>,
     },
+    Zstandard(Vec<u8>),
 }
 
 impl ExactRepresentation {
@@ -74,6 +85,7 @@ impl ExactRepresentation {
             Self::RepeatPattern { .. } => ExactStrategy::RepeatPattern,
             Self::CacheReference => ExactStrategy::CacheReference,
             Self::BaseDelta { .. } => ExactStrategy::BaseDelta,
+            Self::Zstandard(_) => ExactStrategy::Zstandard,
         }
     }
 
@@ -96,6 +108,7 @@ impl ExactRepresentation {
                 out
             }
             Self::CacheReference => Vec::new(),
+            Self::Zstandard(bytes) => bytes.clone(),
             Self::BaseDelta {
                 base_digest,
                 prefix_len,
@@ -115,6 +128,7 @@ impl ExactRepresentation {
     fn extra_decode_scratch_bytes(&self) -> usize {
         match self {
             Self::RunLength(_) => RLE_SCRATCH_BYTES,
+            Self::Zstandard(_) => ZSTANDARD_DECODE_BUDGET_BYTES,
             _ => 0,
         }
     }
@@ -225,6 +239,10 @@ impl ExactPacket {
                     middle,
                 }
             }
+            ExactStrategy::Zstandard => {
+                validate_zstandard_frame(payload, original_len)?;
+                ExactRepresentation::Zstandard(payload.to_vec())
+            }
         };
 
         Ok(Self {
@@ -247,7 +265,9 @@ impl DecodeBudget {
         Self {
             max_output_bytes: output_bytes,
             max_decode_ops: output_bytes.saturating_mul(4).saturating_add(1024),
-            max_extra_working_bytes: RLE_SCRATCH_BYTES,
+            max_extra_working_bytes: usize::try_from(output_bytes)
+                .unwrap_or(usize::MAX)
+                .max(ZSTANDARD_DECODE_BUDGET_BYTES),
         }
     }
 }
@@ -323,6 +343,14 @@ pub fn encode_exact(input: &[u8], known_base: Option<&[u8]>) -> EncodeResult {
         if payload_len < best_payload_len {
             best_payload_len = payload_len;
             representation = ExactRepresentation::RepeatPattern { pattern, repeats };
+            shared_state_bytes = 0;
+        }
+    }
+
+    if let Ok(compressed) = encode_zstandard(input) {
+        if compressed.len() < best_payload_len {
+            best_payload_len = compressed.len();
+            representation = ExactRepresentation::Zstandard(compressed);
             shared_state_bytes = 0;
         }
     }
@@ -459,6 +487,9 @@ fn decode_packet_to_writer<C: ExactCache, W: Write>(
                 state.emit(pattern)?;
             }
         }
+        ExactRepresentation::Zstandard(bytes) => {
+            decode_zstandard_to_state(bytes, packet.original_len, &mut state)?;
+        }
         ExactRepresentation::CacheReference => {
             let base = cache
                 .get(&packet.digest)
@@ -540,6 +571,80 @@ impl<W: Write> DecodeState<'_, W> {
     }
 }
 
+fn encode_zstandard(input: &[u8]) -> Result<Vec<u8>, UrtError> {
+    let options = EncoderOptions {
+        compression_level: CompressionLevel::BETTER,
+        checksum: true,
+        parameters: ParameterOverrides {
+            window_log: Some(ZSTANDARD_MAX_WINDOW_LOG),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    zstandard::encode_all_with_options(input, options)
+        .map_err(|error| UrtError::Codec(error.to_string()))
+}
+
+fn validate_zstandard_frame(
+    bytes: &[u8],
+    expected_output_len: u64,
+) -> Result<(), UrtError> {
+    let header = parse_frame_header(bytes)
+        .map_err(|error| UrtError::Codec(error.to_string()))?;
+    let FrameHeader::Zstandard(header) = header else {
+        return Err(UrtError::InvalidFormat(
+            "URT Zstandard representation cannot be a skippable frame",
+        ));
+    };
+
+    if header.window_size > ZSTANDARD_MAX_WINDOW_BYTES as u64 {
+        return Err(UrtError::ResourceLimit(
+            "Zstandard frame requires a window above the URT limit",
+        ));
+    }
+
+    if let Some(content_size) = header.content_size {
+        if content_size != expected_output_len {
+            return Err(UrtError::LengthMismatch {
+                expected: expected_output_len,
+                actual: content_size,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn decode_zstandard_to_state<W: Write>(
+    bytes: &[u8],
+    expected_output_len: u64,
+    state: &mut DecodeState<'_, W>,
+) -> Result<(), UrtError> {
+    validate_zstandard_frame(bytes, expected_output_len)?;
+
+    let mut decoder = StreamingDecoder::new(DecoderOptions::default());
+    for chunk in bytes.chunks(8 * 1024) {
+        decoder
+            .push(chunk)
+            .map_err(|error| UrtError::Codec(error.to_string()))?;
+        let output = decoder.take_output();
+        if !output.is_empty() {
+            state.emit(&output)?;
+        }
+    }
+
+    decoder
+        .finish()
+        .map_err(|error| UrtError::Codec(error.to_string()))?;
+    let output = decoder.take_output();
+    if !output.is_empty() {
+        state.emit(&output)?;
+    }
+
+    Ok(())
+}
+
 fn encode_rle(input: &[u8]) -> Option<Vec<Run>> {
     let (&first, rest) = input.split_first()?;
     let mut runs = Vec::new();
@@ -618,6 +723,7 @@ pub enum UrtError {
     ResourceLimit(&'static str),
     LengthMismatch { expected: u64, actual: u64 },
     IntegrityMismatch,
+    Codec(String),
     Io(io::Error),
 }
 
@@ -632,6 +738,7 @@ impl fmt::Display for UrtError {
                 write!(f, "URT output length mismatch: expected {expected}, got {actual}")
             }
             Self::IntegrityMismatch => write!(f, "URT exact reconstruction hash mismatch"),
+            Self::Codec(message) => write!(f, "URT codec error: {message}"),
             Self::Io(error) => write!(f, "URT output error: {error}"),
         }
     }
@@ -713,12 +820,30 @@ mod tests {
         let budget = DecodeBudget {
             max_output_bytes: input.len() as u64,
             max_decode_ops: (input.len() as u64).saturating_mul(2).saturating_add(1024),
-            max_extra_working_bytes: input.len().max(RLE_SCRATCH_BYTES),
+            max_extra_working_bytes: input
+                .len()
+                .max(ZSTANDARD_DECODE_BUDGET_BYTES),
         };
         let decoded = decode_exact(&wire, &cache, budget).unwrap();
         assert_eq!(decoded, input);
         assert_eq!(sha256(&decoded), sha256(input));
         encoded
+    }
+
+    #[test]
+    fn structured_text_uses_zstandard_and_roundtrips_exactly() {
+        let mut input = Vec::new();
+        for index in 0..20_000_u32 {
+            let line = format!(
+                "{{\"id\":{index},\"kind\":\"weather\",\"city\":\"Hai Phong\",\"unit\":\"celsius\",\"valid\":true}}\n"
+            );
+            input.extend_from_slice(line.as_bytes());
+        }
+
+        let encoded = round_trip(&input, None);
+        assert_eq!(encoded.report.strategy, ExactStrategy::Zstandard);
+        assert_eq!(encoded.report.shared_state_bytes, 0);
+        assert!(encoded.report.network_bytes < encoded.report.original_bytes / 4);
     }
 
     #[test]
@@ -777,8 +902,11 @@ mod tests {
     fn tampering_is_detected_by_exact_hash_contract() {
         let input = b"exact exact exact exact exact".repeat(100);
         let mut wire = encode_exact(&input, None).packet.to_bytes();
-        let last = wire.len() - 1;
-        wire[last] ^= 1;
+        // Corrupt the outer URT digest while leaving the selected payload
+        // decodable. This proves the exact-output contract independently of
+        // any inner codec checksum.
+        let digest_start = 4 + 1 + 1 + 8;
+        wire[digest_start] ^= 1;
 
         let cache = EmptyCache;
         let mut sink = Vec::new();
