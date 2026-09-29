@@ -1,0 +1,86 @@
+name: android-recovery-lab
+
+on:
+  push:
+    paths:
+      - "apps/android-recovery-lab/**"
+      - "adapters/android-host/**"
+      - "adapters/android-peer-session-jni/**"
+      - "crates/peer-session/**"
+      - ".github/workflows/android-recovery-lab.yml"
+  pull_request:
+    paths:
+      - "apps/android-recovery-lab/**"
+      - "adapters/android-host/**"
+      - "adapters/android-peer-session-jni/**"
+      - "crates/peer-session/**"
+      - ".github/workflows/android-recovery-lab.yml"
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ""
+
+      - name: Install Android platform
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Select Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK_DIR=""
+          if [ -d "$ANDROID_SDK_ROOT/ndk" ]; then
+            NDK_DIR="$(find "$ANDROID_SDK_ROOT/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          fi
+          if [ -z "$NDK_DIR" ]; then
+            NDK_PACKAGE="$(sdkmanager --list | sed -n 's/^[[:space:]]*\(ndk;[0-9][^[:space:]]*\).*/\1/p' | sort -V | tail -n 1)"
+            test -n "$NDK_PACKAGE"
+            sdkmanager "$NDK_PACKAGE"
+            NDK_DIR="$(find "$ANDROID_SDK_ROOT/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          fi
+          test -d "$NDK_DIR"
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$NDK_DIR" >> "$GITHUB_ENV"
+
+      - name: Build shared Rust peer-session JNI
+        run: |
+          rm -rf adapters/android-host/src/main/jniLibs
+          cargo ndk -t arm64-v8a -t x86_64 -o adapters/android-host/src/main/jniLibs build -p android-peer-session-jni --release
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.6.0"
+
+      - name: Build Recovery Lab APK
+        run: gradle -p apps/android-recovery-lab :app:assembleDebug --stacktrace
+
+      - name: Verify APK payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find apps/android-recovery-lab/app/build/outputs/apk/debug -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          unzip -l "$APK" | tee /tmp/recovery-lab-apk.txt
+          grep -q 'lib/arm64-v8a/libsp3_android_peer_session.so' /tmp/recovery-lab-apk.txt
+          grep -q 'lib/x86_64/libsp3_android_peer_session.so' /tmp/recovery-lab-apk.txt
+          test -s "$APK"
+          sha256sum "$APK"
