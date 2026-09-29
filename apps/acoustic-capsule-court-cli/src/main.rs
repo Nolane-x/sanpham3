@@ -112,8 +112,10 @@ fn bytes_to_bits(bytes: &[u8]) -> Vec<u8> {
 }
 
 fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
-    assert!(bits.len().is_multiple_of(8));
-    bits.chunks_exact(8)
+    let (chunks, remainder) = bits.as_chunks::<8>();
+    assert!(remainder.is_empty());
+    chunks
+        .iter()
         .map(|chunk| {
             chunk.iter().fold(0_u8, |value, bit| {
                 (value << 1) | *bit
