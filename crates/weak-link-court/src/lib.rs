@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn urt_exact_payload_survives_ten_bps_virtual_link() {
-        let input = vec![b'Q'; 256 * 1024];
+        let input = b"QWER".repeat(64 * 1024);
         let result = run_urt_exact_court(
             WeakLinkProfile::ladder(10),
             &input,
