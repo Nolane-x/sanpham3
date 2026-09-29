@@ -182,13 +182,21 @@ Paper-only or simulator-only carriers remain research candidates.
 
 This is not Internet access.
 
+Implemented baseline:
+
+- [x] content-addressed cache integrity through SHA-256 source receipts
+- [x] source receipt / observed-at metadata
+- [x] deterministic service twins over cached remote inputs
+- [x] cache-age admission policy
+- [x] locally generated answer labeling
+- [x] current-remote contract is rejected with no carrier
+- [x] service-twin output inherits cached-source provenance
+
 Future work:
 
-- [ ] content-addressed offline cache
-- [ ] source receipt/last-seen metadata
-- [ ] deterministic service twins
-- [ ] progressive stale-data policy
 - [ ] local search index
-- [ ] locally generated answer labeling
-- [ ] conflict between cached sources
+- [ ] multi-source conflict/reconciliation
+- [ ] signed source receipts
+- [ ] persistent cache store and eviction policy
+- [ ] source-specific validity rules
 - [ ] automatic transition from local-only to fresh remote when a carrier returns
