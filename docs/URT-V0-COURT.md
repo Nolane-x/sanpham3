@@ -54,3 +54,14 @@ The lab also projects serialization time at 10 bit/s so byte savings can be comp
 This v0 is a foundation, not the end state. The next useful strategies are content-defined chunking, cross-file deduplication, multi-base delta selection, strong conventional lossless baselines, a bounded reconstruction VM, transport-aware representation selection from live path budgets, and separately typed media Q4 to Q0 plus semantic-survival modes.
 
 Exact and lossy or survival claims must remain distinct.
+
+
+## V1 conventional-lossless baseline
+
+URT now also evaluates a pure-Rust Zstandard frame as one exact candidate.
+
+This is deliberately not presented as a new compression invention. Zstandard is the mature conventional lossless baseline that program, cache and delta representations must beat when they claim a network-byte win.
+
+URT constrains frames it emits to a 1 MiB match window and rejects a received URT Zstandard representation whose declared decode window exceeds that limit. The Zstandard path remains inside the same outer URT SHA-256 exact-output contract.
+
+Selection remains competitive: raw, RLE, repeat-program, Zstandard, cache-reference and base-delta candidates are compared, and the smallest implemented exact payload wins. Shared-state-assisted results remain separately accounted.
