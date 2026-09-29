@@ -19,10 +19,16 @@ fn main() {
     let urgent_urt = encode_exact(&urgent_logical, None);
     let urgent_wire = urgent_urt.packet.to_bytes();
 
-    let background_logical = (0..96 * 1024)
-        .map(|index| ((index * 13) % 251) as u8)
-        .collect::<Vec<_>>();
+    let mut background_state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut background_logical = vec![0_u8; 96 * 1024];
+    for byte in &mut background_logical {
+        background_state ^= background_state << 13;
+        background_state ^= background_state >> 7;
+        background_state ^= background_state << 17;
+        *byte = background_state as u8;
+    }
     let background_urt = encode_exact(&background_logical, None);
+    assert!(background_urt.packet.to_bytes().len() > 90 * 1024);
     let background_wire = background_urt.packet.to_bytes();
 
     let urgent = PendingTransfer::from_bytes(
