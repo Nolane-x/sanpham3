@@ -85,7 +85,7 @@ Useful emulator options include:
 Automated permission/application scenarios for already-running twins:
 
 ```bash
-scripts/virtual-phone-avd-scenarios.sh \
+bash scripts/virtual-phone-avd-scenarios.sh \
   emulator-5554 emulator-5556 <package> [evidence_dir]
 ```
 
