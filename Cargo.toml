@@ -8,6 +8,7 @@ members = [
     "crates/recovery-runtime",
     "crates/weak-link-court",
     "crates/carrier-frontier",
+    "crates/signal-frontier",
     "adapters/linux-host",
     "adapters/android-peer-session-jni",
     "adapters/windows-host",
