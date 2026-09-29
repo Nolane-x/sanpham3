@@ -265,7 +265,9 @@ impl DecodeBudget {
         Self {
             max_output_bytes: output_bytes,
             max_decode_ops: output_bytes.saturating_mul(4).saturating_add(1024),
-            max_extra_working_bytes: ZSTANDARD_DECODE_BUDGET_BYTES,
+            max_extra_working_bytes: usize::try_from(output_bytes)
+                .unwrap_or(usize::MAX)
+                .max(ZSTANDARD_DECODE_BUDGET_BYTES),
         }
     }
 }
@@ -818,7 +820,9 @@ mod tests {
         let budget = DecodeBudget {
             max_output_bytes: input.len() as u64,
             max_decode_ops: (input.len() as u64).saturating_mul(2).saturating_add(1024),
-            max_extra_working_bytes: input.len().max(RLE_SCRATCH_BYTES),
+            max_extra_working_bytes: input
+                .len()
+                .max(ZSTANDARD_DECODE_BUDGET_BYTES),
         };
         let decoded = decode_exact(&wire, &cache, budget).unwrap();
         assert_eq!(decoded, input);
