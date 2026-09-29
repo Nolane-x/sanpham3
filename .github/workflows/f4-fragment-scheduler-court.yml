@@ -1,0 +1,33 @@
+name: f4-fragment-scheduler-court
+
+on:
+  push:
+    paths:
+      - "crates/fragment-scheduler/**"
+      - "apps/fragment-scheduler-court-cli/**"
+      - "Cargo.toml"
+      - ".github/workflows/f4-fragment-scheduler-court.yml"
+  pull_request:
+    paths:
+      - "crates/fragment-scheduler/**"
+      - "apps/fragment-scheduler-court-cli/**"
+      - "Cargo.toml"
+      - ".github/workflows/f4-fragment-scheduler-court.yml"
+
+jobs:
+  deadline-scheduler:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy -p fragment-scheduler -p fragment-scheduler-court-cli --all-targets -- -D warnings
+      - run: cargo test -p fragment-scheduler
+      - run: cargo run -p fragment-scheduler-court-cli

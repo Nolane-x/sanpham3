@@ -1,0 +1,8 @@
+[package]
+name = "fragment-scheduler"
+version = "0.1.0"
+edition = "2021"
+description = "Deadline/freshness-aware scheduling for authenticated sanpham3 fragments"
+
+[dependencies]
+fragment-transport = { path = "../fragment-transport" }

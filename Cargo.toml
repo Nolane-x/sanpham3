@@ -12,6 +12,7 @@ members = [
     "crates/zero-carrier-continuity",
     "crates/urt-core",
     "crates/fragment-transport",
+    "crates/fragment-scheduler",
     "adapters/linux-host",
     "adapters/android-peer-session-jni",
     "adapters/windows-host",
@@ -26,5 +27,6 @@ members = [
     "apps/virtual-phone-lab",
     "apps/urt-lab-cli",
     "apps/fragment-court-cli",
+    "apps/fragment-scheduler-court-cli",
 ]
 resolver = "2"

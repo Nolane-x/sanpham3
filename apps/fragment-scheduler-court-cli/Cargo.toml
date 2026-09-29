@@ -1,0 +1,9 @@
+[package]
+name = "fragment-scheduler-court-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fragment-scheduler = { path = "../../crates/fragment-scheduler" }
+fragment-transport = { path = "../../crates/fragment-transport" }
+urt-core = { path = "../../crates/urt-core" }
