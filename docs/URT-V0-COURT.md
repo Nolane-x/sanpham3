@@ -65,3 +65,67 @@ This is deliberately not presented as a new compression invention. Zstandard is 
 URT constrains frames it emits to a 1 MiB match window and rejects a received URT Zstandard representation whose declared decode window exceeds that limit. The Zstandard path remains inside the same outer URT SHA-256 exact-output contract.
 
 Selection remains competitive: raw, RLE, repeat-program, Zstandard, cache-reference and base-delta candidates are compared, and the smallest implemented exact payload wins. Shared-state-assisted results remain separately accounted.
+
+
+## V2 content-defined chunk reuse
+
+URT now has an exact `ChunkManifest` strategy for receiver-side shared state
+that is more general than one whole-file base delta.
+
+The chunker uses a deterministic rolling 48-byte fingerprint and enforces:
+
+```text
+minimum chunk = 2 KiB
+target average ≈ 8 KiB
+maximum chunk = 32 KiB
+```
+
+Because the fingerprint is rolling across the byte stream rather than reset
+from every previous boundary, a local edit perturbs boundaries only around the
+edited region and can resynchronize after the rolling window. This is the
+property needed for useful dedup across distributed edits.
+
+Each manifest record carries:
+
+```text
+chunk length
+embedded/cache flag
+full SHA-256 chunk digest
+embedded bytes only when the receiver lacks the chunk
+```
+
+Cached chunks are reconstructed only after their length and SHA-256 are
+verified. The outer URT SHA-256 still verifies the complete reconstructed
+object.
+
+### Accounting
+
+`shared_state_bytes` counts only logical bytes actually reused from the
+receiver cache. Those bytes are never presented as standalone compression.
+
+Manifest metadata and every missing chunk are included in
+`network_bytes`.
+
+### Cache indexing
+
+`index_exact_object()` stores both the whole-object digest and deterministic
+CDC chunks. That allows the same receiver cache to support:
+
+- whole-object cache references;
+- ordinary base delta;
+- content-defined chunk reuse;
+- later cross-file / cross-version reuse.
+
+`encode_exact_with_cache()` can select ChunkManifest even when there is no
+single designated base object, which is the foundation for cross-file dedup.
+
+### Courts
+
+V2 adds deterministic cases for:
+
+- many small edits spread through a 1 MiB high-entropy-like base;
+- reconstruction from a chunk cache without a whole-file base;
+- carrying a CDC-assisted exact object through the existing 100 bit/s
+  weak-link simulator.
+
+The court must still reconstruct byte-for-byte before PASS.
