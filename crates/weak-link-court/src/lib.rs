@@ -8,7 +8,10 @@ use peer_session::{
 };
 use std::collections::HashMap;
 use std::time::Duration;
-use urt_core::{decode_exact, encode_exact, sha256, DecodeBudget, Digest32, ExactStrategy};
+use urt_core::{
+    decode_exact, encode_exact, index_exact_object, sha256, DecodeBudget,
+    Digest32, ExactStrategy,
+};
 
 const LOSS_SCALE: u32 = 1_000_000;
 
@@ -439,7 +442,7 @@ pub fn run_urt_exact_court(
 
     let mut cache = HashMap::<Digest32, Vec<u8>>::new();
     if let Some(base) = known_base {
-        cache.insert(sha256(base), base.to_vec());
+        index_exact_object(&mut cache, base);
     }
 
     let decoded = decode_exact(
@@ -489,6 +492,39 @@ mod tests {
                 "8.8.8.8".parse().unwrap(),
             ])
         }
+    }
+
+    #[test]
+    fn urt_cdc_distributed_edits_survive_hundred_bps_virtual_link() {
+        let mut state = 0x51f2_aa93_1407_77d3_u64;
+        let mut base = vec![0_u8; 512 * 1024];
+        for byte in &mut base {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state as u8;
+        }
+
+        let mut changed = base.clone();
+        for offset in (24 * 1024..changed.len() - 24 * 1024)
+            .step_by(48 * 1024)
+        {
+            for index in 0..24 {
+                changed[offset + index] ^= 0x6D;
+            }
+        }
+
+        let result = run_urt_exact_court(
+            WeakLinkProfile::ladder(100),
+            &changed,
+            Some(&base),
+        )
+        .unwrap();
+
+        assert_eq!(result.strategy, ExactStrategy::ChunkManifest);
+        assert_eq!(result.exact_hash, sha256(&changed));
+        assert!(result.shared_state_bytes > 250 * 1024);
+        assert!(result.network_bytes < result.original_bytes);
     }
 
     #[test]

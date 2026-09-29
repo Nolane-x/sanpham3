@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use urt_core::{
-    decode_exact, encode_exact, serialization_time, sha256, DecodeBudget,
-    Digest32,
+    decode_exact, encode_exact, index_exact_object, serialization_time,
+    DecodeBudget, Digest32,
 };
 
 fn verify(name: &str, input: &[u8], base: Option<&[u8]>) {
@@ -9,7 +9,7 @@ fn verify(name: &str, input: &[u8], base: Option<&[u8]>) {
     let wire = encoded.packet.to_bytes();
     let mut cache = HashMap::<Digest32, Vec<u8>>::new();
     if let Some(base) = base {
-        cache.insert(sha256(base), base.to_vec());
+        index_exact_object(&mut cache, base);
     }
 
     let decoded = decode_exact(
@@ -57,8 +57,9 @@ fn main() {
     verify("high-entropy-like-64kib", &noisy, None);
 
     valueless_structured_text_case();
+    distributed_edit_cdc_case();
 
-    println!("URT_V1_PASS exact_cases=5");
+    println!("URT_V2_PASS exact_cases=6");
 }
 
 fn valueless_structured_text_case() {
@@ -70,4 +71,27 @@ fn valueless_structured_text_case() {
         text.extend_from_slice(line.as_bytes());
     }
     verify("structured-text-zstandard", &text, None);
+}
+
+
+fn distributed_edit_cdc_case() {
+    let mut state = 0x51f2_aa93_1407_77d3_u64;
+    let mut base = vec![0_u8; 1024 * 1024];
+    for byte in &mut base {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        *byte = state as u8;
+    }
+
+    let mut changed = base.clone();
+    for offset in (32 * 1024..changed.len() - 32 * 1024)
+        .step_by(64 * 1024)
+    {
+        for index in 0..32 {
+            changed[offset + index] ^= 0xA5;
+        }
+    }
+
+    verify("cdc-distributed-edits-1mib", &changed, Some(&base));
 }
