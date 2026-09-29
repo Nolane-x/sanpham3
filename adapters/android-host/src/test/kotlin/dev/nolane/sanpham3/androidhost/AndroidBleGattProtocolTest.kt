@@ -37,6 +37,19 @@ class AndroidBleGattProtocolTest {
     }
 
     @Test
+    fun targetMtuHasHeadroomForWorstCaseHotspotBootstrapFrame() {
+        val required =
+            AndroidBleGattProtocol.requiredMtuForEncryptedProjectPayload(
+                AndroidLocalHotspotBootstrap.MAX_ENCODED_BYTES,
+            )
+
+        assertEquals(148, required)
+        org.junit.Assert.assertTrue(
+            AndroidBleGattProtocol.TARGET_MTU >= required,
+        )
+    }
+
+    @Test
     fun undersizedMtuFailsInsteadOfPretendingFragmentationExists() {
         val envelope = AndroidBleGattProtocol.encode(
             AndroidBleGattProtocol.OPCODE_FRAME,
