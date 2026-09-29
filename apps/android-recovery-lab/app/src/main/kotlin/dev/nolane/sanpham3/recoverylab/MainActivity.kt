@@ -176,6 +176,9 @@ class MainActivity : Activity() {
         root.addView(button("Open Local-Only Hotspot G8 court") {
             startActivity(Intent(this, HotspotCourtActivity::class.java))
         })
+        root.addView(button("Open G9 peer-egress recovery court") {
+            startActivity(Intent(this, G9PeerEgressActivity::class.java))
+        })
         root.addView(button("Stop active court") {
             stopActive("user_stop")
         })

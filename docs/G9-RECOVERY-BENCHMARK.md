@@ -206,3 +206,94 @@ Physical G9 passes only if:
 - the tested commit and topology are recorded.
 
 A simulator, loopback test, or manually injected result is not physical closure.
+
+
+## Android physical G9 APK court
+
+The Android Recovery Lab now includes a dedicated G9 screen:
+
+```text
+SP3 Recovery Lab
+  -> Open G9 peer-egress recovery court
+```
+
+It uses Local-Only Hotspot as the rescue carrier and the same Rust-backed
+authenticated peer-session already used by G8.
+
+### Constrained operation
+
+The Android peer-egress implementation mirrors the Rust `peer-egress` wire
+contract:
+
+```text
+0x20 resolve request
+0x21 resolve response
+```
+
+Only public-host DNS resolution is exposed. It is not an arbitrary TCP or HTTP
+proxy. Hostnames that are local, literal IPs, single-label, malformed, or use
+blocked local suffixes are rejected. Private, link-local, documentation,
+benchmark, multicast and other non-public returned addresses are filtered.
+
+### Device B — consenting egress peer
+
+Device B should still have a working Internet path, typically cellular or
+another permitted upstream.
+
+1. Open the G9 court.
+2. Grant nearby-Wi-Fi permission.
+3. Set node ID, for example `300`.
+4. Enter the shared laboratory PSK.
+5. Keep the target hostname/HTTPS URL matched.
+6. Tap **Start G9 egress server**.
+7. Copy the generated hotspot bootstrap capsule to Device A.
+
+After Device A authenticates, B performs a live system resolver call and
+returns only filtered public addresses through the encrypted peer session.
+
+### Device A — failed default path
+
+Before the app joins the rescue hotspot, it performs a direct HTTPS probe using
+the ordinary/default app path.
+
+The client **refuses to print a G9 PASS candidate** if that HTTPS probe still
+receives any HTTP response code. This prevents an ordinary working Internet
+route from being mislabeled as recovery.
+
+If the direct HTTPS probe fails:
+
+1. the app requests the exact Local-Only Hotspot Network;
+2. opens the rescue socket through that Network's `socketFactory`;
+3. authenticates the peer node through Rust `AndroidPeerSession`;
+4. sends the constrained resolve request;
+5. receives a live public DNS result.
+
+A successful run prints:
+
+```text
+G9_PHYSICAL_PASS default_failed=true carrier=local_only_hotspot ...
+```
+
+The saved client record is deliberately named a **PASS_CANDIDATE**. Final
+physical gate closure still requires reviewing the matching server evidence,
+topology, timestamp and freshness claim.
+
+### Evidence
+
+Client evidence includes:
+
+- direct HTTPS probe URL;
+- direct-probe start/end timestamp;
+- concrete failure class;
+- rescue carrier;
+- hotspot bootstrap SHA-256, never credentials;
+- authenticated peer node ID;
+- network join latency;
+- requested hostname and request ID;
+- peer-result observation timestamp;
+- returned public addresses.
+
+Server evidence includes the authenticated client node, requested hostname,
+resolver observation timestamp, filtered addresses and resolve status.
+
+The raw hotspot SSID/passphrase is not written to evidence.

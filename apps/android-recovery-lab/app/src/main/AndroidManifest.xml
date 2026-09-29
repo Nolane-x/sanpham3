@@ -26,6 +26,9 @@
         android:label="SP3 Recovery Lab"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
+            android:name=".G9PeerEgressActivity"
+            android:exported="false" />
+        <activity
             android:name=".HotspotCourtActivity"
             android:exported="false" />
         <activity
