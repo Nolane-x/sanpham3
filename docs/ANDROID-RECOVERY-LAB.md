@@ -231,3 +231,80 @@ After BLE G8 is physically proven, this APK should grow in this order:
 4. peer egress G4;
 5. G9 failed-default -> peer-rescue court;
 6. exportable evidence bundle.
+
+
+## Local-Only Hotspot physical G8 court
+
+The APK now includes a second physical court screen for the authenticated
+Local-Only Hotspot carrier.
+
+Open it from:
+
+```text
+SP3 Recovery Lab
+  -> Open Local-Only Hotspot G8 court
+```
+
+Use two Android devices.
+
+### Server
+
+1. Grant the Wi-Fi / nearby-device permission.
+2. Set a project node ID, for example `200`.
+3. Enter the same laboratory 64-hex peer PSK used by the client.
+4. Tap **Start hotspot G8 server**.
+5. Wait for `HOTSPOT_READY`.
+6. Copy the bootstrap capsule hex shown in the dedicated bootstrap field.
+
+The bootstrap contains hotspot access credentials and the project TCP port.
+It is intentionally shown in the UI so it can be moved manually between lab
+devices. The activity never appends the raw capsule, SSID, or hotspot
+passphrase to its transcript.
+
+### Client
+
+1. Grant the Wi-Fi / nearby-device permission.
+2. Set another project node ID, for example `100`.
+3. Enter the same laboratory peer PSK.
+4. Paste the server bootstrap capsule into the bootstrap field.
+5. Tap **Start hotspot G8 client**.
+6. Approve Android's network-selection UI if the OS presents one.
+
+The client requests the exact Wi-Fi Network through `WifiNetworkSpecifier`,
+uses that Network's `socketFactory`, derives the hotspot host from
+`LinkProperties`, and upgrades the TCP socket into the shared Rust-backed
+`AndroidPeerSession`.
+
+### PASS rule
+
+Both devices must produce:
+
+```text
+G8_PASS ... carrier=local_only_hotspot
+```
+
+and must agree on the G8 challenge while reporting the opposite authenticated
+project node ID.
+
+The evidence file records:
+
+- APK git commit;
+- device model and Android SDK;
+- role;
+- carrier;
+- bootstrap SHA-256 only;
+- hotspot startup or network-join latency;
+- authenticated peer project node ID;
+- G8 challenge;
+- PASS/FAIL.
+
+It does **not** record the raw bootstrap capsule, SSID, or hotspot passphrase.
+
+### Physical boundary
+
+A successful APK build proves only software readiness.
+
+Closing the physical gate still requires two actual Android devices and a
+saved evidence pair from the same run. OEM hotspot behavior, user approval,
+DHCP topology, coexistence with other Internet paths, range, energy and
+throughput remain physical measurements.
