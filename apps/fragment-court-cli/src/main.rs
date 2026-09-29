@@ -193,7 +193,7 @@ fn main() {
 
     for symbol_id in 0..source_count as u64 {
         generated_symbols += 1;
-        if symbol_id % 4 == 0 {
+        if symbol_id.is_multiple_of(4) {
             lost_symbols += 1;
             continue;
         }
@@ -215,7 +215,7 @@ fn main() {
     let repair_limit = source_count as u64 * 8;
     while !rateless.is_decodable() && symbol_id < repair_limit {
         generated_symbols += 1;
-        if symbol_id % 7 == 0 {
+        if symbol_id.is_multiple_of(7) {
             lost_symbols += 1;
             symbol_id += 1;
             continue;
