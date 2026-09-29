@@ -2,9 +2,11 @@ package dev.nolane.sanpham3.recoverylab
 
 import android.Manifest
 import android.app.Activity
+import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import android.text.InputType
 import android.text.method.PasswordTransformationMethod
 import android.view.ViewGroup
@@ -578,6 +580,40 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun publishEvidenceToDownloads(
+        fileName: String,
+        content: String,
+    ): String {
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+            put(
+                MediaStore.Downloads.RELATIVE_PATH,
+                "Download/SP3-Recovery-Lab",
+            )
+        }
+
+        val uri = checkNotNull(
+            contentResolver.insert(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                values,
+            ),
+        ) {
+            "failed to create Downloads evidence entry"
+        }
+
+        contentResolver.openOutputStream(uri, "w").use { output ->
+            checkNotNull(output) {
+                "failed to open Downloads evidence entry"
+            }
+            output.bufferedWriter().use { writer ->
+                writer.write(content)
+            }
+        }
+
+        return uri.toString()
+    }
+
     private fun saveEvidence(
         label: String,
         nodeId: Long,
@@ -596,22 +632,28 @@ class MainActivity : Activity() {
                 transcript.toString()
             }
 
-            file.writeText(
-                buildString {
-                    appendLine("timestamp_utc=${Instant.now()}")
-                    appendLine("git_commit=${BuildConfig.GIT_SHA}")
-                    appendLine(
-                        "device=${Build.MANUFACTURER} ${Build.MODEL}",
-                    )
-                    appendLine("android_sdk=${Build.VERSION.SDK_INT}")
-                    appendLine("local_node_id=$nodeId")
-                    for (field in fields) appendLine(field)
-                    appendLine()
-                    appendLine("--- transcript ---")
-                    append(logSnapshot)
-                },
+            val evidenceText = buildString {
+                appendLine("timestamp_utc=${Instant.now()}")
+                appendLine("git_commit=${BuildConfig.GIT_SHA}")
+                appendLine(
+                    "device=${Build.MANUFACTURER} ${Build.MODEL}",
+                )
+                appendLine("android_sdk=${Build.VERSION.SDK_INT}")
+                appendLine("local_node_id=$nodeId")
+                for (field in fields) appendLine(field)
+                appendLine()
+                appendLine("--- transcript ---")
+                append(logSnapshot)
+            }
+
+            file.writeText(evidenceText)
+            val downloadUri = publishEvidenceToDownloads(
+                file.name,
+                evidenceText,
             )
-            appendLog("EVIDENCE saved=${file.absolutePath}")
+            appendLog(
+                "EVIDENCE saved=${file.absolutePath} downloads=$downloadUri",
+            )
         }.onFailure { error ->
             appendLog(
                 "ERROR evidence_save=${error.javaClass.simpleName}:${error.message}",
