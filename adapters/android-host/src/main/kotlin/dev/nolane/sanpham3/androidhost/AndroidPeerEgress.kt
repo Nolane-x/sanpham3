@@ -377,7 +377,7 @@ object AndroidPeerEgress {
             parts.all { part ->
                 part.isNotEmpty() &&
                     part.all(Char::isDigit) &&
-                    part.toIntOrNull() in 0..255
+                    (part.toIntOrNull()?.let { it in 0..255 } == true)
             }
     }
 
