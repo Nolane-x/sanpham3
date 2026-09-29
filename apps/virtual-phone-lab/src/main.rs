@@ -19,6 +19,7 @@ fn run() -> Result<(), String> {
         Some("android-minimal") => android_minimal_sweep(),
         Some("scavenge") => scavenge_demo(),
         Some("android-matrix") => android_matrix(),
+        Some("acoustic-synthetic") => acoustic_synthetic(),
         _ => Err(usage()),
     }
 }
@@ -209,6 +210,41 @@ fn android_minimal_sweep() -> Result<(), String> {
     Ok(())
 }
 
+fn acoustic_synthetic() -> Result<(), String> {
+    let config = signal_frontier::AcousticFskConfig::near_ultrasonic_50bps();
+    let bits = vec![
+        1, 0, 1, 1, 0, 0, 1, 0,
+        0, 1, 1, 0, 1, 0, 0, 1,
+    ];
+
+    let clean = signal_frontier::encode_fsk(&bits, config)
+        .map_err(|error| format!("{error:?}"))?;
+    let impaired = signal_frontier::apply_acoustic_channel(
+        &clean,
+        signal_frontier::AcousticChannel::mild_room(),
+        42,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let decoded = signal_frontier::decode_fsk(&impaired, config)
+        .map_err(|error| format!("{error:?}"))?;
+
+    let errors = signal_frontier::bit_error_count(&bits, &decoded.bits);
+
+    println!(
+        "ACOUSTIC_SYNTHETIC bits={} samples={} errors={} min_confidence={:.4}",
+        bits.len(),
+        impaired.len(),
+        errors,
+        decoded.minimum_confidence,
+    );
+
+    if errors != 0 {
+        return Err("synthetic acoustic reference payload did not roundtrip".to_owned());
+    }
+
+    Ok(())
+}
+
 fn android_matrix() -> Result<(), String> {
     let hardware = AndroidHardwareProfile::broad_phone();
     let all = AndroidPermissionProfile::all_granted();
@@ -315,6 +351,7 @@ fn usage() -> String {
         "  virtual-phone-lab android-minimal",
         "  virtual-phone-lab scavenge",
         "  virtual-phone-lab android-matrix",
+        "  virtual-phone-lab acoustic-synthetic",
         "",
         "This is a simulation/research tool. It does not convert simulated",
         "carrier success into physical evidence.",
