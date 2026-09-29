@@ -11,7 +11,7 @@ data class AndroidFeatureReport(
     val wifiAwareHardware: Boolean,
     val wifiAwareAvailableNow: Boolean,
     val bluetoothLeHardware: Boolean,
-    val bluetoothLeL2capCocAvailable: Boolean,
+    val bluetoothLeL2capCocApiSupported: Boolean,
     val nearbyWifiPermission: Boolean,
     val bluetoothScanPermission: Boolean,
     val bluetoothAdvertisePermission: Boolean,
@@ -67,7 +67,7 @@ class AndroidFeatureScanner(
             wifiAwareHardware = wifiAware,
             wifiAwareAvailableNow = wifiAwareAvailable,
             bluetoothLeHardware = bluetoothLe,
-            bluetoothLeL2capCocAvailable =
+            bluetoothLeL2capCocApiSupported =
                 bluetoothLe && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q,
             nearbyWifiPermission = nearbyWifiGranted,
             bluetoothScanPermission = bluetoothScanGranted,
