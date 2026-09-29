@@ -401,6 +401,8 @@ fn frontier_profiles() -> Vec<CarrierProfile> {
         CarrierKind::InternetIp,
         CarrierKind::WifiDirect,
         CarrierKind::WifiAware,
+        CarrierKind::BluetoothLeAdvertisement,
+        CarrierKind::BluetoothLeGatt,
         CarrierKind::BluetoothLeL2cap,
         CarrierKind::BluetoothRfcomm,
         CarrierKind::LocalOnlyHotspot,
