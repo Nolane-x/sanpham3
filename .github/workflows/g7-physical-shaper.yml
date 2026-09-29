@@ -3,6 +3,7 @@ name: g7-physical-shaper
 on:
   push:
     paths:
+      - "Cargo.toml"
       - "apps/g7-shaper-proxy/**"
       - "scripts/g7-physical-role.sh"
       - "scripts/g7-physical-role.ps1"
@@ -10,6 +11,7 @@ on:
       - ".github/workflows/g7-physical-shaper.yml"
   pull_request:
     paths:
+      - "Cargo.toml"
       - "apps/g7-shaper-proxy/**"
       - "scripts/g7-physical-role.sh"
       - "scripts/g7-physical-role.ps1"
