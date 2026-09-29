@@ -1,0 +1,9 @@
+[package]
+name = "acoustic-capsule"
+version = "0.1.0"
+edition = "2021"
+description = "Authenticated replay-protected tiny request capsules for sanpham3 acoustic research"
+
+[dependencies]
+hmac = "0.13"
+sha2 = "0.11"
