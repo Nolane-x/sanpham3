@@ -111,6 +111,84 @@ pub enum SignalError {
     MisalignedSamples,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AcousticImpulseTap {
+    pub delay_samples: usize,
+    pub gain: f32,
+}
+
+pub fn apply_acoustic_impulse_response(
+    samples: &[f32],
+    taps: &[AcousticImpulseTap],
+) -> Result<Vec<f32>, SignalError> {
+    if taps.is_empty() {
+        return Err(SignalError::InvalidConfig(
+            "acoustic impulse response requires at least one tap",
+        ));
+    }
+    if taps.iter().any(|tap| !tap.gain.is_finite()) {
+        return Err(SignalError::InvalidConfig(
+            "acoustic impulse response gain must be finite",
+        ));
+    }
+
+    let mut output = vec![0.0_f32; samples.len()];
+    for (index, slot) in output.iter_mut().enumerate() {
+        let mut value = 0.0_f32;
+        for tap in taps {
+            if index >= tap.delay_samples {
+                value += samples[index - tap.delay_samples] * tap.gain;
+            }
+        }
+        *slot = value.clamp(-1.0, 1.0);
+    }
+    Ok(output)
+}
+
+/// Models receiver sampling-clock mismatch while preserving the court's fixed
+/// nominal sample count. Positive ppm advances through source samples faster;
+/// negative ppm advances more slowly. Linear interpolation keeps the
+/// impairment deterministic and avoids nearest-neighbor artifacts.
+pub fn apply_clock_drift_resampling(
+    samples: &[f32],
+    drift_ppm: i32,
+) -> Result<Vec<f32>, SignalError> {
+    if drift_ppm.unsigned_abs() > 20_000 {
+        return Err(SignalError::InvalidConfig(
+            "clock drift exceeds 20000 ppm research bound",
+        ));
+    }
+    if samples.is_empty() || drift_ppm == 0 {
+        return Ok(samples.to_vec());
+    }
+
+    let ratio = 1.0_f64 + f64::from(drift_ppm) / 1_000_000.0_f64;
+    if ratio <= 0.0 {
+        return Err(SignalError::InvalidConfig(
+            "clock drift produces non-positive sampling ratio",
+        ));
+    }
+
+    let last = samples.len() - 1;
+    let mut output = Vec::with_capacity(samples.len());
+    for out_index in 0..samples.len() {
+        let source = out_index as f64 * ratio;
+        if source >= last as f64 {
+            output.push(samples[last]);
+            continue;
+        }
+
+        let left = source.floor() as usize;
+        let right = left + 1;
+        let fraction = (source - left as f64) as f32;
+        output.push(
+            samples[left] * (1.0 - fraction)
+                + samples[right] * fraction,
+        );
+    }
+    Ok(output)
+}
+
 pub fn encode_fsk(
     bits: &[u8],
     config: AcousticFskConfig,
@@ -558,6 +636,89 @@ mod tests {
 
         assert_eq!(bit_error_count(&bits, &decoded.bits), 0);
         assert!(decoded.minimum_confidence > 0.80);
+    }
+
+    #[test]
+    fn near_ultrasonic_survives_multipath_and_clock_drift_baseline() {
+        let config = AcousticFskConfig::near_ultrasonic_50bps();
+        let bits = payload();
+        let samples = encode_fsk(&bits, config).unwrap();
+
+        let multipath = apply_acoustic_impulse_response(
+            &samples,
+            &[
+                AcousticImpulseTap {
+                    delay_samples: 0,
+                    gain: 0.72,
+                },
+                AcousticImpulseTap {
+                    delay_samples: 7,
+                    gain: 0.16,
+                },
+                AcousticImpulseTap {
+                    delay_samples: 19,
+                    gain: -0.07,
+                },
+            ],
+        )
+        .unwrap();
+
+        let drifted =
+            apply_clock_drift_resampling(&multipath, 80).unwrap();
+        let impaired = apply_acoustic_channel(
+            &drifted,
+            AcousticChannel {
+                gain: 0.90,
+                white_noise_amplitude: 0.025,
+                clip_level: 0.95,
+            },
+            0xA11CE,
+        )
+        .unwrap();
+
+        let decoded = decode_fsk(&impaired, config).unwrap();
+        assert_eq!(bit_error_count(&bits, &decoded.bits), 0);
+        assert!(decoded.minimum_confidence > 0.45);
+    }
+
+    #[test]
+    fn multipath_convolution_is_causal_and_deterministic() {
+        let input = vec![1.0_f32, 0.0, 0.0, 0.0];
+        let taps = [
+            AcousticImpulseTap {
+                delay_samples: 0,
+                gain: 0.5,
+            },
+            AcousticImpulseTap {
+                delay_samples: 2,
+                gain: 0.25,
+            },
+        ];
+
+        let output =
+            apply_acoustic_impulse_response(&input, &taps).unwrap();
+        assert_eq!(output, vec![0.5, 0.0, 0.25, 0.0]);
+    }
+
+    #[test]
+    fn clock_drift_is_deterministic_and_bounded() {
+        let input = (0..128)
+            .map(|index| index as f32 / 127.0)
+            .collect::<Vec<_>>();
+
+        let first =
+            apply_clock_drift_resampling(&input, 120).unwrap();
+        let second =
+            apply_clock_drift_resampling(&input, 120).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), input.len());
+        assert_eq!(
+            apply_clock_drift_resampling(&input, 20_001),
+            Err(SignalError::InvalidConfig(
+                "clock drift exceeds 20000 ppm research bound",
+            )),
+        );
     }
 
     #[test]
