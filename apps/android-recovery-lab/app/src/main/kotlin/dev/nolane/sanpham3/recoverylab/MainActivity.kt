@@ -3,6 +3,7 @@ package dev.nolane.sanpham3.recoverylab
 import android.Manifest
 import android.app.Activity
 import android.content.ContentValues
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -171,6 +172,9 @@ class MainActivity : Activity() {
         })
         root.addView(button("Start BLE G8 client") {
             startBleClient()
+        })
+        root.addView(button("Open Local-Only Hotspot G8 court") {
+            startActivity(Intent(this, HotspotCourtActivity::class.java))
         })
         root.addView(button("Stop active court") {
             stopActive("user_stop")
