@@ -72,6 +72,23 @@ class AndroidBleGattServer(
     private var listener: ((AndroidBleGattServerEvent) -> Unit)? = null
 
     private val callback = object : BluetoothGattServerCallback() {
+        override fun onServiceAdded(
+            status: Int,
+            service: BluetoothGattService,
+        ) {
+            if (service.uuid != AndroidBleGattProtocol.SERVICE_UUID) return
+
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                listener?.invoke(AndroidBleGattServerEvent.Started)
+            } else {
+                listener?.invoke(
+                    AndroidBleGattServerEvent.Failed(
+                        "GATT service registration failed status=$status",
+                    ),
+                )
+            }
+        }
+
         override fun onConnectionStateChange(
             device: BluetoothDevice,
             status: Int,
@@ -217,10 +234,8 @@ class AndroidBleGattServer(
             require(service.addCharacteristic(command))
             require(service.addCharacteristic(response))
             require(server.addService(service)) {
-                "unable to register sanpham3 GATT service"
+                "unable to start sanpham3 GATT service registration"
             }
-
-            onEvent(AndroidBleGattServerEvent.Started)
         } catch (error: Throwable) {
             close()
             throw error
