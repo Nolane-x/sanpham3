@@ -170,7 +170,17 @@ Priority order:
    - [x] physical court authored
    - [ ] two-device physical interoperability
    - [ ] measured setup latency, reliability, range, useful bits/s and energy
-4. [ ] Local-Only Hotspot peer-session path
+4. Local-Only Hotspot peer-session path
+   - [x] Android 8+ hotspot server and Android 10+ programmatic client
+   - [x] exact WifiNetworkSpecifier / Network socket path
+   - [x] compact SP3H bootstrap capsule <= 110 bytes
+   - [x] DHCP server / IPv4 gateway derivation without hard-coded LAN address
+   - [x] shared Rust peer-session authentication
+   - [x] typed local-only connection failure evidence on supported Android versions
+   - [x] Wi-Fi and local-only STA concurrency capability reporting
+   - [x] physical court authored
+   - [ ] two-device physical interoperability
+   - [ ] measured startup/join/G8 latency, useful bits/s, concurrent-Internet behavior and energy
 5. [ ] near-ultrasonic request capsule prototype
 6. [ ] screen-camera optical capsule prototype
 7. [ ] SMS gateway capsule prototype
