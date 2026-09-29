@@ -1078,7 +1078,8 @@ mod tests {
 
     #[test]
     fn fragments_can_accumulate_across_different_contacts() {
-        let device = DeviceCapabilities::conservative_android();
+        let mut device = DeviceCapabilities::conservative_android();
+        device.ble_l2cap_coc = true;
         let task = InformationTask {
             request_bits: 40,
             response_bits: 80,
@@ -1151,7 +1152,8 @@ mod tests {
 
     #[test]
     fn ranking_keeps_impossible_candidates_behind_feasible_ones() {
-        let device = DeviceCapabilities::conservative_android();
+        let mut device = DeviceCapabilities::conservative_android();
+        device.ble_l2cap_coc = true;
         let task = InformationTask::tiny_fresh_query();
         let profiles = [
             CarrierProfile::baseline(CarrierKind::None),
