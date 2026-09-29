@@ -44,6 +44,13 @@ class MainActivity : Activity() {
         val peerKey: ByteArray,
     )
 
+    private data class ActiveResources(
+        val session: AndroidPeerSession?,
+        val discovery: AndroidBleDiscovery?,
+        val server: AndroidBleL2capServerDataPath?,
+        val key: ByteArray?,
+    )
+
     private val worker = Executors.newSingleThreadExecutor()
     private val clientChosen = AtomicBoolean(false)
     private val stateLock = Any()
@@ -315,9 +322,6 @@ class MainActivity : Activity() {
                 is AndroidBleEvent.Failed -> {
                     appendLog("ERROR ble_discovery=${event.detail}")
                 }
-                is AndroidBleEvent.State -> {
-                    appendLog("BLE_STATE enabled=${event.enabled}")
-                }
             }
         }
 
@@ -391,7 +395,7 @@ class MainActivity : Activity() {
         discovery = scanner
 
         appendLog("G8_CLIENT_SCAN node=${config.nodeId}")
-        scanner.start(byteArrayOf(0)) { event ->
+        scanner.start(byteArrayOf(0)) peerScan@{ event ->
             when (event) {
                 AndroidBleEvent.Started -> {
                     appendLog("BLE_DISCOVERY client_scan_started=true")
@@ -399,10 +403,10 @@ class MainActivity : Activity() {
                 is AndroidBleEvent.PeerDiscovered -> {
                     val psm = LabCodec.decodeL2capPsm(
                         event.peer.serviceData,
-                    ) ?: return@start
+                    ) ?: return@peerScan
 
                     if (!clientChosen.compareAndSet(false, true)) {
-                        return@start
+                        return@peerScan
                     }
 
                     val peer = event.peer
@@ -476,36 +480,30 @@ class MainActivity : Activity() {
                 is AndroidBleEvent.Failed -> {
                     appendLog("ERROR ble_discovery=${event.detail}")
                 }
-                is AndroidBleEvent.State -> {
-                    appendLog("BLE_STATE enabled=${event.enabled}")
-                }
             }
         }
     }
 
     private fun stopActive(reason: String) {
-        val oldSession: AndroidPeerSession?
-        val oldDiscovery: AndroidBleDiscovery?
-        val oldServer: AndroidBleL2capServerDataPath?
-        val oldKey: ByteArray?
-
-        synchronized(stateLock) {
-            oldSession = peerSession
-            oldDiscovery = discovery
-            oldServer = bleServer
-            oldKey = pendingPeerKey
-
-            peerSession = null
-            discovery = null
-            bleServer = null
-            pendingPeerKey = null
-            clientChosen.set(false)
+        val old = synchronized(stateLock) {
+            ActiveResources(
+                session = peerSession,
+                discovery = discovery,
+                server = bleServer,
+                key = pendingPeerKey,
+            ).also {
+                peerSession = null
+                discovery = null
+                bleServer = null
+                pendingPeerKey = null
+                clientChosen.set(false)
+            }
         }
 
-        oldKey?.fill(0)
-        runCatching { oldSession?.close() }
-        runCatching { oldDiscovery?.close() }
-        runCatching { oldServer?.close() }
+        old.key?.fill(0)
+        runCatching { old.session?.close() }
+        runCatching { old.discovery?.close() }
+        runCatching { old.server?.close() }
         appendLog("STOP reason=$reason")
     }
 
