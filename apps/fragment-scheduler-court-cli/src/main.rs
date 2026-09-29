@@ -145,8 +145,8 @@ fn main() {
                 path_id: "wifi-fast".to_owned(),
                 setup_time: Duration::from_millis(20),
                 setup_microjoules: 4_000,
-                active_microwatts: 800_000,
-                bitrate_bps: 1_000_000,
+                active_microwatts: 2_000_000,
+                bitrate_bps: 10_000_000,
             },
             useful_bits,
             expected_wire_bytes,
@@ -154,9 +154,9 @@ fn main() {
         EnergyTransferCandidate {
             measurement: EnergyPathMeasurement {
                 path_id: "ble-efficient".to_owned(),
-                setup_time: Duration::from_millis(50),
+                setup_time: Duration::from_millis(500),
                 setup_microjoules: 500,
-                active_microwatts: 80_000,
+                active_microwatts: 10_000,
                 bitrate_bps: 100_000,
             },
             useful_bits,
