@@ -1,5 +1,6 @@
 package dev.nolane.sanpham3.androidhost
 
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
@@ -18,6 +19,7 @@ data class AndroidBlePeer(
     val addressHint: String,
     val rssi: Int,
     val serviceData: ByteArray,
+    internal val device: BluetoothDevice? = null,
 )
 
 sealed interface AndroidBleEvent {
@@ -84,12 +86,20 @@ class AndroidBleDiscovery(
                 ?.copyOf()
                 ?: return
 
+            val device = result.device
+            val addressHint = try {
+                device.address.orEmpty()
+            } catch (_: SecurityException) {
+                ""
+            }
+
             listener?.invoke(
                 AndroidBleEvent.PeerDiscovered(
                     AndroidBlePeer(
-                        addressHint = result.device.address.orEmpty(),
+                        addressHint = addressHint,
                         rssi = result.rssi,
                         serviceData = payload,
+                        device = device,
                     ),
                 ),
             )
@@ -139,10 +149,18 @@ class AndroidBleDiscovery(
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
             .build()
 
+        // Keep the 128-bit UUID in the primary legacy packet and move
+        // service data to the scan response. Putting both in the same 31-byte
+        // legacy advertisement can overflow once discoveryInfo is non-trivial.
         val advertiseData = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
             .addServiceUuid(SERVICE_UUID)
+            .build()
+
+        val scanResponse = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
             .addServiceData(SERVICE_UUID, discoveryInfo)
             .build()
 
@@ -158,6 +176,7 @@ class AndroidBleDiscovery(
             advertiser.startAdvertising(
                 advertiseSettings,
                 advertiseData,
+                scanResponse,
                 advertiseCallback,
             )
             scanner.startScan(

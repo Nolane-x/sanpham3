@@ -3,6 +3,7 @@ package dev.nolane.sanpham3.androidhost
 import java.io.Closeable
 import java.io.EOFException
 import java.io.InputStream
+import java.io.OutputStream
 import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -14,14 +15,18 @@ data class AndroidPeerMessage(
 )
 
 /**
- * Authenticated/encrypted project session over an already-established socket.
+ * Authenticated/encrypted project session over an already-established duplex
+ * byte stream.
  *
- * The socket can come from Wi-Fi Direct, Wi-Fi Aware, LAN, or another
- * app-visible transport. All cryptography and wire validation stay in the Rust
- * peer-session implementation through JNI.
+ * java.net.Socket is the common case, but the session intentionally owns only
+ * InputStream / OutputStream + Closeable semantics. That lets Android-specific
+ * carriers such as Bluetooth LE L2CAP CoC reuse the exact same Rust
+ * peer-session implementation instead of inventing a second trust layer.
  */
 class AndroidPeerSession private constructor(
-    private val socket: Socket,
+    private val input: InputStream,
+    private val output: OutputStream,
+    private val transport: Closeable,
     private val nativeHandle: Long,
     val peerNodeId: Long,
     private val frameHeaderLength: Int,
@@ -35,6 +40,34 @@ class AndroidPeerSession private constructor(
 
         fun client(
             socket: Socket,
+            nodeId: Long,
+            peerKey: ByteArray,
+        ): AndroidPeerSession =
+            client(
+                input = socket.getInputStream(),
+                output = socket.getOutputStream(),
+                transport = socket,
+                nodeId = nodeId,
+                peerKey = peerKey,
+            )
+
+        fun server(
+            socket: Socket,
+            nodeId: Long,
+            peerKey: ByteArray,
+        ): AndroidPeerSession =
+            server(
+                input = socket.getInputStream(),
+                output = socket.getOutputStream(),
+                transport = socket,
+                nodeId = nodeId,
+                peerKey = peerKey,
+            )
+
+        internal fun client(
+            input: InputStream,
+            output: OutputStream,
+            transport: Closeable,
             nodeId: Long,
             peerKey: ByteArray,
         ): AndroidPeerSession {
@@ -68,14 +101,12 @@ class AndroidPeerSession private constructor(
                     "unexpected client hello length"
                 }
 
-                socket.getOutputStream().apply {
+                output.apply {
                     write(clientHello)
                     flush()
                 }
 
-                val serverHello = socket.getInputStream().readExactly(
-                    handshakeLength,
-                )
+                val serverHello = input.readExactly(handshakeLength)
                 val finishPackage = AndroidPeerSessionNative.clientFinish(
                     pendingHandle,
                     serverHello,
@@ -89,7 +120,9 @@ class AndroidPeerSession private constructor(
                 pendingHandle = null
 
                 return AndroidPeerSession(
-                    socket = socket,
+                    input = input,
+                    output = output,
+                    transport = transport,
                     nativeHandle = sessionHandle,
                     peerNodeId = peerNodeId,
                     frameHeaderLength =
@@ -98,17 +131,15 @@ class AndroidPeerSession private constructor(
             } catch (error: Throwable) {
                 pendingHandle?.let(AndroidPeerSessionNative::closeHandle)
                 sessionHandle?.let(AndroidPeerSessionNative::closeHandle)
-                try {
-                    socket.close()
-                } catch (_: Exception) {
-                    // Preserve the original handshake error.
-                }
+                closeQuietly(transport)
                 throw error
             }
         }
 
-        fun server(
-            socket: Socket,
+        internal fun server(
+            input: InputStream,
+            output: OutputStream,
+            transport: Closeable,
             nodeId: Long,
             peerKey: ByteArray,
         ): AndroidPeerSession {
@@ -120,9 +151,7 @@ class AndroidPeerSession private constructor(
             try {
                 val handshakeLength =
                     AndroidPeerSessionNative.handshakeLength()
-                val clientHello = socket.getInputStream().readExactly(
-                    handshakeLength,
-                )
+                val clientHello = input.readExactly(handshakeLength)
 
                 val keyCopy = peerKey.copyOf()
                 val acceptPackage = try {
@@ -152,13 +181,15 @@ class AndroidPeerSession private constructor(
                     acceptPackage.size,
                 )
 
-                socket.getOutputStream().apply {
+                output.apply {
                     write(serverHello)
                     flush()
                 }
 
                 return AndroidPeerSession(
-                    socket = socket,
+                    input = input,
+                    output = output,
+                    transport = transport,
                     nativeHandle = sessionHandle,
                     peerNodeId = peerNodeId,
                     frameHeaderLength =
@@ -166,11 +197,7 @@ class AndroidPeerSession private constructor(
                 )
             } catch (error: Throwable) {
                 sessionHandle?.let(AndroidPeerSessionNative::closeHandle)
-                try {
-                    socket.close()
-                } catch (_: Exception) {
-                    // Preserve the original handshake error.
-                }
+                closeQuietly(transport)
                 throw error
             }
         }
@@ -202,6 +229,14 @@ class AndroidPeerSession private constructor(
                 "peerKey must contain exactly 32 bytes"
             }
         }
+
+        private fun closeQuietly(closeable: Closeable) {
+            try {
+                closeable.close()
+            } catch (_: Exception) {
+                // Preserve the original session/transport error.
+            }
+        }
     }
 
     @Synchronized
@@ -218,7 +253,7 @@ class AndroidPeerSession private constructor(
             kind,
             payload,
         )
-        socket.getOutputStream().apply {
+        output.apply {
             write(frame)
             flush()
         }
@@ -230,7 +265,6 @@ class AndroidPeerSession private constructor(
             "peer session is closed"
         }
 
-        val input = socket.getInputStream()
         val header = input.readExactly(frameHeaderLength)
         val ciphertextLength =
             AndroidPeerSessionNative.frameCiphertextLength(header)
@@ -265,7 +299,7 @@ class AndroidPeerSession private constructor(
         try {
             AndroidPeerSessionNative.closeHandle(nativeHandle)
         } finally {
-            socket.close()
+            transport.close()
         }
     }
 }
