@@ -506,6 +506,40 @@ mod tests {
     }
 
     #[test]
+    fn current_peer_session_messages_fit_nfc_short_apdu_budget() {
+        const NFC_SHORT_PAYLOAD_BUDGET: usize = 240;
+        const G8_CHALLENGE_BYTES: usize = 36;
+
+        assert!(HANDSHAKE_LEN <= NFC_SHORT_PAYLOAD_BUDGET);
+
+        let mut client_bridge = BridgeState::default();
+        let mut server_bridge = BridgeState::default();
+
+        let client_package = client_bridge.client_begin(1, &key()).unwrap();
+        let pending_handle = package_handle(&client_package);
+        let server_package = server_bridge
+            .server_accept(
+                2,
+                &key(),
+                &client_package[HANDLE_PREFIX_LEN..],
+            )
+            .unwrap();
+
+        let server_hello =
+            &server_package[HANDLE_PREFIX_LEN * 2..];
+        assert!(server_hello.len() <= NFC_SHORT_PAYLOAD_BUDGET);
+
+        let (client_handle, _) = client_bridge
+            .client_finish(pending_handle, server_hello)
+            .unwrap();
+        let encrypted = client_bridge
+            .seal(client_handle, 0x50, &[0x5a; G8_CHALLENGE_BYTES])
+            .unwrap();
+
+        assert!(encrypted.len() <= NFC_SHORT_PAYLOAD_BUDGET);
+    }
+
+    #[test]
     fn frame_length_helper_matches_sealed_frame() {
         let mut client_bridge = BridgeState::default();
         let mut server_bridge = BridgeState::default();
