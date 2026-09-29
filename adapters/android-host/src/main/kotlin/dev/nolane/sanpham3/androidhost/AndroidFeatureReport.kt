@@ -3,11 +3,15 @@ package dev.nolane.sanpham3.androidhost
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.wifi.WifiManager
 import android.net.wifi.aware.WifiAwareManager
 import android.os.Build
 
 data class AndroidFeatureReport(
+    val wifiHardware: Boolean,
     val wifiDirectHardware: Boolean,
+    val localOnlyHotspotApiSupported: Boolean,
+    val localOnlyHotspotConcurrentStaSupported: Boolean?,
     val wifiAwareHardware: Boolean,
     val wifiAwareAvailableNow: Boolean,
     val bluetoothLeHardware: Boolean,
@@ -26,9 +30,21 @@ class AndroidFeatureScanner(
     fun scan(): AndroidFeatureReport {
         val packageManager = context.packageManager
 
+        val wifiHardware = packageManager.hasSystemFeature(
+            PackageManager.FEATURE_WIFI,
+        )
         val wifiDirect = packageManager.hasSystemFeature(
             PackageManager.FEATURE_WIFI_DIRECT,
         )
+        val wifiManager = context.getSystemService(WifiManager::class.java)
+        val localOnlyHotspotSupported =
+            wifiHardware && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+        val localOnlyConcurrentSta =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                wifiManager?.isStaConcurrencyForLocalOnlyConnectionsSupported
+            } else {
+                null
+            }
         val wifiAware = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)
         val wifiAwareAvailable = if (wifiAware) {
@@ -71,7 +87,10 @@ class AndroidFeatureScanner(
         }
 
         return AndroidFeatureReport(
+            wifiHardware = wifiHardware,
             wifiDirectHardware = wifiDirect,
+            localOnlyHotspotApiSupported = localOnlyHotspotSupported,
+            localOnlyHotspotConcurrentStaSupported = localOnlyConcurrentSta,
             wifiAwareHardware = wifiAware,
             wifiAwareAvailableNow = wifiAwareAvailable,
             bluetoothLeHardware = bluetoothLe,
