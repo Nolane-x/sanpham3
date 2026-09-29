@@ -1,0 +1,63 @@
+name: g7-physical-shaper
+
+on:
+  push:
+    paths:
+      - "apps/g7-shaper-proxy/**"
+      - "scripts/g7-physical-role.sh"
+      - "scripts/g7-physical-role.ps1"
+      - "docs/G7-PHYSICAL-WEAK-LINK-COURT.md"
+      - ".github/workflows/g7-physical-shaper.yml"
+  pull_request:
+    paths:
+      - "apps/g7-shaper-proxy/**"
+      - "scripts/g7-physical-role.sh"
+      - "scripts/g7-physical-role.ps1"
+      - "docs/G7-PHYSICAL-WEAK-LINK-COURT.md"
+      - ".github/workflows/g7-physical-shaper.yml"
+
+jobs:
+  shaper:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Shaper tests
+        run: cargo test -p g7-shaper-proxy
+
+      - name: Build shaper and peer egress
+        run: cargo build --release -p g7-shaper-proxy -p peer-egress-cli
+
+  linux-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Parse Bash harness
+        run: bash -n scripts/g7-physical-role.sh
+
+  powershell-harness:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Parse PowerShell harness
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "scripts/g7-physical-role.ps1"),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
