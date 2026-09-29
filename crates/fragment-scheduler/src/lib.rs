@@ -111,6 +111,8 @@ impl ContactSchedule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnergyPathMeasurement {
     pub path_id: String,
+    /// Measured setup/wake time before bytes can move.
+    pub setup_time: Duration,
     /// Energy paid once to establish/wake the path, in microjoules.
     pub setup_microjoules: u64,
     /// Measured active transmit power while this path is moving bytes.
@@ -135,6 +137,7 @@ pub struct EnergyEvaluation {
     pub useful_bits: u64,
     pub expected_wire_bytes: u64,
     pub serialization_time: Duration,
+    pub completion_time: Duration,
     pub estimated_energy_microjoules: u128,
 }
 
@@ -168,6 +171,11 @@ pub fn evaluate_energy_per_useful_bit(
         .div_ceil(u128::from(candidate.measurement.bitrate_bps));
 
     let serialization_time = duration_from_nanos(duration_nanos)?;
+    let completion_time = candidate
+        .measurement
+        .setup_time
+        .checked_add(serialization_time)
+        .ok_or(ScheduleError::EnergyOverflow)?;
 
     // microwatts * seconds == microjoules.
     // Keep integer arithmetic by multiplying power by nanoseconds and
@@ -187,6 +195,7 @@ pub fn evaluate_energy_per_useful_bit(
         useful_bits: candidate.useful_bits,
         expected_wire_bytes: candidate.expected_wire_bytes,
         serialization_time,
+        completion_time,
         estimated_energy_microjoules,
     })
 }
@@ -201,11 +210,21 @@ pub fn choose_energy_efficient_path(
     candidates: &[EnergyTransferCandidate],
     max_completion_time: Duration,
 ) -> Result<EnergyEvaluation, ScheduleError> {
-    let mut evaluations = Vec::new();
+    let Some(first) = candidates.first() else {
+        return Err(ScheduleError::NoEnergyCandidateMeetsDeadline);
+    };
+    let expected_useful_bits = first.useful_bits;
+    if candidates
+        .iter()
+        .any(|candidate| candidate.useful_bits != expected_useful_bits)
+    {
+        return Err(ScheduleError::InconsistentUsefulBits);
+    }
 
+    let mut evaluations = Vec::new();
     for candidate in candidates {
         let evaluation = evaluate_energy_per_useful_bit(candidate)?;
-        if evaluation.serialization_time <= max_completion_time {
+        if evaluation.completion_time <= max_completion_time {
             evaluations.push(evaluation);
         }
     }
@@ -221,20 +240,10 @@ fn compare_energy(
     left: &EnergyEvaluation,
     right: &EnergyEvaluation,
 ) -> Ordering {
-    let left_scaled = left
-        .estimated_energy_microjoules
-        .saturating_mul(u128::from(right.useful_bits));
-    let right_scaled = right
-        .estimated_energy_microjoules
-        .saturating_mul(u128::from(left.useful_bits));
-
-    left_scaled
-        .cmp(&right_scaled)
-        .then_with(|| {
-            left.estimated_energy_microjoules
-                .cmp(&right.estimated_energy_microjoules)
-        })
-        .then_with(|| left.serialization_time.cmp(&right.serialization_time))
+    debug_assert_eq!(left.useful_bits, right.useful_bits);
+    left.estimated_energy_microjoules
+        .cmp(&right.estimated_energy_microjoules)
+        .then_with(|| left.completion_time.cmp(&right.completion_time))
         .then_with(|| left.path_id.cmp(&right.path_id))
 }
 
@@ -415,6 +424,7 @@ pub enum ScheduleError {
     ZeroUsefulBits,
     ZeroWireBytes,
     EnergyOverflow,
+    InconsistentUsefulBits,
     NoEnergyCandidateMeetsDeadline,
 }
 
@@ -427,6 +437,9 @@ impl fmt::Display for ScheduleError {
             Self::ZeroUsefulBits => write!(f, "energy objective requires non-zero useful bits"),
             Self::ZeroWireBytes => write!(f, "energy objective requires non-zero wire bytes"),
             Self::EnergyOverflow => write!(f, "energy objective arithmetic overflow"),
+            Self::InconsistentUsefulBits => {
+                write!(f, "energy candidates must target the same useful-bit task")
+            }
             Self::NoEnergyCandidateMeetsDeadline => {
                 write!(f, "no energy candidate can complete before the deadline")
             }
@@ -595,6 +608,7 @@ mod tests {
             EnergyTransferCandidate {
                 measurement: EnergyPathMeasurement {
                     path_id: "fast-hot".to_owned(),
+                    setup_time: Duration::from_millis(5),
                     setup_microjoules: 1_000,
                     active_microwatts: 2_000_000,
                     bitrate_bps: 1_000_000,
@@ -605,6 +619,7 @@ mod tests {
             EnergyTransferCandidate {
                 measurement: EnergyPathMeasurement {
                     path_id: "slow-efficient".to_owned(),
+                    setup_time: Duration::from_millis(10),
                     setup_microjoules: 200,
                     active_microwatts: 100_000,
                     bitrate_bps: 100_000,
@@ -630,6 +645,7 @@ mod tests {
             EnergyTransferCandidate {
                 measurement: EnergyPathMeasurement {
                     path_id: "slow-efficient".to_owned(),
+                    setup_time: Duration::from_millis(10),
                     setup_microjoules: 10,
                     active_microwatts: 10_000,
                     bitrate_bps: 1_000,
@@ -640,6 +656,7 @@ mod tests {
             EnergyTransferCandidate {
                 measurement: EnergyPathMeasurement {
                     path_id: "fast-expensive".to_owned(),
+                    setup_time: Duration::from_millis(5),
                     setup_microjoules: 1_000,
                     active_microwatts: 1_000_000,
                     bitrate_bps: 1_000_000,
@@ -662,6 +679,7 @@ mod tests {
     fn wire_overhead_increases_energy_score() {
         let measurement = EnergyPathMeasurement {
             path_id: "same-path".to_owned(),
+            setup_time: Duration::from_millis(2),
             setup_microjoules: 100,
             active_microwatts: 500_000,
             bitrate_bps: 100_000,
@@ -695,6 +713,7 @@ mod tests {
         let zero_useful = EnergyTransferCandidate {
             measurement: EnergyPathMeasurement {
                 path_id: "x".to_owned(),
+                setup_time: Duration::ZERO,
                 setup_microjoules: 0,
                 active_microwatts: 1,
                 bitrate_bps: 1,
@@ -710,6 +729,7 @@ mod tests {
         let too_slow = EnergyTransferCandidate {
             measurement: EnergyPathMeasurement {
                 path_id: "slow".to_owned(),
+                setup_time: Duration::ZERO,
                 setup_microjoules: 0,
                 active_microwatts: 1,
                 bitrate_bps: 1,
