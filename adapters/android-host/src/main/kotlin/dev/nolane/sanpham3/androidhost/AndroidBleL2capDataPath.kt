@@ -138,11 +138,12 @@ class AndroidBleL2capClientDataPath(
         require(adapter.isEnabled) {
             "Bluetooth adapter disabled"
         }
-        require(peer.addressHint.isNotBlank()) {
-            "BLE peer address hint is empty"
+        val device = peer.device ?: run {
+            require(peer.addressHint.isNotBlank()) {
+                "BLE peer has neither a scan device nor an address hint"
+            }
+            adapter.getRemoteDevice(peer.addressHint)
         }
-
-        val device = adapter.getRemoteDevice(peer.addressHint)
         val socket = device.createInsecureL2capChannel(endpoint.psm)
 
         try {
