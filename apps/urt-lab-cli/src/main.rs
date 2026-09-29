@@ -40,7 +40,7 @@ fn verify(name: &str, input: &[u8], base: Option<&[u8]>) {
 }
 
 fn main() {
-    let repeated = vec![b'A'; 1024 * 1024];
+    let repeated = b"ABCD".repeat(256 * 1024);
     verify("repeat-1mib", &repeated, None);
 
     let mut base = Vec::with_capacity(256 * 1024);
