@@ -35,6 +35,21 @@ sealed interface AndroidBluetoothClassicEvent {
 class AndroidBluetoothClassicDiscovery(
     context: Context,
 ) : Closeable {
+    companion object {
+        fun requestDiscoverableIntent(
+            durationSeconds: Int = 120,
+        ): Intent {
+            require(durationSeconds in 1..3600) {
+                "discoverable duration must be in 1..3600 seconds"
+            }
+            return Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
+                putExtra(
+                    BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION,
+                    durationSeconds,
+                )
+            }
+        }
+    }
     private val appContext = context.applicationContext
     private val bluetoothManager =
         appContext.getSystemService(BluetoothManager::class.java)
@@ -81,6 +96,37 @@ class AndroidBluetoothClassicDiscovery(
                     listener?.invoke(AndroidBluetoothClassicEvent.Finished)
             }
         }
+    }
+
+    fun bondedPeers(): List<AndroidBluetoothClassicPeer> {
+        val adapter = requireNotNull(bluetoothManager?.adapter) {
+            "Bluetooth adapter unavailable"
+        }
+        require(adapter.isEnabled) {
+            "Bluetooth adapter disabled"
+        }
+
+        return adapter.bondedDevices
+            .map { device ->
+                val address = try {
+                    device.address.orEmpty()
+                } catch (_: SecurityException) {
+                    ""
+                }
+                val name = try {
+                    device.name
+                } catch (_: SecurityException) {
+                    null
+                }
+
+                AndroidBluetoothClassicPeer(
+                    nameHint = name,
+                    addressHint = address,
+                    rssi = null,
+                    device = device,
+                )
+            }
+            .sortedBy { it.addressHint }
     }
 
     fun start(
