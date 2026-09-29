@@ -387,6 +387,11 @@ impl ContinuityStore {
             if !object.receipt.verify(&object.bytes) {
                 return Err(PersistenceError::ReceiptMismatch);
             }
+            if object.receipt.signature.is_some()
+                && object.receipt.verify_signature().is_err()
+            {
+                return Err(PersistenceError::InvalidSourceSignature);
+            }
 
             let key = object.key.as_bytes();
             let source = object.receipt.source_id.as_bytes();
@@ -574,6 +579,11 @@ impl ContinuityStore {
     ) -> Result<(), &'static str> {
         if !object.receipt.verify(&object.bytes) {
             return Err("cached object does not match source receipt hash");
+        }
+        if object.receipt.signature.is_some()
+            && object.receipt.verify_signature().is_err()
+        {
+            return Err("cached object source receipt signature is invalid");
         }
         self.entries.insert(object.key.clone(), object);
         Ok(())
@@ -921,6 +931,31 @@ mod tests {
         assert_eq!(
             receipt.verify_signed_bytes(b"different bytes"),
             Err(ReceiptSignatureError::ContentHashMismatch),
+        );
+    }
+
+    #[test]
+    fn insert_rejects_invalid_signed_metadata_even_when_content_hash_matches() {
+        let signing_key = SigningKey::from_bytes(&[0x44; 32]);
+        let bytes = b"signed object".to_vec();
+        let mut receipt = SourceReceipt::signed_for_bytes(
+            "source-a",
+            1_000,
+            &bytes,
+            "original provenance",
+            &signing_key,
+        );
+        receipt.provenance_note = "tampered provenance".to_owned();
+
+        let mut store = ContinuityStore::new();
+        assert_eq!(
+            store.insert_verified(CachedObject {
+                key: "signed".to_owned(),
+                bytes,
+                receipt,
+                valid_for: Duration::from_secs(60),
+            }),
+            Err("cached object source receipt signature is invalid"),
         );
     }
 
