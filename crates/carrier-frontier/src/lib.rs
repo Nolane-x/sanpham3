@@ -25,6 +25,7 @@ pub enum CarrierKind {
     VibrationSurface,
     MagneticSensor,
     UsbLocal,
+    ExternalOsInterface,
     PhysicalDataMule,
     LocalCacheTwin,
     None,
@@ -73,6 +74,9 @@ pub struct DeviceCapabilities {
     pub accelerometer: bool,
     pub magnetometer: bool,
     pub usb: bool,
+    /// Optional external device already attached and exposed through a normal
+    /// OS/driver/API interface. This is never a product requirement.
+    pub external_os_interface: bool,
 }
 
 impl DeviceCapabilities {
@@ -95,6 +99,7 @@ impl DeviceCapabilities {
             accelerometer: true,
             magnetometer: true,
             usb: true,
+            external_os_interface: false,
         }
     }
 }
@@ -115,6 +120,7 @@ pub struct AndroidHardwareProfile {
     pub accelerometer: bool,
     pub magnetometer: bool,
     pub usb: bool,
+    pub external_os_interface: bool,
 }
 
 impl AndroidHardwareProfile {
@@ -134,6 +140,7 @@ impl AndroidHardwareProfile {
             accelerometer: true,
             magnetometer: true,
             usb: true,
+            external_os_interface: false,
         }
     }
 }
@@ -214,6 +221,7 @@ impl VirtualAndroidPhone {
             accelerometer: self.hardware.accelerometer,
             magnetometer: self.hardware.magnetometer,
             usb: self.hardware.usb,
+            external_os_interface: self.hardware.external_os_interface,
         }
     }
 }
@@ -479,6 +487,22 @@ impl CarrierProfile {
                 fresh_remote_capable: false,
                 notes: "Uses already-connected USB path; app itself requires no custom radio.",
             },
+            CarrierKind::ExternalOsInterface => Self {
+                kind,
+                evidence: EvidenceClass::ProductionApi,
+                directionality: Directionality::FullDuplex,
+                nominal_bps: 10_000_000,
+                setup_latency: Duration::from_millis(500),
+                one_way_latency: Duration::from_millis(10),
+                max_payload_bytes: None,
+                requires_line_of_sight: false,
+                requires_surface_contact: false,
+                requires_existing_internet_egress: true,
+                requires_extra_hardware: true,
+                app_only_candidate: false,
+                fresh_remote_capable: true,
+                notes: "Optional user-owned hardware already exposed by the OS (for example an attached network/tether interface). It may be scavenged when present but never becomes a product requirement or an app-only proof.",
+            },
             CarrierKind::PhysicalDataMule => Self {
                 kind,
                 evidence: EvidenceClass::ProductionApi,
@@ -530,6 +554,10 @@ impl CarrierProfile {
         }
     }
 
+    pub fn eligible_for_core_app_only_claim(&self) -> bool {
+        self.app_only_candidate && !self.requires_extra_hardware
+    }
+
     pub fn supported_by(&self, device: &DeviceCapabilities) -> bool {
         match self.kind {
             CarrierKind::InternetIp => true,
@@ -547,6 +575,7 @@ impl CarrierProfile {
             CarrierKind::VibrationSurface => device.vibrator && device.accelerometer,
             CarrierKind::MagneticSensor => device.magnetometer,
             CarrierKind::UsbLocal => device.usb,
+            CarrierKind::ExternalOsInterface => device.external_os_interface,
             CarrierKind::PhysicalDataMule | CarrierKind::LocalCacheTwin | CarrierKind::None => true,
         }
     }
@@ -623,7 +652,6 @@ pub fn scavenge_across_contacts(
         elapsed = elapsed.saturating_add(window.carrier.setup_latency);
 
         if !window.carrier.supported_by(device)
-            || window.carrier.requires_extra_hardware
             || window.carrier.kind == CarrierKind::None
             || window.carrier.kind == CarrierKind::LocalCacheTwin
             || window.carrier.nominal_bps == 0
@@ -724,16 +752,6 @@ pub fn simulate_single_carrier(
             freshness: None,
             completion_time: None,
             reason: "device/API capability unavailable",
-        };
-    }
-
-    if carrier.requires_extra_hardware {
-        return SimulationOutcome {
-            carrier: carrier.kind,
-            feasible: false,
-            freshness: None,
-            completion_time: None,
-            reason: "requires hardware outside app-only product boundary",
         };
     }
 
@@ -989,6 +1007,26 @@ mod tests {
         }
         .capabilities();
         assert!(allowed.telephony_messaging);
+    }
+
+    #[test]
+    fn optional_external_os_interface_can_help_without_redefining_core_product() {
+        let device = DeviceCapabilities {
+            external_os_interface: true,
+            ..DeviceCapabilities::conservative_android()
+        };
+        let carrier = CarrierProfile::baseline(CarrierKind::ExternalOsInterface);
+        let outcome = simulate_single_carrier(
+            &carrier,
+            &device,
+            &InformationTask::tiny_fresh_query(),
+            false,
+            false,
+        );
+
+        assert!(outcome.feasible);
+        assert!(carrier.requires_extra_hardware);
+        assert!(!carrier.eligible_for_core_app_only_claim());
     }
 
     #[test]
