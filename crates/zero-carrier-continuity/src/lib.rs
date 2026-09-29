@@ -201,6 +201,123 @@ pub enum ContinuityMiss {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContinuityRuntimeMode {
+    LocalOnly,
+    LiveRemote,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveRemoteObservation {
+    pub key: String,
+    pub bytes: Vec<u8>,
+    pub receipt: SourceReceipt,
+    pub valid_for: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContinuityRuntimeAnswer {
+    FreshRemote {
+        key: String,
+        bytes: Vec<u8>,
+        source_receipt: SourceReceipt,
+    },
+    Local(ContinuityAnswer),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContinuityRuntimeError {
+    ObservationKeyMismatch,
+    InvalidRemoteReceipt,
+    Local(ContinuityMiss),
+}
+
+pub struct ContinuityRuntime {
+    store: ContinuityStore,
+    mode: ContinuityRuntimeMode,
+}
+
+impl ContinuityRuntime {
+    pub fn new(store: ContinuityStore) -> Self {
+        Self {
+            store,
+            mode: ContinuityRuntimeMode::LocalOnly,
+        }
+    }
+
+    pub fn mode(&self) -> ContinuityRuntimeMode {
+        self.mode
+    }
+
+    pub fn store(&self) -> &ContinuityStore {
+        &self.store
+    }
+
+    pub fn store_mut(&mut self) -> &mut ContinuityStore {
+        &mut self.store
+    }
+
+    pub fn into_store(self) -> ContinuityStore {
+        self.store
+    }
+
+    /// Resolves one logical key across live-carrier and zero-carrier states.
+    ///
+    /// A live observation is authoritative only for the instant it is
+    /// actually supplied by the live-carrier pipeline. It is inserted into the
+    /// continuity cache and returned as FreshRemote. If no live observation is
+    /// available, the runtime delegates to the zero-carrier resolver, whose
+    /// output can only be CachedRemote or LocallyGenerated.
+    pub fn resolve<F>(
+        &mut self,
+        key: &str,
+        now_ms: u64,
+        contract: ContinuityContract,
+        live: Option<LiveRemoteObservation>,
+        generator: Option<F>,
+    ) -> Result<ContinuityRuntimeAnswer, ContinuityRuntimeError>
+    where
+        F: FnOnce(&str) -> Vec<u8>,
+    {
+        if let Some(observation) = live {
+            if observation.key != key {
+                return Err(ContinuityRuntimeError::ObservationKeyMismatch);
+            }
+
+            if !observation.receipt.verify(&observation.bytes)
+                || (observation.receipt.signature.is_some()
+                    && observation.receipt.verify_signature().is_err())
+            {
+                return Err(ContinuityRuntimeError::InvalidRemoteReceipt);
+            }
+
+            let fresh = ContinuityRuntimeAnswer::FreshRemote {
+                key: observation.key.clone(),
+                bytes: observation.bytes.clone(),
+                source_receipt: observation.receipt.clone(),
+            };
+
+            self.store
+                .insert_verified(CachedObject {
+                    key: observation.key,
+                    bytes: observation.bytes,
+                    receipt: observation.receipt,
+                    valid_for: observation.valid_for,
+                })
+                .map_err(|_| ContinuityRuntimeError::InvalidRemoteReceipt)?;
+
+            self.mode = ContinuityRuntimeMode::LiveRemote;
+            return Ok(fresh);
+        }
+
+        self.mode = ContinuityRuntimeMode::LocalOnly;
+        self.store
+            .resolve_zero_carrier(key, now_ms, contract, generator)
+            .map(ContinuityRuntimeAnswer::Local)
+            .map_err(ContinuityRuntimeError::Local)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReconciliationPolicy {
     pub max_age: Duration,
     pub min_distinct_sources: usize,
@@ -1308,6 +1425,202 @@ mod tests {
         );
 
         assert_eq!(result, Err(ContinuityMiss::NoAdmissibleCache));
+    }
+
+    #[test]
+    fn runtime_transitions_from_cached_to_fresh_and_back_to_new_cache() {
+        let mut store = ContinuityStore::new();
+        store
+            .insert_verified(object(
+                "weather",
+                "remote-old",
+                10_000,
+                b"cloudy",
+            ))
+            .unwrap();
+
+        let mut runtime = ContinuityRuntime::new(store);
+
+        let first = runtime
+            .resolve::<fn(&str) -> Vec<u8>>(
+                "weather",
+                20_000,
+                ContinuityContract::cached_ok(Duration::from_secs(60)),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let ContinuityRuntimeAnswer::Local(first_local) = first else {
+            panic!("first answer should be local-only cache");
+        };
+        assert_eq!(first_local.bytes, b"cloudy");
+        assert_eq!(
+            first_local.freshness,
+            ContinuityFreshness::CachedRemote,
+        );
+        assert_eq!(runtime.mode(), ContinuityRuntimeMode::LocalOnly);
+
+        let signing_key = SigningKey::from_bytes(&[0x66; 32]);
+        let fresh_bytes = b"sunny".to_vec();
+        let fresh_receipt = SourceReceipt::signed_for_bytes(
+            "remote-live",
+            21_000,
+            &fresh_bytes,
+            "live carrier observation",
+            &signing_key,
+        );
+
+        let second = runtime
+            .resolve::<fn(&str) -> Vec<u8>>(
+                "weather",
+                21_000,
+                ContinuityContract {
+                    require_current_remote_observation: true,
+                    max_cache_age: Some(Duration::from_secs(60)),
+                    allow_generated: false,
+                },
+                Some(LiveRemoteObservation {
+                    key: "weather".to_owned(),
+                    bytes: fresh_bytes.clone(),
+                    receipt: fresh_receipt.clone(),
+                    valid_for: Duration::from_secs(120),
+                }),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            second,
+            ContinuityRuntimeAnswer::FreshRemote {
+                key: "weather".to_owned(),
+                bytes: fresh_bytes.clone(),
+                source_receipt: fresh_receipt,
+            },
+        );
+        assert_eq!(runtime.mode(), ContinuityRuntimeMode::LiveRemote);
+
+        let third = runtime
+            .resolve::<fn(&str) -> Vec<u8>>(
+                "weather",
+                22_000,
+                ContinuityContract::cached_ok(Duration::from_secs(60)),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let ContinuityRuntimeAnswer::Local(third_local) = third else {
+            panic!("third answer should be cached after carrier loss");
+        };
+        assert_eq!(third_local.bytes, fresh_bytes);
+        assert_eq!(
+            third_local.freshness,
+            ContinuityFreshness::CachedRemote,
+        );
+        assert_eq!(
+            third_local
+                .source_receipt
+                .as_ref()
+                .unwrap()
+                .source_id,
+            "remote-live",
+        );
+        assert_eq!(runtime.mode(), ContinuityRuntimeMode::LocalOnly);
+    }
+
+    #[test]
+    fn current_remote_contract_succeeds_only_when_live_observation_exists() {
+        let mut runtime = ContinuityRuntime::new(ContinuityStore::new());
+        let contract = ContinuityContract {
+            require_current_remote_observation: true,
+            max_cache_age: None,
+            allow_generated: false,
+        };
+
+        assert_eq!(
+            runtime.resolve::<fn(&str) -> Vec<u8>>(
+                "status",
+                1_000,
+                contract,
+                None,
+                None,
+            ),
+            Err(ContinuityRuntimeError::Local(
+                ContinuityMiss::CurrentRemoteRequired,
+            )),
+        );
+
+        let bytes = b"online".to_vec();
+        let receipt = SourceReceipt::for_bytes(
+            "live-source",
+            1_100,
+            &bytes,
+            "live return",
+        );
+
+        assert!(matches!(
+            runtime.resolve::<fn(&str) -> Vec<u8>>(
+                "status",
+                1_100,
+                contract,
+                Some(LiveRemoteObservation {
+                    key: "status".to_owned(),
+                    bytes,
+                    receipt,
+                    valid_for: Duration::from_secs(30),
+                }),
+                None,
+            ),
+            Ok(ContinuityRuntimeAnswer::FreshRemote { .. }),
+        ));
+    }
+
+    #[test]
+    fn runtime_rejects_live_observation_with_wrong_key_or_invalid_receipt() {
+        let mut runtime = ContinuityRuntime::new(ContinuityStore::new());
+        let bytes = b"value".to_vec();
+        let receipt = SourceReceipt::for_bytes(
+            "source",
+            100,
+            &bytes,
+            "live",
+        );
+
+        assert_eq!(
+            runtime.resolve::<fn(&str) -> Vec<u8>>(
+                "weather",
+                100,
+                ContinuityContract::cached_ok(Duration::from_secs(30)),
+                Some(LiveRemoteObservation {
+                    key: "price".to_owned(),
+                    bytes: bytes.clone(),
+                    receipt: receipt.clone(),
+                    valid_for: Duration::from_secs(30),
+                }),
+                None,
+            ),
+            Err(ContinuityRuntimeError::ObservationKeyMismatch),
+        );
+
+        let mut tampered = receipt;
+        tampered.content_sha256[0] ^= 1;
+
+        assert_eq!(
+            runtime.resolve::<fn(&str) -> Vec<u8>>(
+                "weather",
+                100,
+                ContinuityContract::cached_ok(Duration::from_secs(30)),
+                Some(LiveRemoteObservation {
+                    key: "weather".to_owned(),
+                    bytes,
+                    receipt: tampered,
+                    valid_for: Duration::from_secs(30),
+                }),
+                None,
+            ),
+            Err(ContinuityRuntimeError::InvalidRemoteReceipt),
+        );
     }
 
     #[test]
