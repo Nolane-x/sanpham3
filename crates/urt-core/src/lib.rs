@@ -902,8 +902,11 @@ mod tests {
     fn tampering_is_detected_by_exact_hash_contract() {
         let input = b"exact exact exact exact exact".repeat(100);
         let mut wire = encode_exact(&input, None).packet.to_bytes();
-        let last = wire.len() - 1;
-        wire[last] ^= 1;
+        // Corrupt the outer URT digest while leaving the selected payload
+        // decodable. This proves the exact-output contract independently of
+        // any inner codec checksum.
+        let digest_start = 4 + 1 + 1 + 8;
+        wire[digest_start] ^= 1;
 
         let cache = EmptyCache;
         let mut sink = Vec::new();
