@@ -1,0 +1,9 @@
+[package]
+name = "virtual-phone-lab"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+carrier-frontier = { path = "../../crates/carrier-frontier" }
+signal-frontier = { path = "../../crates/signal-frontier" }
+zero-carrier-continuity = { path = "../../crates/zero-carrier-continuity" }

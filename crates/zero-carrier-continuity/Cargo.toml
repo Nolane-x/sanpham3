@@ -1,0 +1,7 @@
+[package]
+name = "zero-carrier-continuity"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sha2 = "0.11"

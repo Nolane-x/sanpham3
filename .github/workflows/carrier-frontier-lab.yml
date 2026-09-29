@@ -1,0 +1,75 @@
+name: carrier-frontier-lab
+
+on:
+  push:
+    paths:
+      - "crates/carrier-frontier/**"
+      - "crates/signal-frontier/**"
+      - "crates/zero-carrier-continuity/**"
+      - "apps/virtual-phone-lab/**"
+      - "docs/FRONTIER-CARRIER-RESEARCH.md"
+      - "docs/VIRTUAL-PHONE-LAB.md"
+      - "scripts/virtual-phone-avd-twin.sh"
+      - ".github/workflows/carrier-frontier-lab.yml"
+  pull_request:
+    paths:
+      - "crates/carrier-frontier/**"
+      - "crates/signal-frontier/**"
+      - "crates/zero-carrier-continuity/**"
+      - "apps/virtual-phone-lab/**"
+      - "docs/FRONTIER-CARRIER-RESEARCH.md"
+      - "docs/VIRTUAL-PHONE-LAB.md"
+      - "scripts/virtual-phone-avd-twin.sh"
+      - ".github/workflows/carrier-frontier-lab.yml"
+
+jobs:
+  model-court:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Frontier model tests
+        run: cargo test -p carrier-frontier
+
+      - name: Synthetic signal tests
+        run: cargo test -p signal-frontier
+
+      - name: Android API and permission matrix
+        run: cargo run -p virtual-phone-lab -- android-matrix
+
+      - name: Full carrier frontier sweep
+        run: cargo run -p virtual-phone-lab -- frontier
+
+      - name: Multi-contact fragment scavenging
+        run: cargo run -p virtual-phone-lab -- scavenge
+
+      - name: Synthetic near-ultrasonic waveform court
+        run: cargo run -p virtual-phone-lab -- acoustic-synthetic
+
+      - name: Synthetic optical erasure court
+        run: cargo run -p virtual-phone-lab -- optical-synthetic
+
+      - name: Synthetic vibration trace court
+        run: cargo run -p virtual-phone-lab -- vibration-synthetic
+
+      - name: Zero-carrier continuity provenance court
+        run: cargo test -p zero-carrier-continuity
+
+      - name: Zero-carrier continuity demo
+        run: cargo run -p virtual-phone-lab -- continuity
+
+      - name: Zero-carrier truth boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run -p virtual-phone-lab -- zero-carrier | tee zero-carrier.log
+          grep -q 'fresh_required=true feasible=false' zero-carrier.log
+          grep -q 'fresh_required=false cached=true feasible=true freshness=Some(CachedRemote)' zero-carrier.log
