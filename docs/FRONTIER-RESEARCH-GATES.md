@@ -111,7 +111,8 @@ Future:
 
 - [x] fragment IDs/ranges
 - [x] authenticated fragment envelope
-- [ ] erasure/fountain coding
+- [x] single-loss XOR erasure stripe baseline
+- [ ] fountain/rateless coding
 - [ ] source/provenance merge
 - [ ] deadline/freshness-aware fragment scheduler
 - [ ] correlated-failure model
@@ -258,3 +259,29 @@ before requiring exact reconstruction.
 This closes authenticated fragment identity/range mechanics only. It does not
 close fountain/erasure coding, provenance merge, deadline scheduling, correlated
 failure or energy optimization.
+
+
+### F4 authenticated erasure + URT baseline
+
+The next F4 software baseline adds an authenticated `SP3E` parity envelope
+without changing the existing `SP3F` data-fragment wire format.
+
+Properties:
+
+- data shards remain ordinary HMAC-authenticated SP3F fragments;
+- each stripe has one HMAC-authenticated XOR parity shard;
+- the wire budget includes parity-envelope overhead before payload sizing;
+- one missing data shard per stripe is recoverable exactly;
+- two or more missing shards in the same stripe remain explicitly
+  `Insufficient`;
+- tampered parity is rejected before recovery;
+- final reconstructed object must still pass the whole-object SHA-256.
+
+The dedicated court uses a real URT exact packet as the fragmented object,
+splits delivery across multiple synthetic contact windows, drops one data shard
+from every stripe, injects duplicate/out-of-order fragments, then recovers the
+URT wire and decodes it back to the original logical payload.
+
+This closes only a systematic single-erasure baseline. It does **not** close
+fountain/rateless coding, correlated-loss resilience, provenance merge,
+deadline/freshness scheduling, or energy optimization.
