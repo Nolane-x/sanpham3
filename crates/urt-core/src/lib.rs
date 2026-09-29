@@ -1,4 +1,4 @@
-//! Universal Reconstruction Transport (URT) v0.
+//! Universal Reconstruction Transport (URT) exact core.
 //!
 //! Conservative invariants:
 //! - exact mode is byte-perfect or it fails;
@@ -25,6 +25,11 @@ const ZSTANDARD_MAX_WINDOW_LOG: u32 = 20;
 const ZSTANDARD_MAX_WINDOW_BYTES: usize = 1 << ZSTANDARD_MAX_WINDOW_LOG;
 const ZSTANDARD_DECODE_BUDGET_BYTES: usize =
     ZSTANDARD_MAX_WINDOW_BYTES + (256 * 1024);
+const CDC_MIN_BYTES: usize = 2 * 1024;
+const CDC_AVG_MASK: u64 = (1_u64 << 13) - 1;
+const CDC_MAX_BYTES: usize = 32 * 1024;
+const CDC_WINDOW_BYTES: usize = 48;
+const CHUNK_RECORD_FIXED_BYTES: usize = 4 + 1 + 32;
 
 pub type Digest32 = [u8; 32];
 
@@ -37,6 +42,7 @@ pub enum ExactStrategy {
     CacheReference = 3,
     BaseDelta = 4,
     Zstandard = 5,
+    ChunkManifest = 6,
 }
 
 impl ExactStrategy {
@@ -48,6 +54,7 @@ impl ExactStrategy {
             3 => Ok(Self::CacheReference),
             4 => Ok(Self::BaseDelta),
             5 => Ok(Self::Zstandard),
+            6 => Ok(Self::ChunkManifest),
             _ => Err(UrtError::InvalidFormat("unknown exact strategy")),
         }
     }
@@ -57,6 +64,14 @@ impl ExactStrategy {
 pub struct Run {
     pub len: u32,
     pub byte: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkRecord {
+    pub digest: Digest32,
+    pub len: u32,
+    /// None means the receiver must already have this exact chunk.
+    pub embedded: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +90,7 @@ pub enum ExactRepresentation {
         middle: Vec<u8>,
     },
     Zstandard(Vec<u8>),
+    ChunkManifest(Vec<ChunkRecord>),
 }
 
 impl ExactRepresentation {
@@ -86,6 +102,7 @@ impl ExactRepresentation {
             Self::CacheReference => ExactStrategy::CacheReference,
             Self::BaseDelta { .. } => ExactStrategy::BaseDelta,
             Self::Zstandard(_) => ExactStrategy::Zstandard,
+            Self::ChunkManifest(_) => ExactStrategy::ChunkManifest,
         }
     }
 
@@ -109,6 +126,19 @@ impl ExactRepresentation {
             }
             Self::CacheReference => Vec::new(),
             Self::Zstandard(bytes) => bytes.clone(),
+            Self::ChunkManifest(chunks) => {
+                let mut out = Vec::new();
+                out.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
+                for chunk in chunks {
+                    out.extend_from_slice(&chunk.len.to_le_bytes());
+                    out.push(u8::from(chunk.embedded.is_some()));
+                    out.extend_from_slice(&chunk.digest);
+                    if let Some(bytes) = &chunk.embedded {
+                        out.extend_from_slice(bytes);
+                    }
+                }
+                out
+            },
             Self::BaseDelta {
                 base_digest,
                 prefix_len,
@@ -129,6 +159,7 @@ impl ExactRepresentation {
         match self {
             Self::RunLength(_) => RLE_SCRATCH_BYTES,
             Self::Zstandard(_) => ZSTANDARD_DECODE_BUDGET_BYTES,
+            Self::ChunkManifest(_) => 0,
             _ => 0,
         }
     }
@@ -243,6 +274,11 @@ impl ExactPacket {
                 validate_zstandard_frame(payload, original_len)?;
                 ExactRepresentation::Zstandard(payload.to_vec())
             }
+            ExactStrategy::ChunkManifest => {
+                ExactRepresentation::ChunkManifest(
+                    parse_chunk_manifest(payload, original_len)?,
+                )
+            }
         };
 
         Ok(Self {
@@ -323,6 +359,21 @@ impl ExactCache for HashMap<Digest32, Vec<u8>> {
 /// Cache/delta reports list that shared state separately instead of pretending
 /// it is standalone compression.
 pub fn encode_exact(input: &[u8], known_base: Option<&[u8]>) -> EncodeResult {
+    let mut cache = HashMap::<Digest32, Vec<u8>>::new();
+    if let Some(base) = known_base {
+        index_exact_object(&mut cache, base);
+    }
+    encode_exact_with_cache(input, known_base, &cache)
+}
+
+/// Chooses the smallest exact representation while considering arbitrary
+/// receiver-side shared state. The cache may contain whole objects, CDC
+/// chunks, or both.
+pub fn encode_exact_with_cache<C: ExactCache>(
+    input: &[u8],
+    known_base: Option<&[u8]>,
+    cache: &C,
+) -> EncodeResult {
     let digest = sha256(input);
     let original_len = input.len() as u64;
     let mut representation = ExactRepresentation::Raw(input.to_vec());
@@ -352,6 +403,25 @@ pub fn encode_exact(input: &[u8], known_base: Option<&[u8]>) -> EncodeResult {
             best_payload_len = compressed.len();
             representation = ExactRepresentation::Zstandard(compressed);
             shared_state_bytes = 0;
+        }
+    }
+
+    if cache
+        .get(&digest)
+        .is_some_and(|cached| cached == input)
+    {
+        best_payload_len = 0;
+        representation = ExactRepresentation::CacheReference;
+        shared_state_bytes = original_len;
+    }
+
+    if !input.is_empty() {
+        let (chunks, reused_bytes) = build_chunk_manifest(input, cache);
+        let payload_len = chunk_manifest_payload_len(&chunks);
+        if reused_bytes > 0 && payload_len < best_payload_len {
+            best_payload_len = payload_len;
+            representation = ExactRepresentation::ChunkManifest(chunks);
+            shared_state_bytes = reused_bytes;
         }
     }
 
@@ -490,6 +560,25 @@ fn decode_packet_to_writer<C: ExactCache, W: Write>(
         ExactRepresentation::Zstandard(bytes) => {
             decode_zstandard_to_state(bytes, packet.original_len, &mut state)?;
         }
+        ExactRepresentation::ChunkManifest(chunks) => {
+            for chunk in chunks {
+                let bytes = match &chunk.embedded {
+                    Some(bytes) => bytes.as_slice(),
+                    None => cache
+                        .get(&chunk.digest)
+                        .ok_or(UrtError::MissingSharedState(chunk.digest))?,
+                };
+                if bytes.len() != chunk.len as usize {
+                    return Err(UrtError::InvalidFormat(
+                        "chunk length does not match manifest",
+                    ));
+                }
+                if sha256(bytes) != chunk.digest {
+                    return Err(UrtError::IntegrityMismatch);
+                }
+                state.emit(bytes)?;
+            }
+        }
         ExactRepresentation::CacheReference => {
             let base = cache
                 .get(&packet.digest)
@@ -569,6 +658,191 @@ impl<W: Write> DecodeState<'_, W> {
         self.ops = next_ops;
         Ok(())
     }
+}
+
+/// Indexes an exact object and all deterministic content-defined chunks.
+/// Returns the number of unique cache keys inserted.
+pub fn index_exact_object(
+    cache: &mut HashMap<Digest32, Vec<u8>>,
+    bytes: &[u8],
+) -> usize {
+    let before = cache.len();
+    cache.entry(sha256(bytes)).or_insert_with(|| bytes.to_vec());
+    for chunk in content_defined_chunks(bytes) {
+        cache
+            .entry(sha256(chunk))
+            .or_insert_with(|| chunk.to_vec());
+    }
+    cache.len().saturating_sub(before)
+}
+
+fn build_chunk_manifest<C: ExactCache>(
+    input: &[u8],
+    cache: &C,
+) -> (Vec<ChunkRecord>, u64) {
+    let chunks = content_defined_chunks(input);
+    let mut records = Vec::with_capacity(chunks.len());
+    let mut reused_bytes = 0_u64;
+
+    for chunk in chunks {
+        let digest = sha256(chunk);
+        let cached = cache
+            .get(&digest)
+            .is_some_and(|value| value == chunk);
+        let len = u32::try_from(chunk.len())
+            .expect("CDC chunk length is bounded below u32::MAX");
+
+        if cached {
+            reused_bytes = reused_bytes.saturating_add(chunk.len() as u64);
+            records.push(ChunkRecord {
+                digest,
+                len,
+                embedded: None,
+            });
+        } else {
+            records.push(ChunkRecord {
+                digest,
+                len,
+                embedded: Some(chunk.to_vec()),
+            });
+        }
+    }
+
+    (records, reused_bytes)
+}
+
+fn chunk_manifest_payload_len(chunks: &[ChunkRecord]) -> usize {
+    4_usize.saturating_add(
+        chunks.iter().fold(0_usize, |total, chunk| {
+            total
+                .saturating_add(CHUNK_RECORD_FIXED_BYTES)
+                .saturating_add(
+                    chunk
+                        .embedded
+                        .as_ref()
+                        .map_or(0, Vec::len),
+                )
+        }),
+    )
+}
+
+fn parse_chunk_manifest(
+    payload: &[u8],
+    original_len: u64,
+) -> Result<Vec<ChunkRecord>, UrtError> {
+    let mut cursor = Cursor::new(payload);
+    let chunk_count = cursor.u32()? as usize;
+
+    let conservative_max_chunks = usize::try_from(
+        original_len
+            .div_ceil(CDC_MIN_BYTES as u64)
+            .saturating_add(2),
+    )
+    .unwrap_or(usize::MAX);
+
+    if chunk_count > conservative_max_chunks {
+        return Err(UrtError::InvalidFormat(
+            "chunk manifest count exceeds exact-output bound",
+        ));
+    }
+
+    let mut chunks = Vec::with_capacity(chunk_count);
+    let mut total_len = 0_u64;
+
+    for _ in 0..chunk_count {
+        let len = cursor.u32()?;
+        if len == 0 || len as usize > CDC_MAX_BYTES {
+            return Err(UrtError::InvalidFormat(
+                "chunk manifest contains invalid chunk length",
+            ));
+        }
+
+        let flags = cursor.u8()?;
+        let digest = cursor.array32()?;
+        let embedded = match flags {
+            0 => None,
+            1 => Some(cursor.take(len as usize)?.to_vec()),
+            _ => {
+                return Err(UrtError::InvalidFormat(
+                    "chunk manifest contains invalid flags",
+                ))
+            }
+        };
+
+        total_len = total_len
+            .checked_add(len as u64)
+            .ok_or(UrtError::InvalidFormat("chunk length sum overflow"))?;
+
+        chunks.push(ChunkRecord {
+            digest,
+            len,
+            embedded,
+        });
+    }
+
+    if cursor.remaining() != 0 {
+        return Err(UrtError::InvalidFormat(
+            "trailing bytes after chunk manifest",
+        ));
+    }
+    if total_len != original_len {
+        return Err(UrtError::LengthMismatch {
+            expected: original_len,
+            actual: total_len,
+        });
+    }
+
+    Ok(chunks)
+}
+
+fn content_defined_chunks(input: &[u8]) -> Vec<&[u8]> {
+    if input.is_empty() {
+        return Vec::new();
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0_usize;
+    let mut hash = 0_u64;
+    let mut ring = [0_u8; CDC_WINDOW_BYTES];
+    let mut ring_pos = 0_usize;
+    let mut filled = 0_usize;
+
+    for (index, &byte) in input.iter().enumerate() {
+        if filled < CDC_WINDOW_BYTES {
+            hash = hash.rotate_left(1) ^ cdc_gear(byte);
+            ring[filled] = byte;
+            filled += 1;
+        } else {
+            let outgoing = ring[ring_pos];
+            ring[ring_pos] = byte;
+            ring_pos = (ring_pos + 1) % CDC_WINDOW_BYTES;
+            hash = hash.rotate_left(1)
+                ^ cdc_gear(byte)
+                ^ cdc_gear(outgoing).rotate_left(CDC_WINDOW_BYTES as u32);
+        }
+
+        let chunk_len = index + 1 - start;
+        let boundary = chunk_len >= CDC_MIN_BYTES
+            && ((hash & CDC_AVG_MASK) == 0 || chunk_len >= CDC_MAX_BYTES);
+
+        if boundary {
+            chunks.push(&input[start..=index]);
+            start = index + 1;
+        }
+    }
+
+    if start < input.len() {
+        chunks.push(&input[start..]);
+    }
+
+    chunks
+}
+
+fn cdc_gear(byte: u8) -> u64 {
+    let mut value = u64::from(byte).wrapping_add(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
 }
 
 fn encode_zstandard(input: &[u8]) -> Result<Vec<u8>, UrtError> {
@@ -815,7 +1089,7 @@ mod tests {
         let wire = encoded.packet.to_bytes();
         let mut cache = HashMap::<Digest32, Vec<u8>>::new();
         if let Some(base) = base {
-            cache.insert(sha256(base), base.to_vec());
+            index_exact_object(&mut cache, base);
         }
         let budget = DecodeBudget {
             max_output_bytes: input.len() as u64,
@@ -896,6 +1170,64 @@ mod tests {
         assert_eq!(encoded.report.strategy, ExactStrategy::BaseDelta);
         assert_eq!(encoded.report.shared_state_bytes, base.len() as u64);
         assert!(encoded.report.network_bytes < 256);
+    }
+
+    #[test]
+    fn distributed_edits_use_content_defined_dedup_instead_of_wide_delta() {
+        let mut state = 0x51f2_aa93_1407_77d3_u64;
+        let mut base = vec![0_u8; 1024 * 1024];
+        for byte in &mut base {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state as u8;
+        }
+
+        let mut changed = base.clone();
+        for offset in (32 * 1024..changed.len() - 32 * 1024)
+            .step_by(64 * 1024)
+        {
+            for index in 0..32 {
+                changed[offset + index] ^= 0xA5;
+            }
+        }
+
+        let encoded = round_trip(&changed, Some(&base));
+        assert_eq!(encoded.report.strategy, ExactStrategy::ChunkManifest);
+        assert!(encoded.report.shared_state_bytes > 600 * 1024);
+        assert!(encoded.report.network_bytes < 400 * 1024);
+    }
+
+    #[test]
+    fn cross_object_chunk_cache_can_reconstruct_without_whole_base() {
+        let mut state = 0x713a_92c4_e11d_0a5b_u64;
+        let mut source = vec![0_u8; 512 * 1024];
+        for byte in &mut source {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state as u8;
+        }
+
+        let mut cache = HashMap::<Digest32, Vec<u8>>::new();
+        index_exact_object(&mut cache, &source);
+
+        let mut target = source.clone();
+        for index in 200_000..202_000 {
+            target[index] ^= 0x3C;
+        }
+
+        let encoded = encode_exact_with_cache(&target, None, &cache);
+        assert_eq!(encoded.report.strategy, ExactStrategy::ChunkManifest);
+        assert!(encoded.report.shared_state_bytes > 400 * 1024);
+
+        let decoded = decode_exact(
+            &encoded.packet.to_bytes(),
+            &cache,
+            DecodeBudget::permissive_for(target.len() as u64),
+        )
+        .unwrap();
+        assert_eq!(decoded, target);
     }
 
     #[test]
