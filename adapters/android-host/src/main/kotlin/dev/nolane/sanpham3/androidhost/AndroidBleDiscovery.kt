@@ -115,6 +115,105 @@ class AndroidBleDiscovery(
         }
     }
 
+    fun startScanOnly(
+        onEvent: (AndroidBleEvent) -> Unit,
+    ) {
+        if (!started.compareAndSet(false, true)) {
+            return
+        }
+
+        listener = onEvent
+
+        val bluetoothAdapter = adapter
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
+            failAndClose("Bluetooth adapter unavailable or disabled")
+            return
+        }
+
+        val scanner = bluetoothAdapter.bluetoothLeScanner
+        if (scanner == null) {
+            failAndClose("BLE scanning unavailable")
+            return
+        }
+
+        val filter = ScanFilter.Builder()
+            .setServiceUuid(SERVICE_UUID)
+            .build()
+        val scanSettings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .build()
+
+        try {
+            scanner.startScan(
+                listOf(filter),
+                scanSettings,
+                scanCallback,
+            )
+            listener?.invoke(AndroidBleEvent.Started)
+        } catch (error: SecurityException) {
+            failAndClose(error.message ?: "Bluetooth permission denied")
+        } catch (error: RuntimeException) {
+            failAndClose(error.message ?: error.javaClass.simpleName)
+        }
+    }
+
+    fun startAdvertiseOnly(
+        discoveryInfo: ByteArray,
+        onEvent: (AndroidBleEvent) -> Unit,
+    ) {
+        require(discoveryInfo.size <= MAX_SERVICE_DATA_BYTES) {
+            "BLE discoveryInfo must be <= $MAX_SERVICE_DATA_BYTES bytes"
+        }
+
+        if (!started.compareAndSet(false, true)) {
+            return
+        }
+
+        listener = onEvent
+
+        val bluetoothAdapter = adapter
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
+            failAndClose("Bluetooth adapter unavailable or disabled")
+            return
+        }
+
+        val advertiser = bluetoothAdapter.bluetoothLeAdvertiser
+        if (advertiser == null) {
+            failAndClose("BLE advertising unavailable")
+            return
+        }
+
+        val advertiseSettings = AdvertiseSettings.Builder()
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+            .setConnectable(false)
+            .setTimeout(0)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+            .build()
+        val advertiseData = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
+            .addServiceUuid(SERVICE_UUID)
+            .build()
+        val scanResponse = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
+            .addServiceData(SERVICE_UUID, discoveryInfo)
+            .build()
+
+        try {
+            advertiser.startAdvertising(
+                advertiseSettings,
+                advertiseData,
+                scanResponse,
+                advertiseCallback,
+            )
+        } catch (error: SecurityException) {
+            failAndClose(error.message ?: "Bluetooth permission denied")
+        } catch (error: RuntimeException) {
+            failAndClose(error.message ?: error.javaClass.simpleName)
+        }
+    }
+
     fun start(
         discoveryInfo: ByteArray,
         onEvent: (AndroidBleEvent) -> Unit,
@@ -204,6 +303,8 @@ class AndroidBleDiscovery(
                 ?.stopAdvertising(advertiseCallback)
         } catch (_: SecurityException) {
             // Permission may have been revoked while Recovery Mode was active.
+        } catch (_: RuntimeException) {
+            // Advertising may never have been started on scan-only mode.
         }
 
         try {
@@ -212,6 +313,8 @@ class AndroidBleDiscovery(
                 ?.stopScan(scanCallback)
         } catch (_: SecurityException) {
             // Permission may have been revoked while Recovery Mode was active.
+        } catch (_: RuntimeException) {
+            // Scanning may never have been started on advertise-only mode.
         }
 
         listener = null
