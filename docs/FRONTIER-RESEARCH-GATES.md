@@ -116,7 +116,7 @@ Future:
 - [x] source/provenance merge baseline
 - [x] deadline/freshness-aware fragment scheduler baseline
 - [x] correlated-failure model baseline
-- [ ] energy-per-useful-bit objective
+- [x] energy-per-useful-bit objective baseline
 
 ## F5 — Android AVD twin lab
 
@@ -391,3 +391,18 @@ useful bits/s, range, energy, real microphone/speaker filtering and two-device
 interoperability remain measurement requirements.
 
 Evidence: `docs/F6-ACOUSTIC-REQUEST-CAPSULE.md`.
+
+
+### F4 energy objective reconciliation
+
+The fragment scheduler now has a measured-input energy-per-useful-bit
+objective. It consumes setup time, setup energy, active power, usable bitrate,
+expected wire bytes and useful task bits supplied by evidence/measurement.
+
+The selector accounts for real SP3F wire overhead in its court, rejects paths
+that miss the completion deadline, and does not reinterpret the older relative
+`energy_cost` field as physical joules.
+
+Physical energy claims still require measurements on real devices.
+
+Evidence: `docs/F4-ENERGY-PER-USEFUL-BIT.md`.
