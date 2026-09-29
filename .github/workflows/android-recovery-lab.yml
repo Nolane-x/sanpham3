@@ -64,7 +64,7 @@ jobs:
       - name: Build shared Rust peer-session JNI
         run: |
           rm -rf adapters/android-host/src/main/jniLibs
-          adapters/android-host/build-peer-session-native.sh
+          bash adapters/android-host/build-peer-session-native.sh
 
       - uses: gradle/actions/setup-gradle@v4
         with:
