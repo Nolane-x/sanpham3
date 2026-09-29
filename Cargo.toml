@@ -7,6 +7,7 @@ members = [
     "crates/peer-egress",
     "crates/recovery-runtime",
     "crates/weak-link-court",
+    "crates/carrier-frontier",
     "adapters/linux-host",
     "adapters/android-peer-session-jni",
     "adapters/windows-host",
@@ -18,5 +19,6 @@ members = [
     "apps/peer-egress-cli",
     "apps/recovery-lab-cli",
     "apps/weak-link-court-cli",
+    "apps/virtual-phone-lab",
 ]
 resolver = "2"
