@@ -102,12 +102,25 @@ Software evidence:
 - [x] deterministic loss, retransmission cost and periodic outage support;
 - [x] wire overhead and virtual task-completion time reported.
 
+Physical tooling:
+
+- [x] cross-platform real-time TCP shaper preserves the byte stream;
+- [x] one shared wall-clock gate caps aggregate traffic across both directions;
+- [x] optional periodic outage pauses real traffic without corrupting frames;
+- [x] shaper reports relayed bytes, wall time, observed bit rate, serialization time and outage wait;
+- [x] Linux and Windows role harnesses capture binary hashes and raw evidence;
+- [x] dedicated CI builds/tests the shaper and parses both harnesses.
+
 Physical closure:
 
-- [ ] reproduce the ladder with a measured real link or controlled traffic shaper;
-- [ ] record actual loss, outage periods and transmitted bytes;
-- [ ] demonstrate useful remote task completion on physical devices;
-- [ ] preserve tested commit, binary hashes and topology evidence.
+- [ ] run 1000 bit/s on real machines and complete the useful task;
+- [ ] run 100 bit/s on real machines and complete the useful task;
+- [ ] run 30 bit/s on real machines and complete the useful task;
+- [ ] run 10 bit/s on real machines and complete the useful task;
+- [ ] verify measured aggregate throughput never exceeds the configured tier;
+- [ ] preserve tested commit, binary hashes, topology and all three role logs.
+
+Physical evidence must follow `docs/G7-PHYSICAL-WEAK-LINK-COURT.md`.
 
 Simulator success is explicitly not physical G7 closure.
 
