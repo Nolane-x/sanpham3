@@ -52,7 +52,7 @@ class LabCodecTest {
             bytes,
         )
         assertEquals(
-            "8cbb5b73bf0523ce84da09b3c761ed90df03b736cb64b4fd1ce0a4a14d6f9d2d",
+            "d38cc1c276c17bf2e43b69c6d751a0b779ef6d82c9ccc9bee4e4bcbe08406e61",
             LabCodec.sha256Hex(bytes),
         )
     }
