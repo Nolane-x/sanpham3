@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - "crates/carrier-frontier/**"
+      - "crates/signal-frontier/**"
       - "apps/virtual-phone-lab/**"
       - "docs/FRONTIER-CARRIER-RESEARCH.md"
       - "docs/VIRTUAL-PHONE-LAB.md"
@@ -12,6 +13,7 @@ on:
   pull_request:
     paths:
       - "crates/carrier-frontier/**"
+      - "crates/signal-frontier/**"
       - "apps/virtual-phone-lab/**"
       - "docs/FRONTIER-CARRIER-RESEARCH.md"
       - "docs/VIRTUAL-PHONE-LAB.md"
@@ -35,6 +37,9 @@ jobs:
       - name: Frontier model tests
         run: cargo test -p carrier-frontier
 
+      - name: Synthetic signal tests
+        run: cargo test -p signal-frontier
+
       - name: Android API and permission matrix
         run: cargo run -p virtual-phone-lab -- android-matrix
 
@@ -43,6 +48,9 @@ jobs:
 
       - name: Multi-contact fragment scavenging
         run: cargo run -p virtual-phone-lab -- scavenge
+
+      - name: Synthetic near-ultrasonic waveform court
+        run: cargo run -p virtual-phone-lab -- acoustic-synthetic
 
       - name: Zero-carrier truth boundary
         shell: bash
