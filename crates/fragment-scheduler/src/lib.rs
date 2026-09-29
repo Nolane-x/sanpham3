@@ -148,11 +148,26 @@ pub fn schedule_contact(
             .iter()
             .enumerate()
             .filter(|(_, transfer)| {
-                !transfer.is_complete()
-                    && transfer.fresh_until > current_time
-                    && transfer
-                        .next_wire_bytes()
-                        .is_some_and(|bytes| bytes as u64 <= remaining_capacity)
+                if transfer.is_complete() || transfer.fresh_until <= current_time {
+                    return false;
+                }
+
+                let Some(next_wire_bytes) = transfer.next_wire_bytes() else {
+                    return false;
+                };
+                if next_wire_bytes as u64 > remaining_capacity {
+                    return false;
+                }
+
+                let next_finish = current_time.saturating_add(
+                    serialization_duration(
+                        next_wire_bytes as u64,
+                        contact.bitrate_bps,
+                    ),
+                );
+
+                next_finish <= contact.ends_at()
+                    && next_finish <= transfer.fresh_until
             })
             .map(|(index, transfer)| {
                 let remaining_bytes = transfer.remaining_wire_bytes();
@@ -425,15 +440,19 @@ mod tests {
     #[test]
     fn deadline_ages_as_contact_capacity_is_consumed() {
         let key = key();
-        let first = b"first".repeat(40);
-        let second = b"second".repeat(40);
+        // First transfer is one short wire with the earliest deadline.
+        // The second transfer could finish by 1.7s only if it started at t=0.
+        // After the first wire consumes time, only one second-transfer wire
+        // can still finish before freshness expiry.
+        let first = b"first".repeat(10);
+        let second = b"second".repeat(34);
 
         let mut transfers = vec![
             PendingTransfer::from_bytes(
                 &first,
                 220,
                 &key,
-                Duration::from_secs(20),
+                Duration::from_millis(800),
                 10,
             )
             .unwrap(),
