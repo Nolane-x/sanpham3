@@ -1,0 +1,135 @@
+name: f5-avd-scenario-driver
+
+on:
+  push:
+    paths:
+      - "scripts/virtual-phone-avd-scenarios.sh"
+      - "docs/F5-AVD-SCENARIO-DRIVER.md"
+      - ".github/workflows/f5-avd-scenario-driver.yml"
+  pull_request:
+    paths:
+      - "scripts/virtual-phone-avd-scenarios.sh"
+      - "docs/F5-AVD-SCENARIO-DRIVER.md"
+      - ".github/workflows/f5-avd-scenario-driver.yml"
+
+jobs:
+  scenario-driver-state-machine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Bash syntax
+        run: bash -n scripts/virtual-phone-avd-scenarios.sh
+
+      - name: Build fake adb
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATE="$RUNNER_TEMP/fake-adb-state"
+          mkdir -p "$STATE"
+          printf 'granted\n' >"$STATE/emulator-5554"
+          printf 'denied\n' >"$STATE/emulator-5556"
+
+          cat >"$RUNNER_TEMP/fake-adb" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          serial=""
+          if [[ "${1:-}" == "-s" ]]; then
+            serial="$2"
+            shift 2
+          fi
+
+          command="${1:-}"
+          shift || true
+          state_file="$FAKE_ADB_STATE/$serial"
+
+          case "$command" in
+            get-state)
+              echo device
+              ;;
+            shell)
+              sub="${1:-}"
+              shift || true
+              case "$sub" in
+                pm)
+                  action="${1:-}"
+                  shift || true
+                  case "$action" in
+                    path)
+                      echo "package:/data/app/com.example.app/base.apk"
+                      ;;
+                    grant)
+                      printf 'granted\n' >"$state_file"
+                      ;;
+                    revoke)
+                      printf 'denied\n' >"$state_file"
+                      ;;
+                    *)
+                      echo "unsupported fake pm action: $action" >&2
+                      exit 2
+                      ;;
+                  esac
+                  ;;
+                dumpsys)
+                  service="${1:-}"
+                  shift || true
+                  if [[ "$service" == "package" ]]; then
+                    state="$(cat "$state_file")"
+                    if [[ "$state" == "granted" ]]; then
+                      granted=true
+                    else
+                      granted=false
+                    fi
+                    echo "android.permission.ACCESS_FINE_LOCATION: granted=$granted, flags=[]"
+                  else
+                    echo "fake dumpsys service=$service serial=$serial"
+                  fi
+                  ;;
+                ip)
+                  echo "default via 10.0.2.2 dev wlan0"
+                  ;;
+                am)
+                  exit 0
+                  ;;
+                monkey)
+                  echo "Events injected: 1"
+                  ;;
+                *)
+                  echo "unsupported fake shell command: $sub" >&2
+                  exit 2
+                  ;;
+              esac
+              ;;
+            logcat)
+              echo "fake logcat serial=$serial"
+              ;;
+            *)
+              echo "unsupported fake adb command: $command" >&2
+              exit 2
+              ;;
+          esac
+          EOF
+          chmod +x "$RUNNER_TEMP/fake-adb"
+
+      - name: Exercise grant revoke restore scenarios
+        shell: bash
+        env:
+          FAKE_ADB_STATE: ${{ runner.temp }}/fake-adb-state
+          SP3_ADB_BIN: ${{ runner.temp }}/fake-adb
+          SP3_SCENARIO_PERMISSIONS: android.permission.ACCESS_FINE_LOCATION
+          SP3_SCENARIO_WAIT_MS: "0"
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/f5-evidence"
+          scripts/virtual-phone-avd-scenarios.sh             emulator-5554 emulator-5556 com.example.app "$evidence"             | tee "$RUNNER_TEMP/f5-output.txt"
+
+          grep -q 'F5_AVD_SCENARIO_PASS' "$RUNNER_TEMP/f5-output.txt"
+          grep -q 'exercised=2' "$RUNNER_TEMP/f5-output.txt"
+          grep -q 'PASS serial=emulator-5554' "$evidence/scenario-results.txt"
+          grep -q 'PASS serial=emulator-5556' "$evidence/scenario-results.txt"
+          grep -q 'evidence_level=ANDROID_AVD' "$evidence/metadata.txt"
+          test -s "$evidence/SHA256SUMS"
+
+          test "$(cat "$FAKE_ADB_STATE/emulator-5554")" = granted
+          test "$(cat "$FAKE_ADB_STATE/emulator-5556")" = denied
