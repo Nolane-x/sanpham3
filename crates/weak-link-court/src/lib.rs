@@ -6,7 +6,9 @@ use peer_egress::{
 use peer_session::{
     ClientHello, PeerKey, SecureSession, ServerHello, SessionRole,
 };
+use std::collections::HashMap;
 use std::time::Duration;
+use urt_core::{decode_exact, encode_exact, sha256, DecodeBudget, Digest32, ExactStrategy};
 
 const LOSS_SCALE: u32 = 1_000_000;
 
@@ -129,6 +131,7 @@ pub enum CourtError {
     Session(String),
     UnexpectedFrameKind(u8),
     ArithmeticOverflow,
+    Urt(String),
 }
 
 pub struct VirtualReliableLink {
@@ -409,6 +412,66 @@ pub fn run_resolve_court<R: Resolver>(
     })
 }
 
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UrtExactCourtResult {
+    pub profile: WeakLinkProfile,
+    pub strategy: ExactStrategy,
+    pub original_bytes: u64,
+    pub network_bytes: u64,
+    pub shared_state_bytes: u64,
+    pub exact_hash: Digest32,
+    pub accounting: LinkAccounting,
+}
+
+/// Sends one exact URT packet through the same constrained-link simulator used
+/// by the G7 weak-link court, then reconstructs and verifies the bytes at the
+/// receiver. Shared base state is explicitly accounted for.
+pub fn run_urt_exact_court(
+    profile: WeakLinkProfile,
+    input: &[u8],
+    known_base: Option<&[u8]>,
+) -> Result<UrtExactCourtResult, CourtError> {
+    let encoded = encode_exact(input, known_base);
+    let wire = encoded.packet.to_bytes();
+    let mut link = VirtualReliableLink::new(profile)?;
+    let delivered = link.transmit(&wire)?;
+
+    let mut cache = HashMap::<Digest32, Vec<u8>>::new();
+    if let Some(base) = known_base {
+        cache.insert(sha256(base), base.to_vec());
+    }
+
+    let decoded = decode_exact(
+        &delivered,
+        &cache,
+        DecodeBudget {
+            max_output_bytes: input.len() as u64,
+            max_decode_ops: (input.len() as u64)
+                .saturating_mul(2)
+                .saturating_add(1024),
+            max_extra_working_bytes: input.len().max(8 * 1024),
+        },
+    )
+    .map_err(|error| CourtError::Urt(error.to_string()))?;
+
+    if decoded != input {
+        return Err(CourtError::Urt(
+            "exact URT court reconstructed different bytes".to_owned(),
+        ));
+    }
+
+    Ok(UrtExactCourtResult {
+        profile,
+        strategy: encoded.report.strategy,
+        original_bytes: encoded.report.original_bytes,
+        network_bytes: encoded.report.network_bytes,
+        shared_state_bytes: encoded.report.shared_state_bytes,
+        exact_hash: sha256(&decoded),
+        accounting: link.accounting()?,
+    })
+}
+
 fn duration_from_ns(value: u128) -> Result<Duration, CourtError> {
     let seconds = value / 1_000_000_000;
     let nanos = (value % 1_000_000_000) as u32;
@@ -432,6 +495,45 @@ mod tests {
                 "8.8.8.8".parse().unwrap(),
             ])
         }
+    }
+
+    #[test]
+    fn urt_exact_payload_survives_ten_bps_virtual_link() {
+        let input = vec![b'Q'; 256 * 1024];
+        let result = run_urt_exact_court(
+            WeakLinkProfile::ladder(10),
+            &input,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(result.strategy, ExactStrategy::RepeatPattern);
+        assert_eq!(result.exact_hash, sha256(&input));
+        assert!(result.network_bytes < 128);
+        assert!(result.accounting.delivered_bytes < 128);
+        assert!(result.accounting.elapsed < Duration::from_secs(120));
+    }
+
+    #[test]
+    fn urt_delta_court_keeps_shared_state_accounting_explicit() {
+        let mut base = vec![0x11_u8; 128 * 1024];
+        for (index, byte) in base.iter_mut().enumerate() {
+            *byte = (index % 251) as u8;
+        }
+        let mut changed = base.clone();
+        changed[64_000..64_016].copy_from_slice(&[0xE1; 16]);
+
+        let result = run_urt_exact_court(
+            WeakLinkProfile::ladder(100),
+            &changed,
+            Some(&base),
+        )
+        .unwrap();
+
+        assert_eq!(result.strategy, ExactStrategy::BaseDelta);
+        assert_eq!(result.shared_state_bytes, base.len() as u64);
+        assert!(result.network_bytes < 256);
+        assert_eq!(result.exact_hash, sha256(&changed));
     }
 
     #[test]
