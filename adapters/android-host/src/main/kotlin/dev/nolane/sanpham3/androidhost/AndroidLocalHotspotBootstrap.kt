@@ -2,7 +2,7 @@ package dev.nolane.sanpham3.androidhost
 
 import java.nio.charset.StandardCharsets
 
-internal object AndroidLocalHotspotBootstrap {
+object AndroidLocalHotspotBootstrap {
     private val MAGIC = byteArrayOf(
         'S'.code.toByte(),
         'P'.code.toByte(),

@@ -1,5 +1,7 @@
 package dev.nolane.sanpham3.recoverylab
 
+import java.security.MessageDigest
+
 object LabCodec {
     private val l2capMagic = byteArrayOf(
         'S'.code.toByte(),
@@ -20,6 +22,21 @@ object LabCodec {
             ((high shl 4) or low).toByte()
         }
     }
+
+    fun parseHex(value: String): ByteArray {
+        val normalized = value.filterNot(Char::isWhitespace)
+        require(normalized.length % 2 == 0) {
+            "hex input must contain an even number of characters"
+        }
+        return ByteArray(normalized.length / 2) { index ->
+            val high = hexNibble(normalized[index * 2])
+            val low = hexNibble(normalized[index * 2 + 1])
+            ((high shl 4) or low).toByte()
+        }
+    }
+
+    fun sha256Hex(bytes: ByteArray): String =
+        hex(MessageDigest.getInstance("SHA-256").digest(bytes))
 
     fun decodeL2capPsm(bytes: ByteArray): Int? {
         if (bytes.size != 7) return null

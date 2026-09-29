@@ -44,6 +44,30 @@ class LabCodecTest {
     }
 
     @Test
+    fun parsesGenericHexAndHashesDeterministically() {
+        val bytes = LabCodec.parseHex("53 50 33 48 00 ff")
+
+        assertArrayEquals(
+            byteArrayOf(0x53, 0x50, 0x33, 0x48, 0x00, 0xff.toByte()),
+            bytes,
+        )
+        assertEquals(
+            "d38cc1c276c17bf2e43b69c6d751a0b779ef6d82c9ccc9bee4e4bcbe08406e61",
+            LabCodec.sha256Hex(bytes),
+        )
+    }
+
+    @Test
+    fun rejectsOddOrInvalidGenericHex() {
+        assertThrows(IllegalArgumentException::class.java) {
+            LabCodec.parseHex("abc")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            LabCodec.parseHex("zz")
+        }
+    }
+
+    @Test
     fun rejectsNonL2capDiscoveryPayload() {
         assertNull(LabCodec.decodeL2capPsm(byteArrayOf(1, 2, 3)))
 
