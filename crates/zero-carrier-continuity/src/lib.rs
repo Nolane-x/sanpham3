@@ -1,6 +1,13 @@
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fmt;
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
+use std::path::Path;
 use std::time::Duration;
+
+const STORE_MAGIC: [u8; 4] = *b"SP3S";
+const STORE_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContinuityFreshness {
@@ -101,6 +108,74 @@ pub enum ContinuityMiss {
     GenerationDisallowed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersistenceLimits {
+    pub max_store_bytes: u64,
+    pub max_entries: usize,
+    pub max_object_bytes: u64,
+}
+
+impl PersistenceLimits {
+    pub fn conservative() -> Self {
+        Self {
+            max_store_bytes: 64 * 1024 * 1024,
+            max_entries: 10_000,
+            max_object_bytes: 8 * 1024 * 1024,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotReport {
+    pub entries: usize,
+    pub snapshot_bytes: u64,
+    pub snapshot_sha256: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvictionReport {
+    pub entries_before: usize,
+    pub entries_after: usize,
+    pub payload_bytes_before: u64,
+    pub payload_bytes_after: u64,
+    pub removed_keys: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum PersistenceError {
+    Io(io::Error),
+    InvalidFormat(&'static str),
+    ResourceLimit(&'static str),
+    InvalidUtf8,
+    ReceiptMismatch,
+}
+
+impl fmt::Display for PersistenceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "continuity persistence I/O: {error}"),
+            Self::InvalidFormat(message) => {
+                write!(f, "invalid continuity snapshot: {message}")
+            }
+            Self::ResourceLimit(message) => {
+                write!(f, "continuity snapshot resource limit: {message}")
+            }
+            Self::InvalidUtf8 => write!(f, "continuity snapshot contains invalid UTF-8"),
+            Self::ReceiptMismatch => {
+                write!(f, "continuity snapshot object does not match receipt hash")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PersistenceError {}
+
+impl From<io::Error> for PersistenceError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ContinuityStore {
     entries: HashMap<String, CachedObject>,
@@ -109,6 +184,262 @@ pub struct ContinuityStore {
 impl ContinuityStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn payload_bytes(&self) -> u64 {
+        self.entries
+            .values()
+            .map(|object| object.bytes.len() as u64)
+            .sum()
+    }
+
+    /// Removes cache entries until both entry-count and payload-byte budgets
+    /// are satisfied.
+    ///
+    /// Eviction is deterministic:
+    /// 1. source-invalid entries first;
+    /// 2. then older remote observations;
+    /// 3. then lexical key order.
+    pub fn evict_to_budget(
+        &mut self,
+        now_ms: u64,
+        max_payload_bytes: u64,
+        max_entries: usize,
+    ) -> EvictionReport {
+        let entries_before = self.entry_count();
+        let payload_bytes_before = self.payload_bytes();
+        let mut candidates = self
+            .entries
+            .values()
+            .map(|object| {
+                (
+                    !object.within_source_validity(now_ms),
+                    object.receipt.observed_at_ms,
+                    object.key.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        candidates.sort_by(|left, right| {
+            // Invalid entries sort first.
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.2.cmp(&right.2))
+        });
+
+        let mut removed_keys = Vec::new();
+        let mut payload_bytes = payload_bytes_before;
+
+        for (_, _, key) in candidates {
+            if self.entries.len() <= max_entries
+                && payload_bytes <= max_payload_bytes
+            {
+                break;
+            }
+
+            if let Some(removed) = self.entries.remove(&key) {
+                payload_bytes =
+                    payload_bytes.saturating_sub(removed.bytes.len() as u64);
+                removed_keys.push(key);
+            }
+        }
+
+        EvictionReport {
+            entries_before,
+            entries_after: self.entry_count(),
+            payload_bytes_before,
+            payload_bytes_after: self.payload_bytes(),
+            removed_keys,
+        }
+    }
+
+    /// Persists a deterministic versioned snapshot.
+    ///
+    /// The implementation writes and syncs a sibling temporary file before
+    /// replacement. On platforms where replacing an existing destination via
+    /// rename is unavailable, it falls back to remove+rename; therefore this
+    /// is a durable snapshot baseline, not a universal crash-atomic claim.
+    pub fn save_snapshot(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<SnapshotReport, PersistenceError> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+
+        let mut entries = self.entries.values().collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.key.cmp(&right.key));
+
+        let count = u32::try_from(entries.len())
+            .map_err(|_| PersistenceError::ResourceLimit("too many entries"))?;
+
+        let mut snapshot = Vec::new();
+        snapshot.extend_from_slice(&STORE_MAGIC);
+        snapshot.push(STORE_VERSION);
+        snapshot.extend_from_slice(&count.to_be_bytes());
+
+        for object in entries {
+            if !object.receipt.verify(&object.bytes) {
+                return Err(PersistenceError::ReceiptMismatch);
+            }
+
+            let key = object.key.as_bytes();
+            let source = object.receipt.source_id.as_bytes();
+            let note = object.receipt.provenance_note.as_bytes();
+            let key_len = u32::try_from(key.len())
+                .map_err(|_| PersistenceError::ResourceLimit("key too large"))?;
+            let source_len = u32::try_from(source.len())
+                .map_err(|_| PersistenceError::ResourceLimit("source ID too large"))?;
+            let note_len = u32::try_from(note.len())
+                .map_err(|_| PersistenceError::ResourceLimit("provenance note too large"))?;
+            let bytes_len = u64::try_from(object.bytes.len())
+                .map_err(|_| PersistenceError::ResourceLimit("object too large"))?;
+            let valid_for_ms = u64::try_from(object.valid_for.as_millis())
+                .map_err(|_| PersistenceError::ResourceLimit("validity horizon too large"))?;
+
+            snapshot.extend_from_slice(&key_len.to_be_bytes());
+            snapshot.extend_from_slice(&source_len.to_be_bytes());
+            snapshot.extend_from_slice(&note_len.to_be_bytes());
+            snapshot.extend_from_slice(&bytes_len.to_be_bytes());
+            snapshot.extend_from_slice(&object.receipt.observed_at_ms.to_be_bytes());
+            snapshot.extend_from_slice(&valid_for_ms.to_be_bytes());
+            snapshot.extend_from_slice(&object.receipt.content_sha256);
+            snapshot.extend_from_slice(key);
+            snapshot.extend_from_slice(source);
+            snapshot.extend_from_slice(note);
+            snapshot.extend_from_slice(&object.bytes);
+        }
+
+        let snapshot_sha256: [u8; 32] = Sha256::digest(&snapshot).into();
+        let temp_path = path.with_extension("sp3s.tmp");
+
+        {
+            let mut file = File::create(&temp_path)?;
+            file.write_all(&snapshot)?;
+            file.flush()?;
+            file.sync_all()?;
+        }
+
+        match fs::rename(&temp_path, path) {
+            Ok(()) => {}
+            Err(error)
+                if path.exists()
+                    && matches!(
+                        error.kind(),
+                        io::ErrorKind::AlreadyExists
+                            | io::ErrorKind::PermissionDenied
+                    ) =>
+            {
+                fs::remove_file(path)?;
+                fs::rename(&temp_path, path)?;
+            }
+            Err(error) => return Err(PersistenceError::Io(error)),
+        }
+
+        Ok(SnapshotReport {
+            entries: self.entry_count(),
+            snapshot_bytes: snapshot.len() as u64,
+            snapshot_sha256,
+        })
+    }
+
+    pub fn load_snapshot(
+        path: impl AsRef<Path>,
+        limits: PersistenceLimits,
+    ) -> Result<Self, PersistenceError> {
+        let path = path.as_ref();
+        let metadata = fs::metadata(path)?;
+        if metadata.len() > limits.max_store_bytes {
+            return Err(PersistenceError::ResourceLimit(
+                "snapshot exceeds max_store_bytes",
+            ));
+        }
+
+        let capacity = usize::try_from(metadata.len())
+            .map_err(|_| PersistenceError::ResourceLimit("snapshot too large"))?;
+        let mut snapshot = Vec::with_capacity(capacity);
+        File::open(path)?.read_to_end(&mut snapshot)?;
+
+        let mut cursor = StoreCursor::new(&snapshot);
+        if cursor.take(4)? != STORE_MAGIC {
+            return Err(PersistenceError::InvalidFormat("wrong snapshot magic"));
+        }
+        let version = cursor.u8()?;
+        if version != STORE_VERSION {
+            return Err(PersistenceError::InvalidFormat(
+                "unsupported snapshot version",
+            ));
+        }
+
+        let entry_count = cursor.u32()? as usize;
+        if entry_count > limits.max_entries {
+            return Err(PersistenceError::ResourceLimit(
+                "snapshot exceeds max_entries",
+            ));
+        }
+
+        let mut store = ContinuityStore::new();
+        for _ in 0..entry_count {
+            let key_len = cursor.u32()? as usize;
+            let source_len = cursor.u32()? as usize;
+            let note_len = cursor.u32()? as usize;
+            let bytes_len_u64 = cursor.u64()?;
+            if bytes_len_u64 > limits.max_object_bytes {
+                return Err(PersistenceError::ResourceLimit(
+                    "object exceeds max_object_bytes",
+                ));
+            }
+            let bytes_len = usize::try_from(bytes_len_u64)
+                .map_err(|_| PersistenceError::ResourceLimit("object too large"))?;
+            let observed_at_ms = cursor.u64()?;
+            let valid_for_ms = cursor.u64()?;
+            let content_sha256 = cursor.array32()?;
+
+            let key = decode_utf8(cursor.take(key_len)?)?;
+            let source_id = decode_utf8(cursor.take(source_len)?)?;
+            let provenance_note = decode_utf8(cursor.take(note_len)?)?;
+            let bytes = cursor.take(bytes_len)?.to_vec();
+
+            if store.entries.contains_key(&key) {
+                return Err(PersistenceError::InvalidFormat(
+                    "duplicate cache key",
+                ));
+            }
+
+            let object = CachedObject {
+                key: key.clone(),
+                bytes,
+                receipt: SourceReceipt {
+                    source_id,
+                    observed_at_ms,
+                    content_sha256,
+                    provenance_note,
+                },
+                valid_for: Duration::from_millis(valid_for_ms),
+            };
+
+            if !object.receipt.verify(&object.bytes) {
+                return Err(PersistenceError::ReceiptMismatch);
+            }
+            store.entries.insert(key, object);
+        }
+
+        if cursor.remaining() != 0 {
+            return Err(PersistenceError::InvalidFormat(
+                "trailing bytes after snapshot",
+            ));
+        }
+
+        Ok(store)
     }
 
     pub fn insert_verified(
@@ -151,7 +482,7 @@ impl ContinuityStore {
                 .max_cache_age
                 .is_some_and(|limit| age <= limit);
 
-            if caller_accepts_age {
+            if caller_accepts_age && cached.within_source_validity(now_ms) {
                 return Ok(ContinuityAnswer {
                     key: key.to_owned(),
                     bytes: cached.bytes.clone(),
@@ -186,6 +517,66 @@ impl ContinuityStore {
             explanation:
                 "locally generated fallback; not a remote observation",
         })
+    }
+}
+
+fn decode_utf8(bytes: &[u8]) -> Result<String, PersistenceError> {
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|_| PersistenceError::InvalidUtf8)
+}
+
+struct StoreCursor<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> StoreCursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.offset)
+    }
+
+    fn take(&mut self, len: usize) -> Result<&'a [u8], PersistenceError> {
+        let end = self
+            .offset
+            .checked_add(len)
+            .ok_or(PersistenceError::InvalidFormat("cursor overflow"))?;
+        if end > self.bytes.len() {
+            return Err(PersistenceError::InvalidFormat("truncated snapshot"));
+        }
+        let value = &self.bytes[self.offset..end];
+        self.offset = end;
+        Ok(value)
+    }
+
+    fn u8(&mut self) -> Result<u8, PersistenceError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32, PersistenceError> {
+        let bytes: [u8; 4] = self
+            .take(4)?
+            .try_into()
+            .map_err(|_| PersistenceError::InvalidFormat("truncated u32"))?;
+        Ok(u32::from_be_bytes(bytes))
+    }
+
+    fn u64(&mut self) -> Result<u64, PersistenceError> {
+        let bytes: [u8; 8] = self
+            .take(8)?
+            .try_into()
+            .map_err(|_| PersistenceError::InvalidFormat("truncated u64"))?;
+        Ok(u64::from_be_bytes(bytes))
+    }
+
+    fn array32(&mut self) -> Result<[u8; 32], PersistenceError> {
+        self.take(32)?
+            .try_into()
+            .map_err(|_| PersistenceError::InvalidFormat("truncated digest"))
     }
 }
 
@@ -358,6 +749,118 @@ mod tests {
 
         let mut store = ContinuityStore::new();
         assert!(store.insert_verified(corrupted).is_err());
+    }
+
+    fn temp_snapshot_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "sp3-continuity-{label}-{}-snapshot.bin",
+            std::process::id(),
+        ))
+    }
+
+    #[test]
+    fn persistent_snapshot_roundtrips_verified_receipts() {
+        let path = temp_snapshot_path("roundtrip");
+        let _ = fs::remove_file(&path);
+
+        let mut store = ContinuityStore::new();
+        store
+            .insert_verified(object("weather", "remote-a", 10_000, b"sunny"))
+            .unwrap();
+        store
+            .insert_verified(object("price", "remote-b", 11_000, b"42"))
+            .unwrap();
+
+        let report = store.save_snapshot(&path).unwrap();
+        assert_eq!(report.entries, 2);
+        assert!(report.snapshot_bytes > 0);
+
+        let loaded = ContinuityStore::load_snapshot(
+            &path,
+            PersistenceLimits::conservative(),
+        )
+        .unwrap();
+
+        assert_eq!(loaded.entry_count(), 2);
+        assert_eq!(loaded.get("weather").unwrap().bytes, b"sunny");
+        assert_eq!(
+            loaded.get("weather").unwrap().receipt.source_id,
+            "remote-a",
+        );
+        assert!(loaded
+            .get("price")
+            .unwrap()
+            .receipt
+            .verify(&loaded.get("price").unwrap().bytes));
+
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn persistent_snapshot_rejects_content_tampering() {
+        let path = temp_snapshot_path("tamper");
+        let _ = fs::remove_file(&path);
+
+        let mut store = ContinuityStore::new();
+        store
+            .insert_verified(object("weather", "remote-a", 10_000, b"sunny"))
+            .unwrap();
+        store.save_snapshot(&path).unwrap();
+
+        let mut bytes = fs::read(&path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        fs::write(&path, bytes).unwrap();
+
+        assert!(matches!(
+            ContinuityStore::load_snapshot(
+                &path,
+                PersistenceLimits::conservative(),
+            ),
+            Err(PersistenceError::ReceiptMismatch),
+        ));
+
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn eviction_prefers_source_invalid_then_oldest() {
+        let mut store = ContinuityStore::new();
+        let mut expired = object("expired", "source", 0, b"1111");
+        expired.valid_for = Duration::from_secs(1);
+        let mut oldest = object("oldest", "source", 2_000, b"2222");
+        oldest.valid_for = Duration::from_secs(100);
+        let mut newest = object("newest", "source", 3_000, b"3333");
+        newest.valid_for = Duration::from_secs(100);
+
+        store.insert_verified(expired).unwrap();
+        store.insert_verified(oldest).unwrap();
+        store.insert_verified(newest).unwrap();
+
+        let first = store.evict_to_budget(5_000, 8, 2);
+        assert_eq!(first.removed_keys, vec!["expired".to_owned()]);
+        assert!(store.get("expired").is_none());
+
+        let second = store.evict_to_budget(5_000, 4, 10);
+        assert_eq!(second.removed_keys, vec!["oldest".to_owned()]);
+        assert!(store.get("newest").is_some());
+    }
+
+    #[test]
+    fn source_validity_is_stricter_than_caller_cache_age() {
+        let mut store = ContinuityStore::new();
+        let mut cached = object("weather", "source", 0, b"sunny");
+        cached.valid_for = Duration::from_secs(5);
+        store.insert_verified(cached).unwrap();
+
+        let result = store.resolve_zero_carrier::<fn(&str) -> Vec<u8>>(
+            "weather",
+            10_000,
+            ContinuityContract::cached_ok(Duration::from_secs(60)),
+            None,
+        );
+
+        assert_eq!(result, Err(ContinuityMiss::NoAdmissibleCache));
     }
 
     #[test]
