@@ -51,6 +51,10 @@ jobs:
       - name: Multi-contact fragment scavenging
         run: cargo run -p virtual-phone-lab -- scavenge
 
+      - name: Correlated failure-domain redundancy court
+        run: >
+          cargo run -p virtual-phone-lab -- failure-domains
+
       - name: Synthetic near-ultrasonic waveform court
         run: cargo run -p virtual-phone-lab -- acoustic-synthetic
 

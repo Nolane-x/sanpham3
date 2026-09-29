@@ -55,6 +55,142 @@ pub enum Directionality {
     FullDuplex,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum FailureDomain {
+    InternetPath,
+    WifiRadio,
+    BluetoothRadio,
+    CellularModem,
+    NfcController,
+    AudioTransducers,
+    DisplayCamera,
+    HapticsSensors,
+    MagnetometerPath,
+    UsbPath,
+    ExternalInterface,
+    HumanMobility,
+    LocalState,
+    NoChannel,
+}
+
+pub fn primary_failure_domain(kind: CarrierKind) -> FailureDomain {
+    match kind {
+        CarrierKind::InternetIp => FailureDomain::InternetPath,
+        CarrierKind::WifiDirect
+        | CarrierKind::WifiAware
+        | CarrierKind::LocalOnlyHotspot => FailureDomain::WifiRadio,
+        CarrierKind::BluetoothLeAdvertisement
+        | CarrierKind::BluetoothLeGatt
+        | CarrierKind::BluetoothLeL2cap
+        | CarrierKind::BluetoothRfcomm => FailureDomain::BluetoothRadio,
+        CarrierKind::CellularSms => FailureDomain::CellularModem,
+        CarrierKind::NfcHce => FailureDomain::NfcController,
+        CarrierKind::AcousticNearUltrasonic => FailureDomain::AudioTransducers,
+        CarrierKind::OpticalScreenCamera => FailureDomain::DisplayCamera,
+        CarrierKind::VibrationSurface => FailureDomain::HapticsSensors,
+        CarrierKind::MagneticSensor => FailureDomain::MagnetometerPath,
+        CarrierKind::UsbLocal => FailureDomain::UsbPath,
+        CarrierKind::ExternalOsInterface => FailureDomain::ExternalInterface,
+        CarrierKind::PhysicalDataMule => FailureDomain::HumanMobility,
+        CarrierKind::LocalCacheTwin => FailureDomain::LocalState,
+        CarrierKind::None => FailureDomain::NoChannel,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailureScenario {
+    pub failed_domains: Vec<FailureDomain>,
+}
+
+impl FailureScenario {
+    pub fn carrier_survives(&self, kind: CarrierKind) -> bool {
+        !self
+            .failed_domains
+            .contains(&primary_failure_domain(kind))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedundancySelection {
+    pub carriers: Vec<CarrierKind>,
+    pub distinct_failure_domains: usize,
+}
+
+/// Greedy deterministic baseline for spreading redundant fragments/parity
+/// across physical failure domains.
+///
+/// The first carrier is the fastest supported candidate. Subsequent picks
+/// prefer a previously unused primary failure domain before considering
+/// nominal bitrate. This avoids counting BLE GATT + BLE L2CAP + RFCOMM as
+/// three independent failure paths when all depend on the same Bluetooth
+/// radio/controller.
+pub fn choose_failure_diverse_carriers(
+    profiles: &[CarrierProfile],
+    device: &DeviceCapabilities,
+    copies: usize,
+) -> RedundancySelection {
+    if copies == 0 {
+        return RedundancySelection {
+            carriers: Vec::new(),
+            distinct_failure_domains: 0,
+        };
+    }
+
+    let mut candidates = profiles
+        .iter()
+        .filter(|profile| {
+            profile.supported_by(device)
+                && profile.kind != CarrierKind::None
+                && profile.kind != CarrierKind::LocalCacheTwin
+                && profile.nominal_bps > 0
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|left, right| {
+        right
+            .nominal_bps
+            .cmp(&left.nominal_bps)
+            .then_with(|| format!("{:?}", left.kind).cmp(&format!("{:?}", right.kind)))
+    });
+
+    let mut selected = Vec::new();
+    let mut domains = Vec::new();
+
+    while selected.len() < copies && !candidates.is_empty() {
+        let best_index = candidates
+            .iter()
+            .enumerate()
+            .min_by(|(_, left), (_, right)| {
+                let left_seen =
+                    domains.contains(&primary_failure_domain(left.kind));
+                let right_seen =
+                    domains.contains(&primary_failure_domain(right.kind));
+
+                left_seen
+                    .cmp(&right_seen)
+                    .then_with(|| right.nominal_bps.cmp(&left.nominal_bps))
+                    .then_with(|| {
+                        format!("{:?}", left.kind)
+                            .cmp(&format!("{:?}", right.kind))
+                    })
+            })
+            .map(|(index, _)| index)
+            .expect("non-empty candidates");
+
+        let profile = candidates.remove(best_index);
+        let domain = primary_failure_domain(profile.kind);
+        selected.push(profile.kind);
+        if !domains.contains(&domain) {
+            domains.push(domain);
+        }
+    }
+
+    RedundancySelection {
+        carriers: selected,
+        distinct_failure_domains: domains.len(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceCapabilities {
     pub platform: Platform,
@@ -1007,6 +1143,91 @@ mod tests {
         }
         .capabilities();
         assert!(allowed.telephony_messaging);
+    }
+
+    #[test]
+    fn bluetooth_carriers_share_one_correlated_failure_domain() {
+        let scenario = FailureScenario {
+            failed_domains: vec![FailureDomain::BluetoothRadio],
+        };
+
+        assert!(!scenario.carrier_survives(CarrierKind::BluetoothLeGatt));
+        assert!(!scenario.carrier_survives(CarrierKind::BluetoothLeL2cap));
+        assert!(!scenario.carrier_survives(CarrierKind::BluetoothRfcomm));
+        assert!(scenario.carrier_survives(CarrierKind::WifiDirect));
+        assert!(scenario.carrier_survives(CarrierKind::OpticalScreenCamera));
+    }
+
+    #[test]
+    fn wifi_peer_carriers_are_not_counted_as_independent_radios() {
+        assert_eq!(
+            primary_failure_domain(CarrierKind::WifiDirect),
+            FailureDomain::WifiRadio,
+        );
+        assert_eq!(
+            primary_failure_domain(CarrierKind::WifiAware),
+            FailureDomain::WifiRadio,
+        );
+        assert_eq!(
+            primary_failure_domain(CarrierKind::LocalOnlyHotspot),
+            FailureDomain::WifiRadio,
+        );
+    }
+
+    #[test]
+    fn redundancy_planner_prefers_distinct_failure_domains() {
+        let mut device = DeviceCapabilities::conservative_android();
+        device.ble_l2cap_coc = true;
+        device.nfc_hce_or_reader = true;
+
+        let profiles = [
+            CarrierProfile {
+                nominal_bps: 50_000,
+                ..CarrierProfile::baseline(CarrierKind::BluetoothLeL2cap)
+            },
+            CarrierProfile {
+                nominal_bps: 40_000,
+                ..CarrierProfile::baseline(CarrierKind::BluetoothRfcomm)
+            },
+            CarrierProfile {
+                nominal_bps: 30_000,
+                ..CarrierProfile::baseline(CarrierKind::BluetoothLeGatt)
+            },
+            CarrierProfile {
+                nominal_bps: 20_000,
+                ..CarrierProfile::baseline(CarrierKind::WifiDirect)
+            },
+            CarrierProfile {
+                nominal_bps: 5_000,
+                ..CarrierProfile::baseline(CarrierKind::NfcHce)
+            },
+        ];
+
+        let selected =
+            choose_failure_diverse_carriers(&profiles, &device, 3);
+
+        assert_eq!(selected.carriers[0], CarrierKind::BluetoothLeL2cap);
+        assert!(selected.carriers.contains(&CarrierKind::WifiDirect));
+        assert!(selected.carriers.contains(&CarrierKind::NfcHce));
+        assert_eq!(selected.distinct_failure_domains, 3);
+    }
+
+    #[test]
+    fn redundancy_planner_reuses_domain_only_after_diverse_options_exhausted() {
+        let mut device = DeviceCapabilities::conservative_android();
+        device.ble_l2cap_coc = true;
+
+        let profiles = [
+            CarrierProfile::baseline(CarrierKind::BluetoothLeL2cap),
+            CarrierProfile::baseline(CarrierKind::BluetoothLeGatt),
+            CarrierProfile::baseline(CarrierKind::BluetoothRfcomm),
+        ];
+
+        let selected =
+            choose_failure_diverse_carriers(&profiles, &device, 3);
+
+        assert_eq!(selected.carriers.len(), 3);
+        assert_eq!(selected.distinct_failure_domains, 1);
     }
 
     #[test]
