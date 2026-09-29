@@ -142,7 +142,15 @@ Future:
 
 Priority order:
 
-1. [ ] NFC HCE <-> Reader peer-session bootstrap
+1. NFC HCE <-> Reader peer-session bootstrap
+   - [x] proprietary HCE AID and short-APDU framing
+   - [x] shared Rust peer-session authentication
+   - [x] encrypted G8 challenge/ACK
+   - [x] NFC/HCE capability reporting and manifest registration
+   - [x] APDU protocol unit tests and compile-time payload budget guard
+   - [x] physical court authored
+   - [ ] two-device physical interoperability
+   - [ ] measured APDU timing, transceive limits, useful bits/s and failure rate
 2. BLE GATT fallback data path
    - [x] request/response envelope
    - [x] shared Rust peer-session authentication
@@ -152,7 +160,16 @@ Priority order:
    - [x] physical court authored
    - [ ] two-device physical interoperability
    - [ ] measured useful bits/s, setup latency, failures and energy
-3. [ ] Bluetooth RFCOMM peer-session path
+3. Bluetooth RFCOMM peer-session path
+   - [x] Classic discovery and bonded-peer inventory
+   - [x] user-approved discoverability helper
+   - [x] insecure RFCOMM server/client data path
+   - [x] shared Rust peer-session authentication
+   - [x] G8 compatibility through AndroidPeerSession
+   - [x] Bluetooth Classic feature reporting
+   - [x] physical court authored
+   - [ ] two-device physical interoperability
+   - [ ] measured setup latency, reliability, range, useful bits/s and energy
 4. [ ] Local-Only Hotspot peer-session path
 5. [ ] near-ultrasonic request capsule prototype
 6. [ ] screen-camera optical capsule prototype
