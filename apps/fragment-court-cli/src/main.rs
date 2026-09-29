@@ -1,7 +1,8 @@
 use fragment_transport::{
-    fragment_for_wire_budget, fragment_with_xor_parity, sha256, AcceptOutcome,
-    FragmentAssembler, FragmentKey, FragmentProvenance, ParityRecoveryOutcome,
-    ProvenanceAssembler,
+    fragment_for_wire_budget, fragment_with_xor_parity,
+    rateless_symbol_for_wire_budget, sha256, AcceptOutcome, FragmentAssembler,
+    FragmentKey, FragmentProvenance, ParityRecoveryOutcome,
+    ProvenanceAssembler, RatelessDecoder, RatelessSymbolEnvelope,
 };
 use std::collections::HashMap;
 use urt_core::{decode_exact, encode_exact, DecodeBudget, Digest32};
@@ -173,5 +174,91 @@ fn main() {
         summary.fragment_offsets_with_multiple_sources,
         summary.first_observed_at_ms,
         summary.last_observed_at_ms,
+    );
+
+    // Rateless court: send systematic symbols with deliberate multi-shard
+    // loss, then keep generating repair symbol IDs until the decoder reaches
+    // full rank. Some repair symbols are also lost.
+    let first_rateless =
+        rateless_symbol_for_wire_budget(&urt_wire, 220, 0, &key)
+            .expect("first rateless symbol");
+    let first_envelope =
+        RatelessSymbolEnvelope::open(&first_rateless, &key)
+            .expect("rateless metadata");
+    let source_count = first_envelope.source_count as usize;
+    let mut rateless = RatelessDecoder::new(4 * 1024 * 1024);
+    let mut generated_symbols = 0_u64;
+    let mut delivered_symbols = 0_u64;
+    let mut lost_symbols = 0_u64;
+
+    for symbol_id in 0..source_count as u64 {
+        generated_symbols += 1;
+        if symbol_id % 4 == 0 {
+            lost_symbols += 1;
+            continue;
+        }
+        let wire = rateless_symbol_for_wire_budget(
+            &urt_wire,
+            220,
+            symbol_id,
+            &key,
+        )
+        .expect("systematic rateless symbol");
+        rateless
+            .accept_wire(&wire, &key)
+            .expect("systematic rateless receive");
+        delivered_symbols += 1;
+    }
+    assert!(!rateless.is_decodable());
+
+    let mut symbol_id = source_count as u64;
+    let repair_limit = source_count as u64 * 8;
+    while !rateless.is_decodable() && symbol_id < repair_limit {
+        generated_symbols += 1;
+        if symbol_id % 7 == 0 {
+            lost_symbols += 1;
+            symbol_id += 1;
+            continue;
+        }
+
+        let wire = rateless_symbol_for_wire_budget(
+            &urt_wire,
+            220,
+            symbol_id,
+            &key,
+        )
+        .expect("repair rateless symbol");
+        rateless
+            .accept_wire(&wire, &key)
+            .expect("repair rateless receive");
+        delivered_symbols += 1;
+        symbol_id += 1;
+    }
+
+    assert!(rateless.is_decodable());
+    assert_eq!(rateless.rank(), source_count);
+    let rateless_urt = rateless
+        .reconstruct()
+        .expect("rateless URT reconstruction");
+    assert_eq!(rateless_urt, urt_wire);
+
+    let rateless_output = decode_exact(
+        &rateless_urt,
+        &cache,
+        DecodeBudget::permissive_for(input.len() as u64),
+    )
+    .expect("rateless URT exact decode");
+    assert_eq!(rateless_output, input);
+
+    println!(
+        "F4_RATELESS_PASS logical_bytes={} urt_bytes={} source_shards={} generated_symbols={} delivered_symbols={} lost_symbols={} final_rank={} digest={:02x?}",
+        input.len(),
+        urt_wire.len(),
+        source_count,
+        generated_symbols,
+        delivered_symbols,
+        lost_symbols,
+        rateless.rank(),
+        &sha256(&rateless_output)[..8],
     );
 }
