@@ -1,6 +1,7 @@
 use carrier_frontier::{
     rank_candidates, CarrierKind, CarrierProfile, DeviceCapabilities,
-    ContactWindow, InformationTask, Platform, scavenge_across_contacts,
+    AndroidHardwareProfile, AndroidPermissionProfile, ContactWindow,
+    InformationTask, Platform, VirtualAndroidPhone, scavenge_across_contacts,
 };
 
 fn main() {
@@ -17,6 +18,7 @@ fn run() -> Result<(), String> {
         Some("zero-carrier") => zero_carrier_demo(),
         Some("android-minimal") => android_minimal_sweep(),
         Some("scavenge") => scavenge_demo(),
+        Some("android-matrix") => android_matrix(),
         _ => Err(usage()),
     }
 }
@@ -207,12 +209,65 @@ fn android_minimal_sweep() -> Result<(), String> {
     Ok(())
 }
 
+fn android_matrix() -> Result<(), String> {
+    let hardware = AndroidHardwareProfile::broad_phone();
+    let all = AndroidPermissionProfile::all_granted();
+
+    for api_level in [26_u16, 28, 29, 31, 33, 36, 37] {
+        let phone = VirtualAndroidPhone {
+            api_level,
+            hardware,
+            permissions: all,
+        };
+        let caps = phone.capabilities();
+
+        println!(
+            "ANDROID api={} wifi_direct={} wifi_aware={} ble={} ble_l2cap={} rfcomm={} hotspot={} sms={} nfc={}",
+            api_level,
+            caps.wifi_direct,
+            caps.wifi_aware,
+            caps.bluetooth_le,
+            caps.ble_l2cap_coc,
+            caps.bluetooth_classic,
+            caps.local_only_hotspot,
+            caps.telephony_messaging,
+            caps.nfc_hce_or_reader,
+        );
+    }
+
+    let mut denied = all;
+    denied.nearby_wifi_devices = false;
+    denied.bluetooth_scan = false;
+    denied.bluetooth_connect = false;
+    denied.send_sms = false;
+
+    let restricted = VirtualAndroidPhone {
+        api_level: 36,
+        hardware,
+        permissions: denied,
+    }
+    .capabilities();
+
+    println!(
+        "ANDROID api=36 profile=permission-denied wifi_direct={} wifi_aware={} ble={} ble_l2cap={} rfcomm={} sms={}",
+        restricted.wifi_direct,
+        restricted.wifi_aware,
+        restricted.bluetooth_le,
+        restricted.ble_l2cap_coc,
+        restricted.bluetooth_classic,
+        restricted.telephony_messaging,
+    );
+
+    Ok(())
+}
+
 fn broad_android_profile() -> DeviceCapabilities {
     DeviceCapabilities {
         platform: Platform::Android,
         wifi_direct: true,
         wifi_aware: true,
         bluetooth_le: true,
+        ble_l2cap_coc: true,
         bluetooth_classic: true,
         local_only_hotspot: true,
         telephony_messaging: true,
@@ -259,6 +314,7 @@ fn usage() -> String {
         "  virtual-phone-lab zero-carrier",
         "  virtual-phone-lab android-minimal",
         "  virtual-phone-lab scavenge",
+        "  virtual-phone-lab android-matrix",
         "",
         "This is a simulation/research tool. It does not convert simulated",
         "carrier success into physical evidence.",
