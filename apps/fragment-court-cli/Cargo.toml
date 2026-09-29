@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 fragment-transport = { path = "../../crates/fragment-transport" }
+urt-core = { path = "../../crates/urt-core" }
