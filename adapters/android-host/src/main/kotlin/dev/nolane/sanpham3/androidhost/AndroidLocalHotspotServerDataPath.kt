@@ -82,7 +82,7 @@ class AndroidLocalHotspotServerDataPath(
             }
 
             override fun onStopped() {
-                endpoint = null
+                releaseAfterSystemStop()
             }
 
             override fun onFailed(reason: Int) {
@@ -132,6 +132,17 @@ class AndroidLocalHotspotServerDataPath(
             } finally {
                 serverSocket = null
             }
+        }
+    }
+
+    private fun releaseAfterSystemStop() {
+        if (!started.compareAndSet(true, false)) return
+        endpoint = null
+        reservation = null
+        try {
+            serverSocket?.close()
+        } finally {
+            serverSocket = null
         }
     }
 
