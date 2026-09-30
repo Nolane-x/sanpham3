@@ -5,11 +5,11 @@ use signal_frontier::{
 };
 use signal_trace_replay::{
     parse_pcm16_wav, parse_scalar_csv_column,
-    register_optical_translation, register_optical_translation_scale,
-    replay_acoustic_wav_window, replay_optical_pgm_sequence,
-    replay_optical_pgm_sequence_registered,
+    parse_y4m_gray_video, register_optical_translation,
+    register_optical_translation_scale, replay_acoustic_wav_window,
+    replay_optical_pgm_sequence, replay_optical_pgm_sequence_registered,
     replay_optical_pgm_sequence_registered_scaled,
-    replay_vibration_csv_window,
+    replay_optical_y4m_registered_scaled, replay_vibration_csv_window,
 };
 use std::env;
 use std::error::Error;
@@ -27,6 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "optical-pgm" => optical_pgm(&args[2..]),
         "optical-pgm-auto" => optical_pgm_auto(&args[2..]),
         "optical-pgm-auto-scale" => optical_pgm_auto_scale(&args[2..]),
+        "optical-y4m-auto-scale" => optical_y4m_auto_scale(&args[2..]),
         _ => Err(usage().into()),
     }
 }
@@ -283,6 +284,70 @@ fn optical_pgm_auto_scale(
     Ok(())
 }
 
+fn optical_y4m_auto_scale(
+    args: &[String],
+) -> Result<(), Box<dyn Error>> {
+    if !(2..=4).contains(&args.len()) {
+        return Err(usage().into());
+    }
+
+    let expected = hex_to_bits(&args[0])?;
+    let path = &args[1];
+    let start_frame =
+        parse_optional_usize(args.get(2), 0, "start_frame")?;
+    let bytes = fs::read(path)?;
+    let video = parse_y4m_gray_video(&bytes)?;
+    let available = video
+        .luma_frames
+        .len()
+        .checked_sub(start_frame)
+        .ok_or("start_frame is past end of video")?;
+    let frame_count =
+        parse_optional_usize(args.get(3), available, "frame_count")?;
+    if frame_count == 0 {
+        return Err("frame_count must be positive".into());
+    }
+
+    let repetition = OpticalRepetitionConfig::robust_default();
+    let grid = OpticalGridConfig::camera_baseline();
+    let symbol_count = expected
+        .len()
+        .checked_mul(repetition.repeats_per_bit)
+        .ok_or("optical symbol count overflow")?;
+
+    let decoded = replay_optical_y4m_registered_scaled(
+        &bytes,
+        symbol_count,
+        grid,
+        repetition,
+        start_frame,
+        frame_count,
+    )?;
+    let errors = bit_error_count(&expected, &decoded);
+
+    println!(
+        "F3_OPTICAL_Y4M_REPLAY input={} evidence_level=UNCLASSIFIED_REPLAY sha256={} width={} height={} fps={}:{} chroma={} total_frames={} start_frame={} frame_count={} registration=translation_uniform_scale expected_bits={} decoded_bits={} bit_errors={}",
+        path,
+        sha256_hex(&bytes),
+        video.width,
+        video.height,
+        video.fps_numerator,
+        video.fps_denominator,
+        video.chroma,
+        video.luma_frames.len(),
+        start_frame,
+        frame_count,
+        expected.len(),
+        decoded.len(),
+        errors,
+    );
+
+    if errors != 0 {
+        return Err(format!("optical Y4M replay has {errors} bit errors").into());
+    }
+    Ok(())
+}
+
 fn parse_optional_usize(
     value: Option<&String>,
     default: usize,
@@ -328,12 +393,14 @@ fn usage() -> String {
         "  signal-trace-replay-cli optical-pgm <expected_hex> <frame1.pgm> [frame2.pgm ...]",
         "  signal-trace-replay-cli optical-pgm-auto <expected_hex> <frame1.pgm> [frame2.pgm ...]",
         "  signal-trace-replay-cli optical-pgm-auto-scale <expected_hex> <frame1.pgm> [frame2.pgm ...]",
+        "  signal-trace-replay-cli optical-y4m-auto-scale <expected_hex> <capture.y4m> [start_frame] [frame_count]",
         "",
         "All commands use the current F3 reference decoder profiles.",
         "Input provenance is always printed as UNCLASSIFIED_REPLAY.",
         "optical-pgm requires crop/resize to the known court geometry.",
         "optical-pgm-auto may discover translation inside a larger same-scale grayscale canvas.",
         "optical-pgm-auto-scale additionally estimates bounded uniform scale and resamples to the reference grid.",
+        "optical-y4m-auto-scale extracts luma frames from Y4M video and applies the same registration/replay path.",
         "A physical court must separately prove how each capture was produced.",
     ]
     .join("\n")
