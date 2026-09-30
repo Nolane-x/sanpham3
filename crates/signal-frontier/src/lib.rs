@@ -1402,7 +1402,7 @@ mod tests {
                 white_noise_amplitude: 0.025,
             },
             VibrationMountProfile::flat_table(),
-            0x51B_A710,
+            0x051B_A710,
         )
         .unwrap();
         let decoded =
