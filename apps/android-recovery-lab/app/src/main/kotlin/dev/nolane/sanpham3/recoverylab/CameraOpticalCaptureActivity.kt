@@ -155,16 +155,13 @@ class CameraOpticalCaptureActivity : Activity() {
         ) {
             "unsupported sensor orientation $sensorOrientationDegrees"
         }
-        if (
-            sensorOrientationDegrees == 90 ||
-            sensorOrientationDegrees == 270
-        ) {
-            outputWidth = captureHeight
-            outputHeight = captureWidth
-        } else {
-            outputWidth = captureWidth
-            outputHeight = captureHeight
-        }
+        // The emulator-camera court feeds a sensor-native landscape video.
+        // Persist the raw Y plane in the exact Camera2 stream geometry instead
+        // of rotating by display-orientation metadata. Rotating a portrait
+        // fixture before/after the emulator camera can introduce center-crop
+        // loss that is unrelated to optical decoding.
+        outputWidth = captureWidth
+        outputHeight = captureHeight
 
         val directory = File(filesDir, "camera-optical")
         check(directory.exists() || directory.mkdirs()) {
@@ -330,7 +327,7 @@ class CameraOpticalCaptureActivity : Activity() {
             }
 
             runCatching {
-                val luma = orientedTightLuma(image)
+                val luma = tightLumaSensorNative(image)
                 check(luma.size == outputWidth * outputHeight) {
                     "unexpected oriented luma size ${luma.size}"
                 }
@@ -356,7 +353,7 @@ class CameraOpticalCaptureActivity : Activity() {
         }
     }
 
-    private fun orientedTightLuma(image: Image): ByteArray {
+    private fun tightLumaSensorNative(image: Image): ByteArray {
         check(image.format == ImageFormat.YUV_420_888) {
             "unexpected image format ${image.format}"
         }
@@ -385,65 +382,7 @@ class CameraOpticalCaptureActivity : Activity() {
                 target += 1
             }
         }
-        return rotateLuma(
-            input = output,
-            width = image.width,
-            height = image.height,
-            clockwiseDegrees = sensorOrientationDegrees,
-        )
-    }
-
-    private fun rotateLuma(
-        input: ByteArray,
-        width: Int,
-        height: Int,
-        clockwiseDegrees: Int,
-    ): ByteArray {
-        require(input.size == width * height)
-        return when (clockwiseDegrees) {
-            0 -> input
-            90 -> {
-                val out = ByteArray(input.size)
-                val outWidth = height
-                for (y in 0 until height) {
-                    for (x in 0 until width) {
-                        val destX = height - 1 - y
-                        val destY = x
-                        out[destY * outWidth + destX] =
-                            input[y * width + x]
-                    }
-                }
-                out
-            }
-            180 -> {
-                val out = ByteArray(input.size)
-                for (y in 0 until height) {
-                    for (x in 0 until width) {
-                        val destX = width - 1 - x
-                        val destY = height - 1 - y
-                        out[destY * width + destX] =
-                            input[y * width + x]
-                    }
-                }
-                out
-            }
-            270 -> {
-                val out = ByteArray(input.size)
-                val outWidth = height
-                for (y in 0 until height) {
-                    for (x in 0 until width) {
-                        val destX = y
-                        val destY = width - 1 - x
-                        out[destY * outWidth + destX] =
-                            input[y * width + x]
-                    }
-                }
-                out
-            }
-            else -> error(
-                "unsupported sensor orientation $clockwiseDegrees",
-            )
-        }
+        return output
     }
 
     private fun pass(
@@ -459,6 +398,7 @@ class CameraOpticalCaptureActivity : Activity() {
                 "observed_frames=$observedFrames " +
                 "width=$outputWidth height=$outputHeight " +
                 "sensor_orientation=$sensorOrientationDegrees " +
+                "output_orientation=sensor_native " +
                 "sha256=$sha256 file=${file.name} " +
                 "evidence_level=ANDROID_AVD_CAMERA",
         )
