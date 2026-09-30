@@ -94,19 +94,31 @@ class AndroidNfcHostApduService : HostApduService() {
 
         val kind = opened[0].toInt() and 0xff
         val payload = opened.copyOfRange(1, opened.size)
-        require(kind == AndroidG8PairCourt.KIND_CHALLENGE) {
-            "unexpected NFC G8 message kind $kind"
-        }
-        AndroidG8PairCourt.validateChallenge(payload)
 
-        AndroidNfcHceCourt.recordEvidence(
-            peerNodeId = peerNodeId,
-            challenge = payload,
-        )
+        val replyKind = when (kind) {
+            AndroidG8PairCourt.KIND_CHALLENGE -> {
+                AndroidG8PairCourt.validateChallenge(payload)
+                AndroidNfcHceCourt.recordEvidence(
+                    peerNodeId = peerNodeId,
+                    challenge = payload,
+                )
+                AndroidG8PairCourt.KIND_ACK
+            }
+
+            AndroidPeerSessionBenchmark.KIND_PROBE -> {
+                AndroidPeerSessionBenchmark.benchmarkSequence(payload)
+                AndroidNfcHceCourt.recordBenchmarkFrame()
+                AndroidPeerSessionBenchmark.KIND_ACK
+            }
+
+            else -> error(
+                "unexpected NFC encrypted message kind $kind",
+            )
+        }
 
         val reply = AndroidPeerSessionNative.seal(
             handle,
-            AndroidG8PairCourt.KIND_ACK,
+            replyKind,
             payload,
         )
         require(reply.size <= AndroidNfcApdu.MAX_SHORT_PAYLOAD) {
