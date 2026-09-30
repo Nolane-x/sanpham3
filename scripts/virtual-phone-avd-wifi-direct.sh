@@ -120,6 +120,67 @@ require_avd() {
   fi
 }
 
+approve_wifi_direct_join() {
+  local serial="$1"
+  local xml point
+  for _ in $(seq 1 30); do
+    adb_run "$serial" shell uiautomator dump /sdcard/sp3-wifi-direct-window.xml \
+      >/dev/null 2>&1 || true
+    xml="$(
+      adb_run "$serial" shell cat /sdcard/sp3-wifi-direct-window.xml \
+        2>/dev/null \
+        | tr -d '\r' \
+        || true
+    )"
+    if [[ -n "$xml" ]]; then
+      printf '%s\n' "$xml" >"$EVIDENCE/owner-join-dialog.xml"
+      point="$(
+        python3 -c '
+import re, sys, xml.etree.ElementTree as ET
+raw = sys.stdin.read()
+try:
+    root = ET.fromstring(raw)
+except Exception:
+    raise SystemExit(1)
+candidates = []
+for node in root.iter("node"):
+    text = (node.attrib.get("text") or "").strip().lower()
+    rid = (node.attrib.get("resource-id") or "").strip().lower()
+    clickable = (node.attrib.get("clickable") or "").lower() == "true"
+    if (
+        text in {"accept", "allow", "connect", "ok"}
+        or rid.endswith(":id/button1")
+        or rid.endswith("/button1")
+    ):
+        bounds = node.attrib.get("bounds", "")
+        m = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+        if m:
+            x1, y1, x2, y2 = map(int, m.groups())
+            candidates.append((0 if text == "accept" else 1, clickable, (x1+x2)//2, (y1+y2)//2, text, rid))
+if not candidates:
+    raise SystemExit(2)
+candidates.sort(key=lambda item: (item[0], not item[1]))
+_, _, x, y, text, rid = candidates[0]
+print(f"{x} {y} {text or rid}")
+' <<<"$xml" 2>/dev/null \
+        || true
+      )"
+      if [[ -n "$point" ]]; then
+        local x y label
+        read -r x y label <<<"$point"
+        adb_run "$serial" shell input tap "$x" "$y"
+        echo "WIFI_DIRECT_AVD_JOIN_APPROVED serial=$serial x=$x y=$y control=$label method=AVD_UI_AUTOMATION" \
+          | tee "$EVIDENCE/owner-join-approval.txt"
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+
+  echo "Wi-Fi Direct join approval dialog not found on $serial" >&2
+  return 1
+}
+
 snapshot() {
   local serial="$1"
   local prefix="$2"
@@ -152,6 +213,8 @@ adb_run "$SERIAL_A" shell am start -W   -n "$OWNER_COMPONENT"   --es dev.nolane.
 sleep 2
 
 adb_run "$SERIAL_B" shell am start -W   -n "$OWNER_COMPONENT"   --es dev.nolane.sanpham3.recoverylab.WIFI_DIRECT_ROLE client   --es dev.nolane.sanpham3.recoverylab.WIFI_DIRECT_NODE_ID 100   --es dev.nolane.sanpham3.recoverylab.WIFI_DIRECT_PSK "$PSK"   --ei dev.nolane.sanpham3.recoverylab.WIFI_DIRECT_PORT "$PORT"   | tee "$EVIDENCE/client-am-start.txt"
+
+approve_wifi_direct_join "$SERIAL_A"
 
 OWNER_PASS=""
 CLIENT_PASS=""
@@ -211,6 +274,7 @@ test "$OWNER_CHALLENGE" = "$CLIENT_CHALLENGE"
   echo "owner_node=200"
   echo "client_node=100"
   echo "challenge=$OWNER_CHALLENGE"
+  echo "join_approval=AVD_UI_AUTOMATION"
   echo "evidence_level=ANDROID_AVD"
 } >"$EVIDENCE/metadata.txt"
 
