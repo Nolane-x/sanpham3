@@ -448,6 +448,462 @@ pub fn decode_optical_repetition(
     Ok(decoded)
 }
 
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpticalGrayFrame {
+    pub width: usize,
+    pub height: usize,
+    pub pixels: Vec<f32>,
+}
+
+impl OpticalGrayFrame {
+    fn validate(&self) -> Result<(), SignalError> {
+        if self.width == 0 || self.height == 0 {
+            return Err(SignalError::InvalidConfig(
+                "optical frame dimensions must be non-zero",
+            ));
+        }
+        if self.pixels.len() != self.width.saturating_mul(self.height) {
+            return Err(SignalError::InvalidConfig(
+                "optical frame pixel length does not match dimensions",
+            ));
+        }
+        if self
+            .pixels
+            .iter()
+            .any(|value| !value.is_finite())
+        {
+            return Err(SignalError::InvalidConfig(
+                "optical frame contains non-finite pixels",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn pixel(&self, x: usize, y: usize) -> Option<f32> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        self.pixels.get(y * self.width + x).copied()
+    }
+
+    fn sample_bilinear(&self, x: f32, y: f32) -> f32 {
+        if x < 0.0
+            || y < 0.0
+            || x > (self.width - 1) as f32
+            || y > (self.height - 1) as f32
+        {
+            return 0.0;
+        }
+
+        let x0 = x.floor() as usize;
+        let y0 = y.floor() as usize;
+        let x1 = (x0 + 1).min(self.width - 1);
+        let y1 = (y0 + 1).min(self.height - 1);
+        let tx = x - x0 as f32;
+        let ty = y - y0 as f32;
+
+        let p00 = self.pixels[y0 * self.width + x0];
+        let p10 = self.pixels[y0 * self.width + x1];
+        let p01 = self.pixels[y1 * self.width + x0];
+        let p11 = self.pixels[y1 * self.width + x1];
+
+        let top = p00 * (1.0 - tx) + p10 * tx;
+        let bottom = p01 * (1.0 - tx) + p11 * tx;
+        top * (1.0 - ty) + bottom * ty
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpticalGridConfig {
+    pub columns: usize,
+    pub cell_pixels: usize,
+    pub quiet_zone_cells: usize,
+    pub zero_level: f32,
+    pub one_level: f32,
+    pub threshold: f32,
+    pub decision_margin: f32,
+}
+
+impl OpticalGridConfig {
+    pub fn camera_baseline() -> Self {
+        Self {
+            columns: 16,
+            cell_pixels: 10,
+            quiet_zone_cells: 2,
+            zero_level: 0.18,
+            one_level: 0.90,
+            threshold: 0.50,
+            decision_margin: 0.08,
+        }
+    }
+
+    pub fn validate(self) -> Result<(), SignalError> {
+        if self.columns == 0 || self.cell_pixels < 4 {
+            return Err(SignalError::InvalidConfig(
+                "optical grid requires columns and >=4 pixels per cell",
+            ));
+        }
+        if self.quiet_zone_cells == 0 {
+            return Err(SignalError::InvalidConfig(
+                "optical grid requires a quiet zone",
+            ));
+        }
+        if !self.zero_level.is_finite()
+            || !self.one_level.is_finite()
+            || !self.threshold.is_finite()
+            || !self.decision_margin.is_finite()
+        {
+            return Err(SignalError::InvalidConfig(
+                "optical levels must be finite",
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.zero_level)
+            || !(0.0..=1.0).contains(&self.one_level)
+            || !(0.0..=1.0).contains(&self.threshold)
+            || self.zero_level >= self.threshold
+            || self.threshold >= self.one_level
+            || self.decision_margin < 0.0
+            || self.decision_margin >= (self.one_level - self.zero_level) / 2.0
+        {
+            return Err(SignalError::InvalidConfig(
+                "optical levels/threshold/margin are invalid",
+            ));
+        }
+        Ok(())
+    }
+
+    fn dimensions_for(
+        self,
+        symbol_count: usize,
+    ) -> Result<(usize, usize), SignalError> {
+        self.validate()?;
+        let rows = symbol_count.max(1).div_ceil(self.columns);
+        let width_cells = self
+            .columns
+            .checked_add(self.quiet_zone_cells.saturating_mul(2))
+            .ok_or(SignalError::InvalidConfig(
+                "optical grid width overflow",
+            ))?;
+        let height_cells = rows
+            .checked_add(self.quiet_zone_cells.saturating_mul(2))
+            .ok_or(SignalError::InvalidConfig(
+                "optical grid height overflow",
+            ))?;
+        let width = width_cells
+            .checked_mul(self.cell_pixels)
+            .ok_or(SignalError::InvalidConfig(
+                "optical frame width overflow",
+            ))?;
+        let height = height_cells
+            .checked_mul(self.cell_pixels)
+            .ok_or(SignalError::InvalidConfig(
+                "optical frame height overflow",
+            ))?;
+        Ok((width, height))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpticalPerspective {
+    pub top_scale: f32,
+    pub bottom_scale: f32,
+    pub horizontal_shift_pixels: f32,
+}
+
+impl OpticalPerspective {
+    pub fn mild_keystone() -> Self {
+        Self {
+            top_scale: 0.84,
+            bottom_scale: 0.98,
+            horizontal_shift_pixels: 5.0,
+        }
+    }
+
+    pub fn validate(self) -> Result<(), SignalError> {
+        if !self.top_scale.is_finite()
+            || !self.bottom_scale.is_finite()
+            || !self.horizontal_shift_pixels.is_finite()
+            || self.top_scale <= 0.25
+            || self.bottom_scale <= 0.25
+            || self.top_scale > 1.25
+            || self.bottom_scale > 1.25
+        {
+            return Err(SignalError::InvalidConfig(
+                "optical perspective parameters are invalid",
+            ));
+        }
+        Ok(())
+    }
+
+    fn row_scale(self, y_norm: f32) -> f32 {
+        self.top_scale
+            + (self.bottom_scale - self.top_scale) * y_norm
+    }
+
+    fn row_shift(self, y_norm: f32) -> f32 {
+        self.horizontal_shift_pixels * (y_norm - 0.5)
+    }
+
+    fn project(
+        self,
+        width: usize,
+        height: usize,
+        x: f32,
+        y: f32,
+    ) -> (f32, f32) {
+        let center = (width.saturating_sub(1)) as f32 / 2.0;
+        let y_norm = if height <= 1 {
+            0.0
+        } else {
+            y / (height - 1) as f32
+        };
+        let scale = self.row_scale(y_norm);
+        let shift = self.row_shift(y_norm);
+        (center + (x - center) * scale + shift, y)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpticalPhotometric {
+    pub exposure: f32,
+    pub gamma: f32,
+}
+
+impl OpticalPhotometric {
+    pub fn phone_camera_baseline() -> Self {
+        Self {
+            exposure: 0.88,
+            gamma: 1.15,
+        }
+    }
+}
+
+pub fn render_optical_cells(
+    symbols: &[u8],
+    config: OpticalGridConfig,
+) -> Result<OpticalGrayFrame, SignalError> {
+    let (width, height) = config.dimensions_for(symbols.len())?;
+    let background = (config.zero_level * 0.25).clamp(0.0, 1.0);
+    let mut frame = OpticalGrayFrame {
+        width,
+        height,
+        pixels: vec![background; width.saturating_mul(height)],
+    };
+
+    for (index, &symbol) in symbols.iter().enumerate() {
+        if symbol > 1 {
+            return Err(SignalError::InvalidBit(symbol));
+        }
+
+        let row = index / config.columns;
+        let column = index % config.columns;
+        let x0 = (config.quiet_zone_cells + column) * config.cell_pixels;
+        let y0 = (config.quiet_zone_cells + row) * config.cell_pixels;
+        let level = if symbol == 1 {
+            config.one_level
+        } else {
+            config.zero_level
+        };
+
+        for y in y0..y0 + config.cell_pixels {
+            let start = y * width + x0;
+            frame.pixels[start..start + config.cell_pixels].fill(level);
+        }
+    }
+
+    Ok(frame)
+}
+
+pub fn warp_optical_perspective(
+    frame: &OpticalGrayFrame,
+    perspective: OpticalPerspective,
+) -> Result<OpticalGrayFrame, SignalError> {
+    frame.validate()?;
+    perspective.validate()?;
+
+    let mut output = OpticalGrayFrame {
+        width: frame.width,
+        height: frame.height,
+        pixels: vec![0.0; frame.pixels.len()],
+    };
+    let center = (frame.width.saturating_sub(1)) as f32 / 2.0;
+
+    for y in 0..frame.height {
+        let y_norm = if frame.height <= 1 {
+            0.0
+        } else {
+            y as f32 / (frame.height - 1) as f32
+        };
+        let scale = perspective.row_scale(y_norm);
+        let shift = perspective.row_shift(y_norm);
+
+        for x in 0..frame.width {
+            let source_x =
+                center + (x as f32 - center - shift) / scale;
+            output.pixels[y * frame.width + x] =
+                frame.sample_bilinear(source_x, y as f32);
+        }
+    }
+
+    Ok(output)
+}
+
+pub fn apply_optical_box_blur(
+    frame: &OpticalGrayFrame,
+    radius: usize,
+) -> Result<OpticalGrayFrame, SignalError> {
+    frame.validate()?;
+    if radius == 0 {
+        return Ok(frame.clone());
+    }
+    if radius > 16 {
+        return Err(SignalError::InvalidConfig(
+            "optical blur radius exceeds research bound",
+        ));
+    }
+
+    let mut output = OpticalGrayFrame {
+        width: frame.width,
+        height: frame.height,
+        pixels: vec![0.0; frame.pixels.len()],
+    };
+
+    for y in 0..frame.height {
+        let y0 = y.saturating_sub(radius);
+        let y1 = (y + radius).min(frame.height - 1);
+        for x in 0..frame.width {
+            let x0 = x.saturating_sub(radius);
+            let x1 = (x + radius).min(frame.width - 1);
+            let mut sum = 0.0_f32;
+            let mut count = 0_usize;
+
+            for sample_y in y0..=y1 {
+                for sample_x in x0..=x1 {
+                    sum += frame.pixels[sample_y * frame.width + sample_x];
+                    count += 1;
+                }
+            }
+
+            output.pixels[y * frame.width + x] = sum / count as f32;
+        }
+    }
+
+    Ok(output)
+}
+
+pub fn apply_optical_photometric(
+    frame: &OpticalGrayFrame,
+    photometric: OpticalPhotometric,
+) -> Result<OpticalGrayFrame, SignalError> {
+    frame.validate()?;
+    if !photometric.exposure.is_finite()
+        || !photometric.gamma.is_finite()
+        || photometric.exposure <= 0.0
+        || photometric.gamma <= 0.0
+        || photometric.exposure > 4.0
+        || photometric.gamma > 4.0
+    {
+        return Err(SignalError::InvalidConfig(
+            "optical exposure/gamma parameters are invalid",
+        ));
+    }
+
+    let inverse_gamma = 1.0 / photometric.gamma;
+    Ok(OpticalGrayFrame {
+        width: frame.width,
+        height: frame.height,
+        pixels: frame
+            .pixels
+            .iter()
+            .map(|value| {
+                (value * photometric.exposure)
+                    .clamp(0.0, 1.0)
+                    .powf(inverse_gamma)
+            })
+            .collect(),
+    })
+}
+
+pub fn decode_optical_cells(
+    frame: &OpticalGrayFrame,
+    symbol_count: usize,
+    config: OpticalGridConfig,
+    perspective: Option<OpticalPerspective>,
+) -> Result<Vec<Option<u8>>, SignalError> {
+    frame.validate()?;
+    let (expected_width, expected_height) =
+        config.dimensions_for(symbol_count)?;
+    if frame.width != expected_width || frame.height != expected_height {
+        return Err(SignalError::InvalidConfig(
+            "optical frame dimensions do not match grid config",
+        ));
+    }
+    if let Some(value) = perspective {
+        value.validate()?;
+    }
+
+    let radius = (config.cell_pixels / 4).max(1) as isize;
+    let mut decoded = Vec::with_capacity(symbol_count);
+
+    for index in 0..symbol_count {
+        let row = index / config.columns;
+        let column = index % config.columns;
+        let source_x =
+            (config.quiet_zone_cells + column) as f32
+                * config.cell_pixels as f32
+                + config.cell_pixels as f32 / 2.0;
+        let source_y =
+            (config.quiet_zone_cells + row) as f32
+                * config.cell_pixels as f32
+                + config.cell_pixels as f32 / 2.0;
+
+        let (center_x, center_y) = perspective.map_or(
+            (source_x, source_y),
+            |value| {
+                value.project(
+                    frame.width,
+                    frame.height,
+                    source_x,
+                    source_y,
+                )
+            },
+        );
+
+        let mut sum = 0.0_f32;
+        let mut count = 0_usize;
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                let x = center_x.round() as isize + dx;
+                let y = center_y.round() as isize + dy;
+                if x < 0
+                    || y < 0
+                    || x >= frame.width as isize
+                    || y >= frame.height as isize
+                {
+                    continue;
+                }
+                sum += frame.pixels[y as usize * frame.width + x as usize];
+                count += 1;
+            }
+        }
+
+        if count == 0 {
+            decoded.push(None);
+            continue;
+        }
+
+        let mean = sum / count as f32;
+        if (mean - config.threshold).abs() <= config.decision_margin {
+            decoded.push(None);
+        } else {
+            decoded.push(Some(u8::from(mean > config.threshold)));
+        }
+    }
+
+    Ok(decoded)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VibrationOokConfig {
     pub sample_rate_hz: u32,
@@ -751,6 +1207,69 @@ mod tests {
 
         assert_eq!(decoded, bits);
         assert_eq!(bit_error_count(&bits, &decoded), 0);
+    }
+
+    #[test]
+    fn optical_raster_roundtrips_under_camera_like_impairments() {
+        let bits = payload();
+        let repetition = OpticalRepetitionConfig::robust_default();
+        let grid = OpticalGridConfig::camera_baseline();
+        let perspective = OpticalPerspective::mild_keystone();
+
+        let symbols =
+            encode_optical_repetition(&bits, repetition).unwrap();
+        let rendered = render_optical_cells(&symbols, grid).unwrap();
+        let warped =
+            warp_optical_perspective(&rendered, perspective).unwrap();
+        let blurred = apply_optical_box_blur(&warped, 1).unwrap();
+        let photographed = apply_optical_photometric(
+            &blurred,
+            OpticalPhotometric::phone_camera_baseline(),
+        )
+        .unwrap();
+        let sampled = decode_optical_cells(
+            &photographed,
+            symbols.len(),
+            grid,
+            Some(perspective),
+        )
+        .unwrap();
+        let decoded =
+            decode_optical_repetition(&sampled, repetition).unwrap();
+
+        assert_eq!(decoded, bits);
+        assert_eq!(bit_error_count(&bits, &decoded), 0);
+    }
+
+    #[test]
+    fn optical_renderer_has_deterministic_grid_dimensions() {
+        let grid = OpticalGridConfig::camera_baseline();
+        let frame = render_optical_cells(&[1; 32], grid).unwrap();
+
+        assert_eq!(
+            frame.width,
+            (grid.columns + grid.quiet_zone_cells * 2)
+                * grid.cell_pixels,
+        );
+        assert_eq!(
+            frame.height,
+            (2 + grid.quiet_zone_cells * 2) * grid.cell_pixels,
+        );
+        assert_eq!(frame.pixels.len(), frame.width * frame.height);
+    }
+
+    #[test]
+    fn optical_decoder_rejects_wrong_geometry_dimensions() {
+        let grid = OpticalGridConfig::camera_baseline();
+        let mut frame = render_optical_cells(&[1, 0, 1], grid).unwrap();
+        frame.width -= 1;
+
+        assert_eq!(
+            decode_optical_cells(&frame, 3, grid, None),
+            Err(SignalError::InvalidConfig(
+                "optical frame pixel length does not match dimensions",
+            )),
+        );
     }
 
     #[test]
