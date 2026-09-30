@@ -55,6 +55,9 @@ class CameraOpticalCaptureActivity : Activity() {
     private var warmupFrames = DEFAULT_WARMUP_FRAMES
     private var captureWidth = DEFAULT_WIDTH
     private var captureHeight = DEFAULT_HEIGHT
+    private var outputWidth = DEFAULT_WIDTH
+    private var outputHeight = DEFAULT_HEIGHT
+    private var sensorOrientationDegrees = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -139,6 +142,29 @@ class CameraOpticalCaptureActivity : Activity() {
         )
         captureWidth = selected.width
         captureHeight = selected.height
+        sensorOrientationDegrees =
+            (characteristics.get(
+                CameraCharacteristics.SENSOR_ORIENTATION,
+            ) ?: 0)
+                .mod(360)
+        require(
+            sensorOrientationDegrees == 0 ||
+                sensorOrientationDegrees == 90 ||
+                sensorOrientationDegrees == 180 ||
+                sensorOrientationDegrees == 270,
+        ) {
+            "unsupported sensor orientation $sensorOrientationDegrees"
+        }
+        if (
+            sensorOrientationDegrees == 90 ||
+            sensorOrientationDegrees == 270
+        ) {
+            outputWidth = captureHeight
+            outputHeight = captureWidth
+        } else {
+            outputWidth = captureWidth
+            outputHeight = captureHeight
+        }
 
         val directory = File(filesDir, "camera-optical")
         check(directory.exists() || directory.mkdirs()) {
@@ -147,7 +173,7 @@ class CameraOpticalCaptureActivity : Activity() {
         outputFile = File(directory, "latest.y4m")
         output = FileOutputStream(outputFile!!, false).also { stream ->
             stream.write(
-                "YUV4MPEG2 W$captureWidth H$captureHeight F30:1 Ip Cmono\n"
+                "YUV4MPEG2 W$outputWidth H$outputHeight F30:1 Ip Cmono\n"
                     .toByteArray(Charsets.US_ASCII),
             )
         }
@@ -168,7 +194,9 @@ class CameraOpticalCaptureActivity : Activity() {
 
         record(
             "CAMERA_VIDEO_SOURCE_START camera_id=$cameraId " +
-                "width=$captureWidth height=$captureHeight " +
+                "sensor_width=$captureWidth sensor_height=$captureHeight " +
+                "output_width=$outputWidth output_height=$outputHeight " +
+                "sensor_orientation=$sensorOrientationDegrees " +
                 "target_frames=$targetFrames warmup_frames=$warmupFrames",
         )
 
@@ -302,9 +330,9 @@ class CameraOpticalCaptureActivity : Activity() {
             }
 
             runCatching {
-                val luma = tightLuma(image)
-                check(luma.size == captureWidth * captureHeight) {
-                    "unexpected luma size ${luma.size}"
+                val luma = orientedTightLuma(image)
+                check(luma.size == outputWidth * outputHeight) {
+                    "unexpected oriented luma size ${luma.size}"
                 }
 
                 val stream = checkNotNull(output)
@@ -328,7 +356,7 @@ class CameraOpticalCaptureActivity : Activity() {
         }
     }
 
-    private fun tightLuma(image: Image): ByteArray {
+    private fun orientedTightLuma(image: Image): ByteArray {
         check(image.format == ImageFormat.YUV_420_888) {
             "unexpected image format ${image.format}"
         }
@@ -357,7 +385,65 @@ class CameraOpticalCaptureActivity : Activity() {
                 target += 1
             }
         }
-        return output
+        return rotateLuma(
+            input = output,
+            width = image.width,
+            height = image.height,
+            clockwiseDegrees = sensorOrientationDegrees,
+        )
+    }
+
+    private fun rotateLuma(
+        input: ByteArray,
+        width: Int,
+        height: Int,
+        clockwiseDegrees: Int,
+    ): ByteArray {
+        require(input.size == width * height)
+        return when (clockwiseDegrees) {
+            0 -> input
+            90 -> {
+                val out = ByteArray(input.size)
+                val outWidth = height
+                for (y in 0 until height) {
+                    for (x in 0 until width) {
+                        val destX = height - 1 - y
+                        val destY = x
+                        out[destY * outWidth + destX] =
+                            input[y * width + x]
+                    }
+                }
+                out
+            }
+            180 -> {
+                val out = ByteArray(input.size)
+                for (y in 0 until height) {
+                    for (x in 0 until width) {
+                        val destX = width - 1 - x
+                        val destY = height - 1 - y
+                        out[destY * width + destX] =
+                            input[y * width + x]
+                    }
+                }
+                out
+            }
+            270 -> {
+                val out = ByteArray(input.size)
+                val outWidth = height
+                for (y in 0 until height) {
+                    for (x in 0 until width) {
+                        val destX = y
+                        val destY = width - 1 - x
+                        out[destY * outWidth + destX] =
+                            input[y * width + x]
+                    }
+                }
+                out
+            }
+            else -> error(
+                "unsupported sensor orientation $clockwiseDegrees",
+            )
+        }
     }
 
     private fun pass(
@@ -371,7 +457,8 @@ class CameraOpticalCaptureActivity : Activity() {
         record(
             "CAMERA_VIDEO_SOURCE_PASS frames=$capturedFrames " +
                 "observed_frames=$observedFrames " +
-                "width=$captureWidth height=$captureHeight " +
+                "width=$outputWidth height=$outputHeight " +
+                "sensor_orientation=$sensorOrientationDegrees " +
                 "sha256=$sha256 file=${file.name} " +
                 "evidence_level=ANDROID_AVD_CAMERA",
         )
