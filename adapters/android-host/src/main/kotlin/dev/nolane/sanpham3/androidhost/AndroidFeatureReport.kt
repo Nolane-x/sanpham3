@@ -22,6 +22,7 @@ data class AndroidFeatureReport(
     val telephonyMessagingHardware: Boolean,
     val sendSmsPermission: Boolean,
     val nearbyWifiPermission: Boolean,
+    val accessLocalNetworkPermission: Boolean?,
     val bluetoothScanPermission: Boolean,
     val bluetoothAdvertisePermission: Boolean,
     val bluetoothConnectPermission: Boolean,
@@ -79,6 +80,12 @@ class AndroidFeatureScanner(
         } else {
             granted(Manifest.permission.ACCESS_FINE_LOCATION)
         }
+        val accessLocalNetworkGranted =
+            if (Build.VERSION.SDK_INT >= 37) {
+                granted(Manifest.permission.ACCESS_LOCAL_NETWORK)
+            } else {
+                null
+            }
 
         val bluetoothScanGranted = if (Build.VERSION.SDK_INT >= 31) {
             granted(Manifest.permission.BLUETOOTH_SCAN)
@@ -112,6 +119,7 @@ class AndroidFeatureScanner(
             telephonyMessagingHardware = telephonyMessaging,
             sendSmsPermission = sendSmsGranted,
             nearbyWifiPermission = nearbyWifiGranted,
+            accessLocalNetworkPermission = accessLocalNetworkGranted,
             bluetoothScanPermission = bluetoothScanGranted,
             bluetoothAdvertisePermission = bluetoothAdvertiseGranted,
             bluetoothConnectPermission = bluetoothConnectGranted,
