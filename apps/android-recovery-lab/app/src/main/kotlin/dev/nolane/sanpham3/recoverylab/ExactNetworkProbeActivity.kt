@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import dev.nolane.sanpham3.androidhost.AndroidBoundDnsProbe
@@ -27,6 +28,17 @@ class ExactNetworkProbeActivity : Activity() {
     }
 
     private fun runCourt() {
+        val localNetworkPermission =
+            RecoveryLabPermissions.localNetworkPermissionState(
+                this,
+                Build.VERSION.SDK_INT,
+            )
+        record(
+            "EXACT_NETWORK_PERMISSION " +
+                "local_network_permission=$localNetworkPermission " +
+                "dns_port53_exception=true",
+        )
+
         val connectivity =
             getSystemService(Context.CONNECTIVITY_SERVICE)
                 as ConnectivityManager
@@ -75,7 +87,9 @@ class ExactNetworkProbeActivity : Activity() {
                     "resolver=${result.resolver} " +
                     "response_bytes=${result.responseBytes} " +
                     "rcode=${result.rcode} " +
-                    "default_network=${connectivity.activeNetwork == network}",
+                    "default_network=${connectivity.activeNetwork == network} " +
+                    "local_network_permission=$localNetworkPermission " +
+                    "dns_port53_exception=true",
             )
         } catch (error: Throwable) {
             record(
