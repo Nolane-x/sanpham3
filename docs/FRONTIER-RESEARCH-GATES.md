@@ -75,29 +75,44 @@ Near-ultrasonic:
 - [x] deterministic room/noise impairment
 - [x] correlation decoder
 - [x] BER check
-- [ ] multipath impulse-response convolution
-- [ ] clock drift/resampling
-- [ ] AGC/nonlinear filtering
+- [x] multipath impulse-response convolution baseline
+- [x] clock drift/resampling baseline
+- [x] deterministic AGC/nonlinear filtering baseline
 - [ ] real recorded impulse-response replay
+
+Current near-ultrasonic software court composes FSK, deterministic multipath,
+sampling-clock drift, bounded RMS-window AGC, cubic nonlinear compression,
+noise/gain/clipping and correlation decode. These remain synthetic impairments;
+recorded handset traces are still open.
 
 Optical:
 
 - [x] repetition/erasure court
 - [x] frame drop and sparse bit-flip impairment
-- [ ] actual pixel/cell renderer
-- [ ] perspective transform
-- [ ] blur/exposure/gamma
-- [ ] rolling-shutter model
+- [x] actual pixel/cell raster renderer baseline
+- [x] deterministic perspective/keystone transform baseline
+- [x] blur/exposure/gamma photometric baseline
+- [x] rolling-shutter/PWM banding baseline
 - [ ] camera-video replay decoder
+
+Current optical software court renders grayscale cells and applies known
+perspective geometry, blur/exposure/gamma plus rolling-shutter/PWM banding before
+sampling/repetition decode. Automatic camera acquisition and real video replay
+remain open.
 
 Vibration:
 
 - [x] OOK accelerometer-trace generator
 - [x] surface attenuation/noise model
 - [x] RMS decoder
-- [ ] resonance/impulse-response model
-- [ ] orientation/body/table profiles
+- [x] resonance/impulse-response baseline
+- [x] deterministic mount/orientation profile baseline
 - [ ] recorded sensor-trace replay
+
+Current vibration software court composes OOK, a causal mechanical impulse
+response and deterministic flat-table/edge-contact/handheld mount profiles
+before the shared-surface noise model and RMS decode. Recorded physical sensor
+traces remain open.
 
 ## F4 — bit scavenging
 
@@ -112,11 +127,17 @@ Future:
 - [x] fragment IDs/ranges
 - [x] authenticated fragment envelope
 - [x] single-loss XOR erasure stripe baseline
-- [ ] fountain/rateless coding
-- [ ] source/provenance merge
-- [ ] deadline/freshness-aware fragment scheduler
-- [ ] correlated-failure model
-- [ ] energy-per-useful-bit objective
+- [x] authenticated rateless random-linear coding baseline
+- [x] source/provenance merge across carriers
+- [x] deadline/freshness-aware fragment scheduler baseline
+- [x] correlated-failure-domain model
+- [x] measured energy-per-useful-bit objective
+
+Current F4 software stack now composes authenticated exact fragments,
+single-erasure XOR parity, authenticated rateless random-linear coding,
+provenance retention/merge, deadline/freshness scheduling, primary
+failure-domain diversification, measured setup+transfer energy per useful bit
+and URT exact reconstruction beneath weak/intermittent contacts.
 
 ## F5 — Android AVD twin lab
 
@@ -132,12 +153,18 @@ Required:
 
 Future:
 
-- [ ] automated app scenario driver
-- [ ] automated permission revoke/restore
+- [x] automated app scenario driver baseline
+- [x] automated permission revoke/restore baseline
 - [ ] emulator Wi-Fi Direct pair court
-- [ ] exact-Network probe court across two AVDs
+- [x] exact-Network probe court across two AVDs
 - [ ] camera video-source optical replay
-- [ ] failure/restart/Doze scenario matrix
+- [x] failure/restart/Doze scenario driver/state-machine baseline
+
+The current F5 baseline now includes dual-AVD lifecycle/permission drivers and
+a real two-AVD exact-Network probe court. The exact-Network court exercises the
+Android recovery-lab path that binds DNS/HTTPS probes to the selected
+`Network` object rather than treating default routing as equivalent evidence.
+Wi-Fi Direct pairing and camera video-source replay remain open.
 
 ## F6 — new app-only prototype carriers
 
@@ -182,11 +209,26 @@ Priority order:
    - [x] physical court authored
    - [ ] two-device physical interoperability
    - [ ] measured startup/join/G8 latency, useful bits/s, concurrent-Internet behavior and energy
-5. [ ] near-ultrasonic request capsule prototype
-6. [ ] screen-camera optical capsule prototype
-7. [ ] SMS gateway capsule prototype
-8. [ ] vibration tiny-capsule prototype
-9. [ ] opportunistic USB peer-session path
+5. [x] near-ultrasonic request capsule software/synthetic prototype
+6. [x] screen-camera optical capsule software/synthetic prototype
+7. [x] SMS gateway capsule software transport prototype
+8. [x] vibration tiny-capsule software/synthetic prototype
+9. [x] opportunistic Android USB bulk peer-session baseline
+
+Current F6 software baselines now include:
+
+- `SP3A` near-ultrasonic authenticated ResolveRequest capsule;
+- `SP3O` optical authenticated ResolveRequest capsule;
+- `SP3V` vibration authenticated ResolveRequest capsule;
+- `SP3M` segmented SMS request/response gateway transport with explicit
+  consent/subscription/roaming policy and Android `SmsManager` send adapter;
+- Android USB-host bulk IN/OUT stream discovery/opening reused beneath the
+  existing authenticated Rust peer-session.
+
+These are not physical promotion claims. NFC/GATT/RFCOMM/Hotspot/USB and the
+nontraditional carriers still require real interoperability/latency/goodput/
+failure/energy evidence; SMS still requires real receive/delivery/operator
+evidence.
 
 Each prototype needs:
 
@@ -230,12 +272,18 @@ Implemented baseline:
 
 Future work:
 
-- [ ] local search index
-- [ ] multi-source conflict/reconciliation
-- [ ] signed source receipts
-- [ ] persistent cache store and eviction policy
-- [ ] source-specific validity rules
-- [ ] automatic transition from local-only to fresh remote when a carrier returns
+- [x] provenance-aware local search index
+- [x] conservative multi-source conflict/reconciliation
+- [x] Ed25519 signed source receipts
+- [x] bounded persistent cache store and deterministic eviction policy
+- [x] source-specific validity rules enforced during cache use
+- [x] automatic transition from local-only to fresh remote when a carrier returns
+
+Current F8 software closure remains truth-preserving: persisted/searchable
+remote bytes are labeled `CachedRemote`; signed receipts bind source/time/hash
+metadata; exact-digest multi-source reconciliation exposes conflicts instead of
+inventing consensus; and only a live carrier observation can produce
+`FreshRemote`.
 
 
 ### F4 authenticated fragment baseline
@@ -256,9 +304,10 @@ The closed baseline uses `fragment-transport`:
 The software court deliberately reverses fragment order and injects a duplicate
 before requiring exact reconstruction.
 
-This closes authenticated fragment identity/range mechanics only. It does not
-close fountain/erasure coding, provenance merge, deadline scheduling, correlated
-failure or energy optimization.
+This section records the authenticated fragment identity/range baseline only.
+Later F4 courts separately close XOR erasure, authenticated rateless RLNC,
+provenance merge, deadline/freshness scheduling, correlated failure domains and
+measured energy-per-useful-bit selection.
 
 
 ### F4 authenticated erasure + URT baseline
@@ -282,6 +331,7 @@ splits delivery across multiple synthetic contact windows, drops one data shard
 from every stripe, injects duplicate/out-of-order fragments, then recovers the
 URT wire and decodes it back to the original logical payload.
 
-This closes only a systematic single-erasure baseline. It does **not** close
-fountain/rateless coding, correlated-loss resilience, provenance merge,
-deadline/freshness scheduling, or energy optimization.
+This section closes only the systematic single-erasure baseline. Later F4
+courts add authenticated rateless RLNC, provenance merge,
+deadline/freshness scheduling, correlated-failure-domain awareness and a
+measured energy-per-useful-bit objective.
