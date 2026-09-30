@@ -100,6 +100,52 @@ val evidence = AndroidG8PairCourt.runClient(session)
 
 The blocking RFCOMM connect and G8 court must run off the Android main thread.
 
+## Recovery Lab executable court
+
+The Android Recovery Lab now exposes:
+
+```text
+Open RFCOMM physical G8 court
+```
+
+The screen supports:
+
+- explicit project node ID and laboratory peer PSK;
+- runtime Bluetooth permission request;
+- Android discoverability request;
+- bonded-peer inventory plus Classic discovery;
+- explicit target Bluetooth address selection;
+- RFCOMM server mode;
+- RFCOMM client mode;
+- shared Rust `AndroidPeerSession` authentication;
+- encrypted G8 challenge/ACK;
+- shared stream benchmark after G8.
+
+The court does not automatically trust or connect to the first nearby Classic
+device. The user selects a target address from the discovered/bonded candidates.
+
+### Benchmark evidence
+
+After G8 succeeds, the client runs the shared reference workload:
+
+```text
+rounds        = 32
+payload_bytes = 1024
+```
+
+Evidence records:
+
+- min / median / p95 / max RTT;
+- benchmark elapsed time;
+- one-way useful bits/s;
+- round-trip useful bits/s;
+- authenticated peer project node ID;
+- route address/name/RSSI only as non-identity hints.
+
+The server records the configured workload and total benchmark serve duration.
+
+A benchmark mismatch or transport failure prevents the run from recording PASS.
+
 ## Security boundary
 
 The server currently uses the insecure RFCOMM API so OS-level bonding is not the
