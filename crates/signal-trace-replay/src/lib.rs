@@ -1,6 +1,8 @@
 use signal_frontier::{
-    decode_fsk, decode_vibration_ook, AcousticFskConfig, DecodeResult,
-    SignalError, VibrationOokConfig,
+    decode_fsk, decode_optical_cells, decode_optical_repetition,
+    decode_vibration_ook, AcousticFskConfig, DecodeResult,
+    OpticalGrayFrame, OpticalGridConfig, OpticalPerspective,
+    OpticalRepetitionConfig, SignalError, VibrationOokConfig,
 };
 use std::fmt;
 
@@ -44,6 +46,29 @@ pub struct ScalarCsvTrace {
     pub skipped_header: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PgmGray8 {
+    pub width: usize,
+    pub height: usize,
+    pub max_value: u8,
+    pub pixels: Vec<u8>,
+}
+
+impl PgmGray8 {
+    pub fn to_optical_frame(&self) -> OpticalGrayFrame {
+        let scale = 1.0_f32 / self.max_value as f32;
+        OpticalGrayFrame {
+            width: self.width,
+            height: self.height,
+            pixels: self
+                .pixels
+                .iter()
+                .map(|&pixel| pixel as f32 * scale)
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ReplayError {
     InvalidWav(&'static str),
@@ -64,6 +89,9 @@ pub enum ReplayError {
         requested: usize,
         columns: usize,
     },
+    InvalidPgm(&'static str),
+    UnsupportedPgmMaxValue(u32),
+    OpticalVoteShapeMismatch,
     EmptyTrace,
     WindowOutsideTrace,
     SampleRateMismatch {
@@ -103,6 +131,13 @@ impl fmt::Display for ReplayError {
                 f,
                 "CSV line {line} has {columns} columns; requested {requested}",
             ),
+            Self::InvalidPgm(message) => write!(f, "invalid PGM: {message}"),
+            Self::UnsupportedPgmMaxValue(value) => {
+                write!(f, "unsupported PGM max value {value}; expected 1..255")
+            }
+            Self::OpticalVoteShapeMismatch => {
+                write!(f, "optical replay frames have mismatched symbol shapes")
+            }
             Self::EmptyTrace => write!(f, "replay trace contains no samples"),
             Self::WindowOutsideTrace => {
                 write!(f, "requested replay window is outside the trace")
@@ -252,6 +287,173 @@ pub fn parse_scalar_csv_column(
     })
 }
 
+pub fn parse_pgm_gray8(bytes: &[u8]) -> Result<PgmGray8, ReplayError> {
+    let mut offset = 0_usize;
+    let magic = pgm_token(bytes, &mut offset)?;
+    if magic != "P5" {
+        return Err(ReplayError::InvalidPgm(
+            "only binary P5 grayscale is supported",
+        ));
+    }
+
+    let width = pgm_token(bytes, &mut offset)?
+        .parse::<usize>()
+        .map_err(|_| ReplayError::InvalidPgm("invalid width"))?;
+    let height = pgm_token(bytes, &mut offset)?
+        .parse::<usize>()
+        .map_err(|_| ReplayError::InvalidPgm("invalid height"))?;
+    let max_value = pgm_token(bytes, &mut offset)?
+        .parse::<u32>()
+        .map_err(|_| ReplayError::InvalidPgm("invalid max value"))?;
+
+    if width == 0 || height == 0 {
+        return Err(ReplayError::InvalidPgm(
+            "width and height must be non-zero",
+        ));
+    }
+    if !(1..=255).contains(&max_value) {
+        return Err(ReplayError::UnsupportedPgmMaxValue(max_value));
+    }
+
+    let separator = *bytes
+        .get(offset)
+        .ok_or(ReplayError::InvalidPgm(
+            "missing separator before pixel data",
+        ))?;
+    if !separator.is_ascii_whitespace() {
+        return Err(ReplayError::InvalidPgm(
+            "missing whitespace separator before pixel data",
+        ));
+    }
+    offset += 1;
+
+    let expected = width
+        .checked_mul(height)
+        .ok_or(ReplayError::InvalidPgm("image size overflow"))?;
+    let pixels = bytes
+        .get(offset..)
+        .ok_or(ReplayError::InvalidPgm("missing pixel data"))?;
+    if pixels.len() != expected {
+        return Err(ReplayError::InvalidPgm(
+            "pixel data length does not match dimensions",
+        ));
+    }
+
+    Ok(PgmGray8 {
+        width,
+        height,
+        max_value: max_value as u8,
+        pixels: pixels.to_vec(),
+    })
+}
+
+pub fn vote_optical_symbols(
+    frames: &[Vec<Option<u8>>],
+) -> Result<Vec<Option<u8>>, ReplayError> {
+    let Some(first) = frames.first() else {
+        return Err(ReplayError::EmptyTrace);
+    };
+    if frames.iter().any(|frame| frame.len() != first.len()) {
+        return Err(ReplayError::OpticalVoteShapeMismatch);
+    }
+
+    let mut voted = Vec::with_capacity(first.len());
+    for index in 0..first.len() {
+        let mut zeros = 0_usize;
+        let mut ones = 0_usize;
+
+        for frame in frames {
+            match frame[index] {
+                Some(0) => zeros += 1,
+                Some(1) => ones += 1,
+                Some(_) => {
+                    return Err(ReplayError::Signal(
+                        SignalError::InvalidBit(
+                            frame[index].expect("matched Some above"),
+                        ),
+                    ));
+                }
+                None => {}
+            }
+        }
+
+        voted.push(match zeros.cmp(&ones) {
+            std::cmp::Ordering::Greater => Some(0),
+            std::cmp::Ordering::Less => Some(1),
+            std::cmp::Ordering::Equal => None,
+        });
+    }
+
+    Ok(voted)
+}
+
+pub fn replay_optical_pgm_sequence(
+    pgm_frames: &[Vec<u8>],
+    symbol_count: usize,
+    grid: OpticalGridConfig,
+    perspective: Option<OpticalPerspective>,
+    repetition: OpticalRepetitionConfig,
+) -> Result<Vec<u8>, ReplayError> {
+    if pgm_frames.is_empty() || symbol_count == 0 {
+        return Err(ReplayError::EmptyTrace);
+    }
+
+    let mut decoded_frames = Vec::with_capacity(pgm_frames.len());
+    for bytes in pgm_frames {
+        let pgm = parse_pgm_gray8(bytes)?;
+        let frame = pgm.to_optical_frame();
+        let decoded = decode_optical_cells(
+            &frame,
+            symbol_count,
+            grid,
+            perspective,
+        )?;
+        decoded_frames.push(decoded);
+    }
+
+    let voted = vote_optical_symbols(&decoded_frames)?;
+    Ok(decode_optical_repetition(&voted, repetition)?)
+}
+
+fn pgm_token(
+    bytes: &[u8],
+    offset: &mut usize,
+) -> Result<String, ReplayError> {
+    loop {
+        while bytes
+            .get(*offset)
+            .is_some_and(|value| value.is_ascii_whitespace())
+        {
+            *offset += 1;
+        }
+
+        if bytes.get(*offset) == Some(&b'#') {
+            while bytes
+                .get(*offset)
+                .is_some_and(|value| *value != b'\n')
+            {
+                *offset += 1;
+            }
+            continue;
+        }
+        break;
+    }
+
+    let start = *offset;
+    while bytes.get(*offset).is_some_and(|value| {
+        !value.is_ascii_whitespace() && *value != b'#'
+    }) {
+        *offset += 1;
+    }
+    if *offset == start {
+        return Err(ReplayError::InvalidPgm("missing header token"));
+    }
+
+    std::str::from_utf8(&bytes[start..*offset])
+        .map(str::to_owned)
+        .map_err(|_| ReplayError::InvalidPgm("header is not ASCII"))
+}
+
 pub fn replay_acoustic_wav(
     wav_bytes: &[u8],
     channel_index: usize,
@@ -381,6 +583,69 @@ mod tests {
             out.extend_from_slice(&quantized.to_le_bytes());
         }
         out
+    }
+
+    fn pgm_from_frame(frame: &OpticalGrayFrame) -> Vec<u8> {
+        let mut out = format!(
+            "P5\n# sanpham3 fixture\n{} {}\n255\n",
+            frame.width,
+            frame.height,
+        )
+        .into_bytes();
+        out.extend(
+            frame
+                .pixels
+                .iter()
+                .map(|value| {
+                    (value.clamp(0.0, 1.0) * 255.0).round() as u8
+                }),
+        );
+        out
+    }
+
+    #[test]
+    fn pgm_parser_and_optical_sequence_replay_roundtrip_bits() {
+        use signal_frontier::{
+            encode_optical_repetition, render_optical_cells,
+        };
+
+        let bits = vec![1, 0, 1, 1, 0, 0, 1, 0];
+        let repetition = OpticalRepetitionConfig::robust_default();
+        let grid = OpticalGridConfig::camera_baseline();
+        let symbols =
+            encode_optical_repetition(&bits, repetition).unwrap();
+        let frame = render_optical_cells(&symbols, grid).unwrap();
+        let pgm = pgm_from_frame(&frame);
+
+        let parsed = parse_pgm_gray8(&pgm).unwrap();
+        assert_eq!(parsed.width, frame.width);
+        assert_eq!(parsed.height, frame.height);
+
+        let decoded = replay_optical_pgm_sequence(
+            &[pgm.clone(), pgm],
+            symbols.len(),
+            grid,
+            None,
+            repetition,
+        )
+        .unwrap();
+
+        assert_eq!(bit_error_count(&bits, &decoded), 0);
+    }
+
+    #[test]
+    fn optical_symbol_vote_uses_majority_and_preserves_ties_as_erasure() {
+        let voted = vote_optical_symbols(&[
+            vec![Some(1), Some(0), Some(1), None],
+            vec![Some(1), Some(1), Some(0), None],
+            vec![None, Some(0), None, None],
+        ])
+        .unwrap();
+
+        assert_eq!(
+            voted,
+            vec![Some(1), Some(0), None, None],
+        );
     }
 
     #[test]
