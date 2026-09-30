@@ -40,13 +40,14 @@ PASS.
 
 The owner:
 
-1. verifies `android.hardware.wifi.direct`;
+1. records the `android.hardware.wifi.direct` feature flag for diagnostics;
 2. verifies the current peer-LAN runtime permissions;
-3. creates a Wi-Fi Direct group;
-4. requires itself to be group owner;
-5. accepts a TCP connection through `AndroidWifiDirectDataPath`;
-6. upgrades it to `AndroidPeerSession.server`;
-7. validates and echoes the encrypted G8 challenge.
+3. relies on the orchestrator's live `wifip2p` service gate;
+4. creates a Wi-Fi Direct group;
+5. requires itself to be group owner;
+6. accepts a TCP connection through `AndroidWifiDirectDataPath`;
+7. upgrades it to `AndroidPeerSession.server`;
+8. validates and echoes the encrypted G8 challenge.
 
 ### Client
 
@@ -81,7 +82,10 @@ The script requires:
 - Android Emulator 36.5+;
 - both AVDs online;
 - Recovery Lab installed;
-- `android.hardware.wifi.direct` on both;
+- Wi-Fi enabled;
+- Location Mode enabled because `discoverPeers()` / `requestPeers()`
+  require it;
+- a live `wifip2p` Android system service on both AVDs;
 - required runtime permissions granted;
 - owner PASS;
 - client PASS;
@@ -108,7 +112,10 @@ The court captures:
 
 - emulator version;
 - AVD API levels;
-- feature lists;
+- feature lists, including whether the optional Wi-Fi Direct feature flag is
+  advertised;
+- live `wifip2p` service status;
+- Location Mode state;
 - IP addresses/routes;
 - Wi-Fi dumps;
 - Wi-Fi P2P dumps;
@@ -139,3 +146,22 @@ It does not close:
 - physical energy measurements.
 
 Those remain F7/F6 physical evidence requirements.
+
+
+## Framework permission requirements
+
+Recovery Lab declares the normal Wi-Fi framework permissions used by the
+official Wi-Fi Direct API flow:
+
+- `ACCESS_WIFI_STATE`;
+- `CHANGE_WIFI_STATE`;
+- `CHANGE_NETWORK_STATE`;
+- `INTERNET`;
+- `ACCESS_NETWORK_STATE`.
+
+For API 33+ it also uses `NEARBY_WIFI_DEVICES`; Android 17 local-network
+access follows the separate Recovery Lab permission framework.
+
+The AVD orchestrator explicitly enables Location Mode before discovery. This is
+required by Android's Wi-Fi Direct peer-discovery APIs even when
+`NEARBY_WIFI_DEVICES` is used.
