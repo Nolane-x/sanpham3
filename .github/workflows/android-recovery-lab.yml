@@ -5,6 +5,7 @@ on:
     paths:
       - "apps/android-recovery-lab/**"
       - "scripts/virtual-phone-avd-exact-network.sh"
+      - "scripts/android-recorded-trace-capture.sh"
       - "adapters/android-host/**"
       - "adapters/android-peer-session-jni/**"
       - "crates/peer-session/**"
@@ -84,6 +85,9 @@ jobs:
 
       - name: Validate exact-Network AVD court script
         run: bash -n scripts/virtual-phone-avd-exact-network.sh
+
+      - name: Validate recorded trace capture script
+        run: bash -n scripts/android-recorded-trace-capture.sh
 
       - name: Unit test and assemble Recovery Lab APK
         run: >
