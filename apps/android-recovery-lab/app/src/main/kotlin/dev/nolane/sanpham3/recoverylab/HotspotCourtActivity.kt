@@ -78,6 +78,14 @@ class HotspotCourtActivity : Activity() {
 
         appendLog("HOTSPOT_LAB_START git=${BuildConfig.GIT_SHA}")
         appendLog(
+            "LOCAL_NETWORK_PERMISSION state=" +
+                RecoveryLabPermissions.localNetworkPermissionState(
+                    this,
+                    Build.VERSION.SDK_INT,
+                ),
+        )
+
+        appendLog(
             "DEVICE manufacturer=${Build.MANUFACTURER} " +
                 "model=${Build.MODEL} sdk=${Build.VERSION.SDK_INT}",
         )
@@ -102,7 +110,7 @@ class HotspotCourtActivity : Activity() {
         if (requestCode == permissionRequestCode) {
             val granted = grantResults.isNotEmpty() &&
                 grantResults.all { it == PackageManager.PERMISSION_GRANTED }
-            appendLog("WIFI_PERMISSION granted=$granted")
+            appendLog("PEER_LAN_PERMISSION granted=$granted")
         }
     }
 
@@ -149,8 +157,8 @@ class HotspotCourtActivity : Activity() {
         root.addView(button("Show / hide PSK") {
             togglePskVisibility()
         })
-        root.addView(button("Grant Wi-Fi permission") {
-            requestWifiPermission()
+        root.addView(button("Grant peer-LAN permissions") {
+            requestPeerLanPermissions()
         })
 
         bootstrapInput = EditText(this).apply {
@@ -234,30 +242,39 @@ class HotspotCourtActivity : Activity() {
         appendLog("PSK_VISIBILITY visible=$pskVisible")
     }
 
-    private fun requiredWifiPermission(): String =
-        if (Build.VERSION.SDK_INT >= 33) {
-            Manifest.permission.NEARBY_WIFI_DEVICES
-        } else {
-            Manifest.permission.ACCESS_FINE_LOCATION
+    private fun requiredPeerLanPermissions(): List<String> =
+        RecoveryLabPermissions.peerLanPermissions(
+            Build.VERSION.SDK_INT,
+        )
+
+    private fun peerLanPermissionsReady(): Boolean =
+        requiredPeerLanPermissions().all { permission ->
+            checkSelfPermission(permission) ==
+                PackageManager.PERMISSION_GRANTED
         }
 
-    private fun wifiPermissionReady(): Boolean =
-        checkSelfPermission(requiredWifiPermission()) ==
-            PackageManager.PERMISSION_GRANTED
-
-    private fun requestWifiPermission() {
-        val permission = requiredWifiPermission()
-        if (checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) {
-            appendLog("WIFI_PERMISSION already_granted=true")
+    private fun requestPeerLanPermissions() {
+        val missing = requiredPeerLanPermissions().filter { permission ->
+            checkSelfPermission(permission) !=
+                PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            appendLog("PEER_LAN_PERMISSION already_granted=true")
             return
         }
-        requestPermissions(arrayOf(permission), permissionRequestCode)
+        appendLog(
+            "PEER_LAN_PERMISSION requesting=${missing.joinToString()}",
+        )
+        requestPermissions(
+            missing.toTypedArray(),
+            permissionRequestCode,
+        )
     }
 
     private fun readConfig(): LabConfig? {
-        if (!wifiPermissionReady()) {
-            appendLog("ERROR Wi-Fi permission is not ready")
-            requestWifiPermission()
+        if (!peerLanPermissionsReady()) {
+            appendLog("ERROR peer-LAN permissions are not ready")
+            requestPeerLanPermissions()
             return null
         }
 

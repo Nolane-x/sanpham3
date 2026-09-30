@@ -35,8 +35,18 @@ jobs:
         with:
           packages: ""
 
-      - name: Install Android SDK platform
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Install Android 17 SDK platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+          if [ -d "$ANDROID_SDK_ROOT/platforms/android-37.0" ] \
+             && [ ! -e "$ANDROID_SDK_ROOT/platforms/android-37" ]; then
+            ln -s android-37.0 "$ANDROID_SDK_ROOT/platforms/android-37"
+          fi
+          test -d "$ANDROID_SDK_ROOT/platforms/android-37.0"
+          test -e "$ANDROID_SDK_ROOT/platforms/android-37"
+          test -d "$ANDROID_SDK_ROOT/build-tools/37.0.0"
 
       - uses: dtolnay/rust-toolchain@stable
         with:

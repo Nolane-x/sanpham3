@@ -88,6 +88,13 @@ class MainActivity : Activity() {
                 "model=${Build.MODEL} sdk=${Build.VERSION.SDK_INT}",
         )
         appendLog("No PSK is written to evidence logs.")
+        appendLog(
+            "LOCAL_NETWORK_PERMISSION state=" +
+                RecoveryLabPermissions.localNetworkPermissionState(
+                    this,
+                    Build.VERSION.SDK_INT,
+                ),
+        )
     }
 
     override fun onDestroy() {
@@ -161,7 +168,7 @@ class MainActivity : Activity() {
         root.addView(button("Show / hide PSK") {
             togglePskVisibility()
         })
-        root.addView(button("Grant BLE permissions") {
+        root.addView(button("Grant lab permissions") {
             requestLabPermissions()
         })
         root.addView(button("Scan capabilities") {
@@ -258,15 +265,9 @@ class MainActivity : Activity() {
     }
 
     private fun requiredPermissions(): List<String> =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            listOf(
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_ADVERTISE,
-                Manifest.permission.BLUETOOTH_CONNECT,
-            )
-        } else {
-            listOf(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
+        RecoveryLabPermissions.allLabPermissions(
+            Build.VERSION.SDK_INT,
+        )
 
     private fun permissionsReady(): Boolean =
         requiredPermissions().all { permission ->
@@ -282,7 +283,9 @@ class MainActivity : Activity() {
                 "${report.bluetoothLeL2capCocApiSupported} " +
                 "scanPermission=${report.bluetoothScanPermission} " +
                 "advertisePermission=${report.bluetoothAdvertisePermission} " +
-                "connectPermission=${report.bluetoothConnectPermission}",
+                "connectPermission=${report.bluetoothConnectPermission} " +
+                "accessLocalNetworkPermission=" +
+                "${report.accessLocalNetworkPermission}",
         )
     }
 
