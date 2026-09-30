@@ -1326,7 +1326,7 @@ mod tests {
                 white_noise_amplitude: 0.020,
                 clip_level: 0.90,
             },
-            0xA6C0_003,
+            0x0A6C_0003,
         )
         .unwrap();
 
