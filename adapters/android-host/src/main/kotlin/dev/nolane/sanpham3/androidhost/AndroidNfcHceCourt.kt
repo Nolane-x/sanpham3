@@ -10,6 +10,7 @@ internal data class AndroidNfcHceConfig(
 data class AndroidNfcHceEvidence(
     val authenticatedPeerNodeId: Long,
     val lastChallenge: ByteArray?,
+    val benchmarkFramesCompleted: Int,
 )
 
 object AndroidNfcHceCourt {
@@ -43,6 +44,7 @@ object AndroidNfcHceCourt {
             AndroidNfcHceEvidence(
                 authenticatedPeerNodeId = it.authenticatedPeerNodeId,
                 lastChallenge = it.lastChallenge?.copyOf(),
+                benchmarkFramesCompleted = it.benchmarkFramesCompleted,
             )
         }
 
@@ -62,7 +64,19 @@ object AndroidNfcHceCourt {
             AndroidNfcHceEvidence(
                 authenticatedPeerNodeId = peerNodeId,
                 lastChallenge = challenge.copyOf(),
+                benchmarkFramesCompleted = 0,
             ),
         )
     }
+
+    internal fun recordBenchmarkFrame() {
+        evidence.updateAndGet { current ->
+            current?.copy(
+                benchmarkFramesCompleted =
+                    current.benchmarkFramesCompleted + 1,
+            )
+        }
+    }
+
+
 }
