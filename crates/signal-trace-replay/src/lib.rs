@@ -558,6 +558,14 @@ fn rotate_optical_frame_quarter_turns(
     }
 }
 
+struct OpticalQuarterTurnCandidate {
+    marker_score: f32,
+    balance: f32,
+    disagreements: usize,
+    resolved: usize,
+    decoded: Vec<Option<u8>>,
+}
+
 fn decode_optical_cells_best_quarter_turn(
     source: &OpticalGrayFrame,
     symbol_count: usize,
@@ -566,13 +574,7 @@ fn decode_optical_cells_best_quarter_turn(
 ) -> Result<Vec<Option<u8>>, ReplayError> {
     repetition.validate()?;
 
-    let mut best: Option<(
-        f32,
-        f32,
-        usize,
-        usize,
-        Vec<Option<u8>>,
-    )> = None;
+    let mut best: Option<OpticalQuarterTurnCandidate> = None;
     let mut last_error = None;
 
     for quarter_turns in 0_u8..4 {
@@ -606,13 +608,13 @@ fn decode_optical_cells_best_quarter_turn(
                     &registered,
                     grid,
                 )?;
-            Ok((
+            Ok(OpticalQuarterTurnCandidate {
                 marker_score,
                 balance,
                 disagreements,
                 resolved,
                 decoded,
-            ))
+            })
         });
 
         match attempt {
@@ -621,17 +623,23 @@ fn decode_optical_cells_best_quarter_turn(
                     .as_ref()
                     .is_none_or(|current| {
                         let marker_delta =
-                            candidate.0 - current.0;
+                            candidate.marker_score -
+                                current.marker_score;
                         if marker_delta.abs() > 0.01 {
                             marker_delta > 0.0
                         } else if
-                            (candidate.1 - current.1).abs() > 0.02
+                            (candidate.balance - current.balance).abs() >
+                                0.02
                         {
-                            candidate.1 < current.1
-                        } else if candidate.2 != current.2 {
-                            candidate.2 < current.2
+                            candidate.balance < current.balance
+                        } else if
+                            candidate.disagreements !=
+                                current.disagreements
+                        {
+                            candidate.disagreements <
+                                current.disagreements
                         } else {
-                            candidate.3 > current.3
+                            candidate.resolved > current.resolved
                         }
                     });
                 if replace {
@@ -642,7 +650,7 @@ fn decode_optical_cells_best_quarter_turn(
         }
     }
 
-    best.map(|(_, _, _, _, decoded)| decoded)
+    best.map(|candidate| candidate.decoded)
         .ok_or_else(|| {
             last_error.unwrap_or(
                 ReplayError::OpticalRegistrationFailed(
