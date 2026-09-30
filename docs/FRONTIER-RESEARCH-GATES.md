@@ -143,8 +143,15 @@ Required:
 
 Future:
 
-- [ ] automated app scenario driver
-- [ ] automated permission revoke/restore
+- [x] automated app scenario driver baseline
+- [x] automated permission revoke/restore baseline
+
+The automated F5 baseline now drives both AVD identities through permission
+transition/restore scenarios, captures package/connectivity/route/logcat
+evidence, hashes the evidence set, and has a mock-adb state-machine court in CI.
+This closes driver semantics only; emulator-specific Wi-Fi Direct, exact-Network
+cross-AVD behavior, Doze/restart matrices and physical-device behavior remain
+open.
 - [ ] emulator Wi-Fi Direct pair court
 - [ ] exact-Network probe court across two AVDs
 - [ ] camera video-source optical replay
