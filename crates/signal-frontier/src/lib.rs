@@ -189,6 +189,153 @@ pub fn apply_clock_drift_resampling(
     Ok(output)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AcousticAgcConfig {
+    pub window_samples: usize,
+    pub target_rms: f32,
+    pub min_gain: f32,
+    pub max_gain: f32,
+    pub smoothing: f32,
+}
+
+impl AcousticAgcConfig {
+    pub fn phone_baseline() -> Self {
+        Self {
+            window_samples: 240,
+            target_rms: 0.30,
+            min_gain: 0.40,
+            max_gain: 2.50,
+            smoothing: 0.25,
+        }
+    }
+
+    pub fn validate(self) -> Result<(), SignalError> {
+        if self.window_samples == 0 {
+            return Err(SignalError::InvalidConfig(
+                "AGC window must contain samples",
+            ));
+        }
+        if !self.target_rms.is_finite()
+            || !self.min_gain.is_finite()
+            || !self.max_gain.is_finite()
+            || !self.smoothing.is_finite()
+        {
+            return Err(SignalError::InvalidConfig(
+                "AGC parameters must be finite",
+            ));
+        }
+        if self.target_rms <= 0.0 || self.target_rms > 1.0 {
+            return Err(SignalError::InvalidConfig(
+                "AGC target RMS must be in (0, 1]",
+            ));
+        }
+        if self.min_gain <= 0.0
+            || self.max_gain < self.min_gain
+            || self.max_gain > 16.0
+        {
+            return Err(SignalError::InvalidConfig(
+                "AGC gain bounds are invalid",
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.smoothing) {
+            return Err(SignalError::InvalidConfig(
+                "AGC smoothing must be in [0, 1]",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub fn apply_acoustic_agc(
+    samples: &[f32],
+    config: AcousticAgcConfig,
+) -> Result<Vec<f32>, SignalError> {
+    config.validate()?;
+    if samples.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut output = Vec::with_capacity(samples.len());
+    let mut gain = 1.0_f32;
+
+    for window in samples.chunks(config.window_samples) {
+        let mean_square = window
+            .iter()
+            .map(|sample| sample * sample)
+            .sum::<f32>()
+            / window.len() as f32;
+        let rms = mean_square.sqrt();
+        let desired = if rms <= f32::EPSILON {
+            config.max_gain
+        } else {
+            (config.target_rms / rms)
+                .clamp(config.min_gain, config.max_gain)
+        };
+        gain += (desired - gain) * config.smoothing;
+
+        output.extend(
+            window
+                .iter()
+                .map(|sample| (sample * gain).clamp(-1.0, 1.0)),
+        );
+    }
+
+    Ok(output)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AcousticNonlinearity {
+    pub cubic_compression: f32,
+    pub clip_level: f32,
+}
+
+impl AcousticNonlinearity {
+    pub fn phone_baseline() -> Self {
+        Self {
+            cubic_compression: 0.18,
+            clip_level: 0.92,
+        }
+    }
+
+    pub fn validate(self) -> Result<(), SignalError> {
+        if !self.cubic_compression.is_finite()
+            || !self.clip_level.is_finite()
+        {
+            return Err(SignalError::InvalidConfig(
+                "nonlinearity parameters must be finite",
+            ));
+        }
+        if !(0.0..=0.75).contains(&self.cubic_compression) {
+            return Err(SignalError::InvalidConfig(
+                "cubic compression must be in [0, 0.75]",
+            ));
+        }
+        if !(0.0 < self.clip_level && self.clip_level <= 1.0) {
+            return Err(SignalError::InvalidConfig(
+                "nonlinear clip level must be in (0, 1]",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub fn apply_acoustic_nonlinearity(
+    samples: &[f32],
+    config: AcousticNonlinearity,
+) -> Result<Vec<f32>, SignalError> {
+    config.validate()?;
+
+    Ok(samples
+        .iter()
+        .map(|sample| {
+            let cubic = sample * sample * sample;
+            let compressed =
+                sample - config.cubic_compression * cubic;
+            compressed.clamp(-config.clip_level, config.clip_level)
+        })
+        .collect())
+}
+
 pub fn encode_fsk(
     bits: &[u8],
     config: AcousticFskConfig,
@@ -1135,6 +1282,93 @@ mod tests {
         let decoded = decode_fsk(&impaired, config).unwrap();
         assert_eq!(bit_error_count(&bits, &decoded.bits), 0);
         assert!(decoded.minimum_confidence > 0.45);
+    }
+
+    #[test]
+    fn near_ultrasonic_survives_agc_and_nonlinear_processing() {
+        let config = AcousticFskConfig::near_ultrasonic_50bps();
+        let bits = payload();
+        let samples = encode_fsk(&bits, config).unwrap();
+        let multipath = apply_acoustic_impulse_response(
+            &samples,
+            &[
+                AcousticImpulseTap {
+                    delay_samples: 0,
+                    gain: 0.70,
+                },
+                AcousticImpulseTap {
+                    delay_samples: 11,
+                    gain: 0.13,
+                },
+                AcousticImpulseTap {
+                    delay_samples: 29,
+                    gain: -0.04,
+                },
+            ],
+        )
+        .unwrap();
+        let drifted =
+            apply_clock_drift_resampling(&multipath, 90).unwrap();
+        let agc = apply_acoustic_agc(
+            &drifted,
+            AcousticAgcConfig::phone_baseline(),
+        )
+        .unwrap();
+        let nonlinear = apply_acoustic_nonlinearity(
+            &agc,
+            AcousticNonlinearity::phone_baseline(),
+        )
+        .unwrap();
+        let impaired = apply_acoustic_channel(
+            &nonlinear,
+            AcousticChannel {
+                gain: 0.92,
+                white_noise_amplitude: 0.020,
+                clip_level: 0.90,
+            },
+            0x0A6C_0003,
+        )
+        .unwrap();
+
+        let decoded = decode_fsk(&impaired, config).unwrap();
+        assert_eq!(bit_error_count(&bits, &decoded.bits), 0);
+        assert!(decoded.minimum_confidence > 0.35);
+    }
+
+    #[test]
+    fn agc_moves_constant_signal_toward_target_rms() {
+        let input = vec![0.10_f32; 960];
+        let config = AcousticAgcConfig {
+            window_samples: 240,
+            target_rms: 0.30,
+            min_gain: 0.50,
+            max_gain: 4.0,
+            smoothing: 1.0,
+        };
+        let output = apply_acoustic_agc(&input, config).unwrap();
+        let rms = (
+            output.iter().map(|sample| sample * sample).sum::<f32>()
+                / output.len() as f32
+        )
+            .sqrt();
+
+        assert!((rms - 0.30).abs() < 0.001);
+    }
+
+    #[test]
+    fn cubic_nonlinearity_is_bounded_and_deterministic() {
+        let input = vec![-1.0_f32, -0.5, 0.0, 0.5, 1.0];
+        let config = AcousticNonlinearity::phone_baseline();
+        let first =
+            apply_acoustic_nonlinearity(&input, config).unwrap();
+        let second =
+            apply_acoustic_nonlinearity(&input, config).unwrap();
+
+        assert_eq!(first, second);
+        assert!(first.iter().all(|value| {
+            value.abs() <= config.clip_level
+        }));
+        assert_eq!(first[2], 0.0);
     }
 
     #[test]
