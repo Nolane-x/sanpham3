@@ -183,6 +183,9 @@ class MainActivity : Activity() {
         root.addView(button("Open RFCOMM physical G8 court") {
             startActivity(Intent(this, RfcommCourtActivity::class.java))
         })
+        root.addView(button("Open BLE GATT physical G8 court") {
+            startActivity(Intent(this, GattCourtActivity::class.java))
+        })
         root.addView(button("Open Local-Only Hotspot G8 court") {
             startActivity(Intent(this, HotspotCourtActivity::class.java))
         })
