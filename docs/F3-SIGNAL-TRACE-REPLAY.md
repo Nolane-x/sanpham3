@@ -140,9 +140,9 @@ The CLI reports the discovered origin for each frame.
 Synthetic CI fixtures intentionally place the same raster at different offsets
 inside larger low-noise canvases and require exact payload recovery.
 
-## Automatic translation + uniform-scale registration
+## Automatic translation + bounded axis-scale registration
 
-A second acquisition bridge handles a bounded uniform scale change in addition
+A second acquisition bridge handles a bounded independent X/Y scale change in addition
 to translation:
 
 ```bash
@@ -156,7 +156,7 @@ The detector:
 2. compares observed active width/height with the known logical grid;
 3. derives independent `scale_x` / `scale_y`;
 4. rejects scales outside 0.50x..3.00x;
-5. rejects more than 12% anisotropy;
+5. allows bounded X/Y anisotropy from camera resize/crop paths;
 6. expands the quiet zone at the inferred scale;
 7. crops the scaled raster;
 8. nearest-resamples it back to the reference grid;
