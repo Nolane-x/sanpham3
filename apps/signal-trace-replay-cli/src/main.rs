@@ -175,7 +175,7 @@ fn hex_to_bits(raw: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     }
 
     let mut bits = Vec::with_capacity(compact.len() * 4);
-    for pair in compact.as_bytes().chunks_exact(2) {
+    for pair in compact.as_bytes().as_chunks::<2>().0 {
         let text = std::str::from_utf8(pair)?;
         let byte = u8::from_str_radix(text, 16)?;
         for shift in (0..8).rev() {
