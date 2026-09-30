@@ -19,6 +19,8 @@ data class AndroidFeatureReport(
     val bluetoothLeL2capCocApiSupported: Boolean,
     val nfcHardware: Boolean,
     val nfcHostCardEmulationHardware: Boolean,
+    val telephonyMessagingHardware: Boolean,
+    val sendSmsPermission: Boolean,
     val nearbyWifiPermission: Boolean,
     val bluetoothScanPermission: Boolean,
     val bluetoothAdvertisePermission: Boolean,
@@ -67,6 +69,10 @@ class AndroidFeatureScanner(
         val nfcHce = packageManager.hasSystemFeature(
             PackageManager.FEATURE_NFC_HOST_CARD_EMULATION,
         )
+        val telephonyMessaging = packageManager.hasSystemFeature(
+            PackageManager.FEATURE_TELEPHONY_MESSAGING,
+        )
+        val sendSmsGranted = granted(Manifest.permission.SEND_SMS)
 
         val nearbyWifiGranted = if (Build.VERSION.SDK_INT >= 33) {
             granted(Manifest.permission.NEARBY_WIFI_DEVICES)
@@ -103,6 +109,8 @@ class AndroidFeatureScanner(
                 bluetoothLe && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q,
             nfcHardware = nfc,
             nfcHostCardEmulationHardware = nfcHce,
+            telephonyMessagingHardware = telephonyMessaging,
+            sendSmsPermission = sendSmsGranted,
             nearbyWifiPermission = nearbyWifiGranted,
             bluetoothScanPermission = bluetoothScanGranted,
             bluetoothAdvertisePermission = bluetoothAdvertiseGranted,
