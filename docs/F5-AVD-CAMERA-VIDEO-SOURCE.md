@@ -157,3 +157,26 @@ stream. The emulator may still report a 90-degree `SENSOR_ORIENTATION`; that
 value is retained as evidence metadata only. The court serializes the raw
 sensor-native Y plane without display-orientation rotation, so camera-backend
 cropping/resizing can be distinguished from app-side transforms.
+
+
+## Camera orientation and source placement hardening
+
+Real Android Emulator Camera2 evidence showed two additional transforms that
+the earlier synthetic path did not model accurately:
+
+- the captured luma raster can be rotated by a 90-degree sensor quarter-turn;
+- the emulator camera source can crop a centered raster against a frame edge.
+
+The replay path now tests all four quarter-turn orientations and chooses the
+registration with the strongest resolved-symbol evidence and the most balanced
+bounded axis scale.
+
+The deterministic source fixture also accepts explicit raster offsets. The
+real AVD court currently places the 200x140 optical raster at `x=270, y=170`
+inside the 640x480 source frame. This value comes from prior Camera2 evidence:
+a centered `x=220` raster reached the captured frame edge after sensor
+rotation/cropping.
+
+These choices do not weaken the PASS condition. The court still requires a
+Camera2-produced Y4M capture to replay the exact expected payload with
+`bit_errors=0`.
