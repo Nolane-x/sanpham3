@@ -174,6 +174,68 @@ both 2.0x and 1.5x input scale.
 This baseline still does **not** estimate rotation, perspective/homography,
 camera pose, lens distortion or arbitrary visual finders.
 
+## Y4M camera-video replay
+
+The replay harness also accepts a YUV4MPEG2 stream and decodes the luma plane
+from a selected frame window:
+
+```bash
+cargo run -p signal-trace-replay-cli -- \
+  optical-y4m-auto-scale \
+  <expected_hex> \
+  capture.y4m \
+  [start_frame] \
+  [frame_count]
+```
+
+The current parser reads:
+
+- `W` / `H` dimensions;
+- `F<num>:<den>` frame rate;
+- `C` chroma mode;
+- per-frame `FRAME` headers;
+- the full luma plane for every selected frame.
+
+Supported 8-bit chroma layouts are:
+
+- 4:2:0 variants whose `C` token begins with `420`;
+- 4:2:2 variants beginning with `422`;
+- 4:4:4 variants beginning with `444`;
+- `mono`.
+
+Chroma planes are skipped with exact size accounting; only luma enters the
+optical decoder.
+
+Each selected video frame then runs through the same bounded
+translation+uniform-scale registration used by PGM replay before symbol voting
+and repetition decode.
+
+The CLI reports:
+
+- complete input SHA-256;
+- video dimensions;
+- frame-rate ratio;
+- chroma mode;
+- total frames;
+- selected frame window;
+- decoded bit count and BER.
+
+The evidence label remains:
+
+```text
+UNCLASSIFIED_REPLAY
+```
+
+because the parser cannot know whether a Y4M file came from a real camera, a
+transcoder or a synthetic generator.
+
+The deterministic CI fixture uses two video frames containing the same optical
+payload at different scales and offsets and requires exact payload recovery.
+
+This closes the **software video-container/luma replay path**. It does not by
+itself prove camera provenance, rotation/perspective acquisition, lens
+distortion handling or physical screen-camera interoperability.
+
 ## Windowed replay
 
 Both transports support:
