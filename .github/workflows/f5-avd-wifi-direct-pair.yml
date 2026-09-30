@@ -1,0 +1,204 @@
+name: f5-avd-wifi-direct-pair
+
+on:
+  push:
+    paths:
+      - "adapters/android-host/**"
+      - "adapters/android-peer-session-jni/**"
+      - "apps/android-recovery-lab/**"
+      - "scripts/virtual-phone-avd-wifi-direct.sh"
+      - "docs/F5-AVD-WIFI-DIRECT-PAIR.md"
+      - ".github/workflows/f5-avd-wifi-direct-pair.yml"
+  pull_request:
+    paths:
+      - "adapters/android-host/**"
+      - "adapters/android-peer-session-jni/**"
+      - "apps/android-recovery-lab/**"
+      - "scripts/virtual-phone-avd-wifi-direct.sh"
+      - "docs/F5-AVD-WIFI-DIRECT-PAIR.md"
+      - ".github/workflows/f5-avd-wifi-direct-pair.yml"
+
+jobs:
+  wifi-direct-pair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ""
+
+      - name: Install Android 17 emulator stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "platforms;android-37.0" "build-tools;37.0.0" "platform-tools" "emulator"
+          if [ -d "$ANDROID_SDK_ROOT/platforms/android-37.0" ] \
+             && [ ! -e "$ANDROID_SDK_ROOT/platforms/android-37" ]; then
+            ln -s android-37.0 "$ANDROID_SDK_ROOT/platforms/android-37"
+          fi
+
+          IMAGE="$(
+            sdkmanager --list --include_obsolete \
+              | awk -F'|' '
+                  /system-images;android-37[.]0;.*;x86_64/ {
+                    gsub(/^[ \t]+|[ \t]+$/, "", $1)
+                    print $1
+                    exit
+                  }
+                '
+          )"
+          test -n "$IMAGE"
+          sdkmanager "$IMAGE"
+          echo "SP3_ANDROID17_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+          emulator -version
+          python3 - "$(emulator -version 2>&1 | sed -n 's/^Android emulator version \([0-9][0-9.]*\).*/\1/p' | head -n 1)" <<'PY'
+          import sys
+          parts = [int(x) for x in sys.argv[1].split('.')[:3]]
+          parts += [0] * (3 - len(parts))
+          if tuple(parts) < (36, 5, 0):
+              raise SystemExit(f"Android Emulator 36.5+ required, got {sys.argv[1]}")
+          PY
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Select Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK_DIR=""
+          if [ -d "$ANDROID_SDK_ROOT/ndk" ]; then
+            NDK_DIR="$(find "$ANDROID_SDK_ROOT/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          fi
+          if [ -z "$NDK_DIR" ]; then
+            NDK_PACKAGE="$(
+              sdkmanager --list \
+                | sed -n 's/^[[:space:]]*\(ndk;[0-9][^[:space:]]*\).*/\1/p' \
+                | sort -V \
+                | tail -n 1
+            )"
+            test -n "$NDK_PACKAGE"
+            sdkmanager "$NDK_PACKAGE"
+            NDK_DIR="$(find "$ANDROID_SDK_ROOT/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          fi
+          test -d "$NDK_DIR"
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$NDK_DIR" >> "$GITHUB_ENV"
+
+      - name: Build Rust peer-session JNI
+        run: bash adapters/android-host/build-peer-session-native.sh
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.6.0"
+
+      - name: Unit test and assemble Recovery Lab
+        run: >-
+          gradle -p apps/android-recovery-lab
+          :app:testDebugUnitTest
+          :app:assembleDebug
+          --stacktrace
+
+      - name: Create two Android 17 AVDs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo no | avdmanager create avd \
+            -n sp3-wfd-a \
+            -k "$SP3_ANDROID17_IMAGE" \
+            --force
+          echo no | avdmanager create avd \
+            -n sp3-wfd-b \
+            -k "$SP3_ANDROID17_IMAGE" \
+            --force
+
+      - name: Launch both AVDs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo chmod 666 /dev/kvm 2>/dev/null || true
+          mkdir -p "$RUNNER_TEMP/wifi-direct-evidence"
+
+          emulator @sp3-wfd-a \
+            -port 5554 \
+            -no-window \
+            -no-audio \
+            -no-snapshot \
+            -no-boot-anim \
+            -gpu swiftshader_indirect \
+            >"$RUNNER_TEMP/wifi-direct-evidence/avd-a-emulator.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/wifi-direct-evidence/avd-a.pid"
+
+          emulator @sp3-wfd-b \
+            -port 5556 \
+            -no-window \
+            -no-audio \
+            -no-snapshot \
+            -no-boot-anim \
+            -gpu swiftshader_indirect \
+            >"$RUNNER_TEMP/wifi-direct-evidence/avd-b-emulator.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/wifi-direct-evidence/avd-b.pid"
+
+          wait_boot() {
+            local serial="$1"
+            adb -s "$serial" wait-for-device
+            for _ in $(seq 1 240); do
+              if [ "$(adb -s "$serial" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+                return 0
+              fi
+              sleep 1
+            done
+            echo "Timed out booting $serial" >&2
+            return 1
+          }
+
+          wait_boot emulator-5554
+          wait_boot emulator-5556
+
+      - name: Install Recovery Lab on both AVDs
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find apps/android-recovery-lab/app/build/outputs/apk/debug -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          adb -s emulator-5554 install -r "$APK"
+          adb -s emulator-5556 install -r "$APK"
+
+      - name: Run authenticated Wi-Fi Direct pair court
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/virtual-phone-avd-wifi-direct.sh \
+            emulator-5554 \
+            emulator-5556 \
+            dev.nolane.sanpham3.recoverylab \
+            "$RUNNER_TEMP/wifi-direct-evidence/court"
+
+      - name: Stop AVDs
+        if: always()
+        shell: bash
+        run: |
+          adb -s emulator-5554 emu kill || true
+          adb -s emulator-5556 emu kill || true
+
+      - name: Upload Wi-Fi Direct AVD evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sp3-f5-avd-wifi-direct-pair
+          path: ${{ runner.temp }}/wifi-direct-evidence
+          if-no-files-found: warn
