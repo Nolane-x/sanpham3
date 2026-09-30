@@ -60,9 +60,13 @@ Required:
 
 Future:
 
-- [ ] OEM quirk profiles
-- [ ] background restriction profiles
-- [ ] battery/thermal model
+- [x] OEM quirk profiles
+- [x] background restriction profiles
+- [x] battery/thermal model
+
+Android F2 now applies execution state, conservative OEM quirk switches and a
+battery/thermal resource policy only as capability reductions. The presets are
+research policy models, not measured vendor-specific behavior.
 - [ ] Android 17 local-network-permission model
 - [x] Windows capability/permission profile
 - [x] Linux capability/privilege profile
