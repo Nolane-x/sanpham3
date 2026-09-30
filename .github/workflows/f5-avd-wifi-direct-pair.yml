@@ -46,22 +46,29 @@ jobs:
             ln -s android-37.0 "$ANDROID_SDK_ROOT/platforms/android-37"
           fi
 
-          IMAGE="$(
-            sdkmanager --list --include_obsolete \
-              | awk -F'|' '
-                  /system-images;android-37[.]0;.*;x86_64/ {
-                    gsub(/^[ \t]+|[ \t]+$/, "", $1)
-                    print $1
-                    exit
-                  }
-                '
-          )"
+          IMAGE=""
+          for candidate in \
+            "system-images;android-37.0;google_apis;x86_64" \
+            "system-images;android-37.0;google_apis_playstore;x86_64"
+          do
+            if sdkmanager --list --include_obsolete | grep -Fq "$candidate"; then
+              IMAGE="$candidate"
+              break
+            fi
+          done
           test -n "$IMAGE"
           sdkmanager "$IMAGE"
           echo "SP3_ANDROID17_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
-          emulator -version
-          python3 - "$(emulator -version 2>&1 | sed -n 's/^Android emulator version \([0-9][0-9.]*\).*/\1/p' | head -n 1)" <<'PY'
+          echo "$ANDROID_SDK_ROOT/emulator" >> "$GITHUB_PATH"
+          export PATH="$ANDROID_SDK_ROOT/emulator:$PATH"
+
+          EMULATOR_BIN="$ANDROID_SDK_ROOT/emulator/emulator"
+          test -x "$EMULATOR_BIN"
+          "$EMULATOR_BIN" -version
+          VERSION="$("$EMULATOR_BIN" -version 2>&1 | sed -n 's/^Android emulator version \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
+          test -n "$VERSION"
+          python3 - "$VERSION" <<'PY'
           import sys
           parts = [int(x) for x in sys.argv[1].split('.')[:3]]
           parts += [0] * (3 - len(parts))
