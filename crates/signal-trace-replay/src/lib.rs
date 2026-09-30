@@ -69,6 +69,36 @@ impl PgmGray8 {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Y4mGrayVideo {
+    pub width: usize,
+    pub height: usize,
+    pub fps_numerator: u32,
+    pub fps_denominator: u32,
+    pub chroma: String,
+    pub luma_frames: Vec<Vec<u8>>,
+}
+
+impl Y4mGrayVideo {
+    pub fn frame_as_optical(
+        &self,
+        index: usize,
+    ) -> Result<OpticalGrayFrame, ReplayError> {
+        let pixels = self
+            .luma_frames
+            .get(index)
+            .ok_or(ReplayError::VideoFrameWindowOutside)?;
+        Ok(OpticalGrayFrame {
+            width: self.width,
+            height: self.height,
+            pixels: pixels
+                .iter()
+                .map(|&value| value as f32 / 255.0)
+                .collect(),
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum ReplayError {
     InvalidWav(&'static str),
@@ -91,6 +121,9 @@ pub enum ReplayError {
     },
     InvalidPgm(&'static str),
     UnsupportedPgmMaxValue(u32),
+    InvalidY4m(&'static str),
+    UnsupportedY4mChroma(String),
+    VideoFrameWindowOutside,
     OpticalVoteShapeMismatch,
     OpticalRegistrationFailed(&'static str),
     EmptyTrace,
@@ -135,6 +168,15 @@ impl fmt::Display for ReplayError {
             Self::InvalidPgm(message) => write!(f, "invalid PGM: {message}"),
             Self::UnsupportedPgmMaxValue(value) => {
                 write!(f, "unsupported PGM max value {value}; expected 1..255")
+            }
+            Self::InvalidY4m(message) => {
+                write!(f, "invalid Y4M: {message}")
+            }
+            Self::UnsupportedY4mChroma(chroma) => {
+                write!(f, "unsupported Y4M chroma mode {chroma}")
+            }
+            Self::VideoFrameWindowOutside => {
+                write!(f, "requested video frame window is outside the capture")
             }
             Self::OpticalVoteShapeMismatch => {
                 write!(f, "optical replay frames have mismatched symbol shapes")
@@ -289,6 +331,231 @@ pub fn parse_scalar_csv_column(
         values,
         skipped_header,
     })
+}
+
+pub fn parse_y4m_gray_video(
+    bytes: &[u8],
+) -> Result<Y4mGrayVideo, ReplayError> {
+    let mut offset = 0_usize;
+    let header = y4m_line(bytes, &mut offset)?;
+    let header_text = std::str::from_utf8(header)
+        .map_err(|_| ReplayError::InvalidY4m("header is not ASCII"))?;
+    let mut tokens = header_text.split_ascii_whitespace();
+
+    if tokens.next() != Some("YUV4MPEG2") {
+        return Err(ReplayError::InvalidY4m(
+            "missing YUV4MPEG2 signature",
+        ));
+    }
+
+    let mut width = None;
+    let mut height = None;
+    let mut fps = None;
+    let mut chroma = None;
+
+    for token in tokens {
+        if let Some(value) = token.strip_prefix('W') {
+            width = Some(
+                value
+                    .parse::<usize>()
+                    .map_err(|_| ReplayError::InvalidY4m("invalid width"))?,
+            );
+        } else if let Some(value) = token.strip_prefix('H') {
+            height = Some(
+                value
+                    .parse::<usize>()
+                    .map_err(|_| ReplayError::InvalidY4m("invalid height"))?,
+            );
+        } else if let Some(value) = token.strip_prefix('F') {
+            let (numerator, denominator) = value
+                .split_once(':')
+                .ok_or(ReplayError::InvalidY4m(
+                    "invalid frame-rate ratio",
+                ))?;
+            fps = Some((
+                numerator
+                    .parse::<u32>()
+                    .map_err(|_| ReplayError::InvalidY4m(
+                        "invalid frame-rate numerator",
+                    ))?,
+                denominator
+                    .parse::<u32>()
+                    .map_err(|_| ReplayError::InvalidY4m(
+                        "invalid frame-rate denominator",
+                    ))?,
+            ));
+        } else if let Some(value) = token.strip_prefix('C') {
+            chroma = Some(value.to_owned());
+        }
+    }
+
+    let width = width.ok_or(ReplayError::InvalidY4m("missing width"))?;
+    let height = height.ok_or(ReplayError::InvalidY4m("missing height"))?;
+    if width == 0 || height == 0 {
+        return Err(ReplayError::InvalidY4m(
+            "width and height must be non-zero",
+        ));
+    }
+
+    let (fps_numerator, fps_denominator) =
+        fps.ok_or(ReplayError::InvalidY4m("missing frame rate"))?;
+    if fps_numerator == 0 || fps_denominator == 0 {
+        return Err(ReplayError::InvalidY4m(
+            "frame-rate ratio must be non-zero",
+        ));
+    }
+
+    let chroma = chroma.unwrap_or_else(|| "420jpeg".to_owned());
+    let y_bytes = width
+        .checked_mul(height)
+        .ok_or(ReplayError::InvalidY4m("luma size overflow"))?;
+    let chroma_bytes = y4m_chroma_bytes(width, height, &chroma)?;
+    let frame_bytes = y_bytes
+        .checked_add(chroma_bytes)
+        .ok_or(ReplayError::InvalidY4m("frame size overflow"))?;
+
+    let mut luma_frames = Vec::new();
+    while offset < bytes.len() {
+        let frame_header = y4m_line(bytes, &mut offset)?;
+        let frame_header_text = std::str::from_utf8(frame_header)
+            .map_err(|_| ReplayError::InvalidY4m(
+                "frame header is not ASCII",
+            ))?;
+        if !frame_header_text
+            .split_ascii_whitespace()
+            .next()
+            .is_some_and(|token| token == "FRAME")
+        {
+            return Err(ReplayError::InvalidY4m(
+                "missing FRAME header",
+            ));
+        }
+
+        let end = offset
+            .checked_add(frame_bytes)
+            .ok_or(ReplayError::InvalidY4m(
+                "frame payload offset overflow",
+            ))?;
+        if end > bytes.len() {
+            return Err(ReplayError::InvalidY4m(
+                "truncated frame payload",
+            ));
+        }
+
+        luma_frames.push(bytes[offset..offset + y_bytes].to_vec());
+        offset = end;
+    }
+
+    if luma_frames.is_empty() {
+        return Err(ReplayError::EmptyTrace);
+    }
+
+    Ok(Y4mGrayVideo {
+        width,
+        height,
+        fps_numerator,
+        fps_denominator,
+        chroma,
+        luma_frames,
+    })
+}
+
+pub fn replay_optical_y4m_registered_scaled(
+    y4m_bytes: &[u8],
+    symbol_count: usize,
+    grid: OpticalGridConfig,
+    repetition: OpticalRepetitionConfig,
+    start_frame: usize,
+    frame_count: usize,
+) -> Result<Vec<u8>, ReplayError> {
+    if symbol_count == 0 || frame_count == 0 {
+        return Err(ReplayError::EmptyTrace);
+    }
+
+    let video = parse_y4m_gray_video(y4m_bytes)?;
+    let end = start_frame
+        .checked_add(frame_count)
+        .ok_or(ReplayError::VideoFrameWindowOutside)?;
+    if end > video.luma_frames.len() {
+        return Err(ReplayError::VideoFrameWindowOutside);
+    }
+
+    let mut decoded_frames = Vec::with_capacity(frame_count);
+    for index in start_frame..end {
+        let source = video.frame_as_optical(index)?;
+        let (registered, _) =
+            register_optical_translation_scale(
+                &source,
+                symbol_count,
+                grid,
+            )?;
+        decoded_frames.push(
+            decode_optical_cells(
+                &registered,
+                symbol_count,
+                grid,
+                None,
+            )?,
+        );
+    }
+
+    let voted = vote_optical_symbols(&decoded_frames)?;
+    Ok(decode_optical_repetition(&voted, repetition)?)
+}
+
+fn y4m_line<'a>(
+    bytes: &'a [u8],
+    offset: &mut usize,
+) -> Result<&'a [u8], ReplayError> {
+    if *offset >= bytes.len() {
+        return Err(ReplayError::InvalidY4m("missing line"));
+    }
+
+    let relative_end = bytes[*offset..]
+        .iter()
+        .position(|&value| value == b'\n')
+        .ok_or(ReplayError::InvalidY4m(
+            "unterminated header line",
+        ))?;
+    let end = *offset + relative_end;
+    let mut line = &bytes[*offset..end];
+    if line.last() == Some(&b'\r') {
+        line = &line[..line.len() - 1];
+    }
+    *offset = end + 1;
+    Ok(line)
+}
+
+fn y4m_chroma_bytes(
+    width: usize,
+    height: usize,
+    chroma: &str,
+) -> Result<usize, ReplayError> {
+    let chroma_pixels = if chroma == "mono" {
+        0
+    } else if chroma.starts_with("420") {
+        let cw = width.div_ceil(2);
+        let ch = height.div_ceil(2);
+        cw.checked_mul(ch)
+            .and_then(|plane| plane.checked_mul(2))
+            .ok_or(ReplayError::InvalidY4m("4:2:0 size overflow"))?
+    } else if chroma.starts_with("422") {
+        let cw = width.div_ceil(2);
+        cw.checked_mul(height)
+            .and_then(|plane| plane.checked_mul(2))
+            .ok_or(ReplayError::InvalidY4m("4:2:2 size overflow"))?
+    } else if chroma.starts_with("444") {
+        width
+            .checked_mul(height)
+            .and_then(|plane| plane.checked_mul(2))
+            .ok_or(ReplayError::InvalidY4m("4:4:4 size overflow"))?
+    } else {
+        return Err(ReplayError::UnsupportedY4mChroma(
+            chroma.to_owned(),
+        ));
+    };
+
+    Ok(chroma_pixels)
 }
 
 pub fn parse_pgm_gray8(bytes: &[u8]) -> Result<PgmGray8, ReplayError> {
@@ -952,6 +1219,28 @@ mod tests {
         out
     }
 
+    fn y4m_from_frames(
+        width: usize,
+        height: usize,
+        frames: &[OpticalGrayFrame],
+    ) -> Vec<u8> {
+        let mut out =
+            format!("YUV4MPEG2 W{width} H{height} F30:1 Ip C420jpeg\n")
+                .into_bytes();
+        let chroma_plane = width.div_ceil(2) * height.div_ceil(2);
+
+        for frame in frames {
+            assert_eq!(frame.width, width);
+            assert_eq!(frame.height, height);
+            out.extend_from_slice(b"FRAME\n");
+            out.extend(frame.pixels.iter().map(|value| {
+                (value.clamp(0.0, 1.0) * 255.0).round() as u8
+            }));
+            out.extend(std::iter::repeat_n(128_u8, chroma_plane * 2));
+        }
+        out
+    }
+
     fn pgm_from_frame(frame: &OpticalGrayFrame) -> Vec<u8> {
         let mut out = format!(
             "P5\n# sanpham3 fixture\n{} {}\n255\n",
@@ -1192,6 +1481,105 @@ mod tests {
         .unwrap();
 
         assert_eq!(bit_error_count(&bits, &decoded), 0);
+    }
+
+    #[test]
+    fn y4m_parser_extracts_luma_frames_and_metadata() {
+        let frame = OpticalGrayFrame {
+            width: 4,
+            height: 2,
+            pixels: vec![
+                0.0, 0.1, 0.2, 0.3,
+                0.4, 0.5, 0.6, 0.7,
+            ],
+        };
+        let bytes = y4m_from_frames(4, 2, &[frame]);
+        let video = parse_y4m_gray_video(&bytes).unwrap();
+
+        assert_eq!(video.width, 4);
+        assert_eq!(video.height, 2);
+        assert_eq!(video.fps_numerator, 30);
+        assert_eq!(video.fps_denominator, 1);
+        assert_eq!(video.chroma, "420jpeg");
+        assert_eq!(video.luma_frames.len(), 1);
+        assert_eq!(video.luma_frames[0].len(), 8);
+    }
+
+    #[test]
+    fn optical_y4m_replay_roundtrips_scaled_shifted_video_frames() {
+        use signal_frontier::{
+            encode_optical_repetition, render_optical_cells,
+        };
+
+        let bits = vec![
+            1, 0, 1, 1, 0, 0, 1, 0,
+            0, 1, 1, 0, 1, 0, 0, 1,
+        ];
+        let repetition = OpticalRepetitionConfig::robust_default();
+        let grid = OpticalGridConfig::camera_baseline();
+        let symbols =
+            encode_optical_repetition(&bits, repetition).unwrap();
+        let base = render_optical_cells(&symbols, grid).unwrap();
+
+        let scaled_a = resize_optical_nearest(&base, 2, 1);
+        let scaled_b = resize_optical_nearest(&base, 3, 2);
+        let canvas_width = scaled_a.width.max(scaled_b.width) + 140;
+        let canvas_height = scaled_a.height.max(scaled_b.height) + 110;
+
+        let first = embed_optical_frame(
+            &scaled_a,
+            canvas_width,
+            canvas_height,
+            37,
+            31,
+        );
+        let second = embed_optical_frame(
+            &scaled_b,
+            canvas_width,
+            canvas_height,
+            71,
+            53,
+        );
+        let video = y4m_from_frames(
+            canvas_width,
+            canvas_height,
+            &[first, second],
+        );
+
+        let decoded = replay_optical_y4m_registered_scaled(
+            &video,
+            symbols.len(),
+            grid,
+            repetition,
+            0,
+            2,
+        )
+        .unwrap();
+
+        assert_eq!(bit_error_count(&bits, &decoded), 0);
+    }
+
+    #[test]
+    fn y4m_replay_rejects_frame_window_past_end() {
+        let frame = OpticalGrayFrame {
+            width: 4,
+            height: 2,
+            pixels: vec![0.0; 8],
+        };
+        let bytes = y4m_from_frames(4, 2, &[frame]);
+
+        let result = replay_optical_y4m_registered_scaled(
+            &bytes,
+            1,
+            OpticalGridConfig::camera_baseline(),
+            OpticalRepetitionConfig::robust_default(),
+            1,
+            1,
+        );
+        assert!(matches!(
+            result,
+            Err(ReplayError::VideoFrameWindowOutside),
+        ));
     }
 
     #[test]
