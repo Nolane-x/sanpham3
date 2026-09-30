@@ -656,7 +656,14 @@ fn optical_orientation_marker_score(
     frame: &OpticalGrayFrame,
     grid: OpticalGridConfig,
 ) -> Result<f32, ReplayError> {
-    frame.validate()?;
+    if frame.width == 0
+        || frame.height == 0
+        || frame.pixels.len() != frame.width.saturating_mul(frame.height)
+    {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "registered frame dimensions are invalid",
+        ));
+    }
     grid.validate()?;
 
     let cell = grid.cell_pixels;
