@@ -69,6 +69,38 @@ The harness intentionally accepts a preselected scalar channel rather than
 claiming that arbitrary 3-axis raw accelerometer files are automatically
 orientation-corrected.
 
+## Optical PGM frame replay
+
+The optical bridge accepts one or more registered grayscale frames in binary
+P5 PGM format:
+
+```bash
+cargo run -p signal-trace-replay-cli -- \
+  optical-pgm <expected_hex> frame1.pgm [frame2.pgm ...]
+```
+
+Current constraints are deliberate:
+
+- 8-bit binary P5 grayscale only;
+- frame dimensions must already match the current optical court grid;
+- frames must already be cropped/registered to the known geometry;
+- the decoder does not estimate corners, homography or camera pose.
+
+Each frame is decoded to repeated optical symbols. Multiple frames are merged by
+per-symbol voting:
+
+- strict majority 0 -> 0;
+- strict majority 1 -> 1;
+- tie/no observations -> erasure.
+
+The normal repetition decoder then reconstructs logical bits.
+
+The CLI reports SHA-256 for every input frame and always labels the replay
+`UNCLASSIFIED_REPLAY`.
+
+This is a useful bridge for exported/cropped camera frames, but it is not the
+still-open camera-video acquisition gate.
+
 ## Windowed replay
 
 Both transports support:
@@ -116,6 +148,9 @@ CI proves:
 - leading/trailing window support;
 - CSV column parsing;
 - vibration window replay;
+- P5 PGM parsing;
+- optical multi-frame majority/erasure voting;
+- optical repetition replay under known registered geometry;
 - decoder wiring.
 
 It does **not** prove that a real captured trace decodes.
@@ -126,6 +161,7 @@ This harness does not close:
 
 - near-ultrasonic real recorded impulse-response replay;
 - vibration recorded sensor-trace replay;
+- camera-video acquisition/corner detection/pose estimation;
 - physical range/goodput;
 - hardware AGC/OEM DSP behavior;
 - surface/body/orientation measurements.
