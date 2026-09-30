@@ -75,8 +75,8 @@ Near-ultrasonic:
 - [x] deterministic room/noise impairment
 - [x] correlation decoder
 - [x] BER check
-- [ ] multipath impulse-response convolution
-- [ ] clock drift/resampling
+- [x] multipath impulse-response convolution baseline
+- [x] clock drift/resampling baseline
 - [ ] AGC/nonlinear filtering
 - [ ] real recorded impulse-response replay
 
@@ -112,11 +112,22 @@ Future:
 - [x] fragment IDs/ranges
 - [x] authenticated fragment envelope
 - [x] single-loss XOR erasure stripe baseline
-- [ ] fountain/rateless coding
-- [ ] source/provenance merge
-- [ ] deadline/freshness-aware fragment scheduler
-- [ ] correlated-failure model
-- [ ] energy-per-useful-bit objective
+- [x] authenticated rateless random-linear coding baseline
+- [x] source/provenance merge across carriers
+- [x] deadline/freshness-aware fragment scheduler baseline
+- [x] correlated-failure-domain model
+- [x] measured energy-per-useful-bit objective
+
+Current F4 software stack now composes:
+
+- authenticated exact SP3F fragments;
+- authenticated SP3E single-erasure XOR parity;
+- authenticated rateless random-linear coding;
+- provenance retention/merge across carriers;
+- deadline/freshness-aware contact scheduling;
+- primary physical failure-domain diversification;
+- measured setup + transfer energy per useful bit;
+- URT exact reconstruction beneath weak/intermittent contacts.
 
 ## F5 — Android AVD twin lab
 
@@ -182,7 +193,13 @@ Priority order:
    - [x] physical court authored
    - [ ] two-device physical interoperability
    - [ ] measured startup/join/G8 latency, useful bits/s, concurrent-Internet behavior and energy
-5. [ ] near-ultrasonic request capsule prototype
+5. [x] near-ultrasonic request capsule software/synthetic prototype
+   - [x] SP3A sender ID + 64-bit sequence + HMAC-SHA256/128 envelope
+   - [x] bounded replay window with duplicate/too-old rejection
+   - [x] real `peer-egress::ResolveRequest` useful-task court
+   - [x] FSK + multipath + clock-drift + noise synthetic roundtrip
+   - [ ] two-device microphone/speaker interoperability
+   - [ ] measured physical setup latency, range, useful bits/s, audibility and energy
 6. [ ] screen-camera optical capsule prototype
 7. [ ] SMS gateway capsule prototype
 8. [ ] vibration tiny-capsule prototype
@@ -230,12 +247,20 @@ Implemented baseline:
 
 Future work:
 
-- [ ] local search index
-- [ ] multi-source conflict/reconciliation
-- [ ] signed source receipts
-- [ ] persistent cache store and eviction policy
-- [ ] source-specific validity rules
-- [ ] automatic transition from local-only to fresh remote when a carrier returns
+- [x] provenance-aware local search index
+- [x] conservative multi-source conflict/reconciliation
+- [x] Ed25519 signed source receipts
+- [x] bounded persistent cache store and deterministic eviction policy
+- [x] source-specific validity rules enforced during cache admission/use
+- [x] automatic transition from local-only to fresh remote when a carrier returns
+
+Current F8 software closure is intentionally truth-preserving:
+
+- persisted remote bytes remain `CachedRemote`;
+- Ed25519 signatures bind source ID, observed-at time, content hash and provenance note;
+- multi-source reconciliation uses distinct-source exact-digest quorum and explicit conflict;
+- local search revalidates digest, validity, age and optional signature at query time;
+- only a real live observation supplied by the carrier pipeline is labeled `FreshRemote`.
 
 
 ### F4 authenticated fragment baseline
@@ -256,9 +281,10 @@ The closed baseline uses `fragment-transport`:
 The software court deliberately reverses fragment order and injects a duplicate
 before requiring exact reconstruction.
 
-This closes authenticated fragment identity/range mechanics only. It does not
-close fountain/erasure coding, provenance merge, deadline scheduling, correlated
-failure or energy optimization.
+This section records the authenticated fragment identity/range baseline only.
+Later F4 courts now separately close the software baselines for XOR erasure,
+rateless random-linear coding, provenance merge, deadline/freshness scheduling,
+correlated failure domains and measured energy-per-useful-bit selection.
 
 
 ### F4 authenticated erasure + URT baseline
@@ -282,6 +308,8 @@ splits delivery across multiple synthetic contact windows, drops one data shard
 from every stripe, injects duplicate/out-of-order fragments, then recovers the
 URT wire and decodes it back to the original logical payload.
 
-This closes only a systematic single-erasure baseline. It does **not** close
-fountain/rateless coding, correlated-loss resilience, provenance merge,
-deadline/freshness scheduling, or energy optimization.
+This section closes only the systematic single-erasure baseline. Later F4
+courts now add authenticated rateless random-linear coding, provenance merge,
+deadline/freshness scheduling, correlated-failure-domain awareness and a
+measured energy-per-useful-bit objective. Physical carrier measurements and
+higher-order failure evidence remain separate requirements.
