@@ -92,8 +92,11 @@ class AndroidWifiDirectDataPath(
             }
 
             if (networkInfo?.isConnected != true) {
-                latestInfo = null
-                closeServerSocket()
+                val groupWasFormed = latestInfo?.groupFormed == true
+                if (!groupWasFormed) {
+                    latestInfo = null
+                    closeServerSocket()
+                }
                 listener?.invoke(AndroidWifiDirectDataPathEvent.Disconnected)
                 return
             }
@@ -105,6 +108,7 @@ class AndroidWifiDirectDataPath(
     fun start(
         peer: AndroidWifiDirectPeer,
         port: Int,
+        groupOwnerIntent: Int? = null,
         onEvent: (AndroidWifiDirectDataPathEvent) -> Unit,
     ) {
         validateWifiDirectPort(port)
@@ -144,7 +148,10 @@ class AndroidWifiDirectDataPath(
                 appContext.registerReceiver(receiver, filter)
             }
 
-            val config = buildConfig(peer.deviceAddressHint)
+            val config = buildConfig(
+                peer.deviceAddressHint,
+                groupOwnerIntent,
+            )
 
             wifiP2p.connect(
                 channel,
@@ -175,6 +182,81 @@ class AndroidWifiDirectDataPath(
             failAndClose(
                 null,
                 error.message ?: "invalid Wi-Fi Direct peer address",
+            )
+        } catch (error: RuntimeException) {
+            failAndClose(
+                null,
+                error.message ?: error.javaClass.simpleName,
+            )
+        }
+    }
+
+    /**
+     * Creates a Wi-Fi Direct group and prepares this device as the preferred
+     * group owner. A peer can then discover/connect to this device.
+     */
+    fun startGroupOwner(
+        port: Int,
+        onEvent: (AndroidWifiDirectDataPathEvent) -> Unit,
+    ) {
+        validateWifiDirectPort(port)
+
+        if (!started.compareAndSet(false, true)) {
+            return
+        }
+
+        listener = onEvent
+        projectPort = port
+
+        val wifiP2p = manager
+        if (wifiP2p == null) {
+            failAndClose(
+                null,
+                "WifiP2pManager unavailable",
+            )
+            return
+        }
+
+        val filter = IntentFilter(
+            WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION,
+        )
+
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                appContext.registerReceiver(
+                    receiver,
+                    filter,
+                    Context.RECEIVER_NOT_EXPORTED,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                appContext.registerReceiver(receiver, filter)
+            }
+
+            wifiP2p.createGroup(
+                channel,
+                object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() {
+                        listener?.invoke(
+                            AndroidWifiDirectDataPathEvent.Connecting,
+                        )
+                        requestConnectionInfo()
+                    }
+
+                    override fun onFailure(reason: Int) {
+                        listener?.invoke(
+                            AndroidWifiDirectDataPathEvent.Failed(
+                                reasonCode = reason,
+                                detail = "WifiP2pManager.createGroup failed",
+                            ),
+                        )
+                    }
+                },
+            )
+        } catch (error: SecurityException) {
+            failAndClose(
+                null,
+                error.message ?: "Wi-Fi Direct permission denied",
             )
         } catch (error: RuntimeException) {
             failAndClose(
@@ -343,8 +425,17 @@ class AndroidWifiDirectDataPath(
         }
     }
 
-    private fun buildConfig(deviceAddress: String): WifiP2pConfig =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+    private fun buildConfig(
+        deviceAddress: String,
+        groupOwnerIntent: Int?,
+    ): WifiP2pConfig {
+        if (groupOwnerIntent != null) {
+            require(groupOwnerIntent in 0..15) {
+                "Wi-Fi Direct groupOwnerIntent must be in 0..15"
+            }
+        }
+
+        val config = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             WifiP2pConfig.Builder()
                 .setDeviceAddress(MacAddress.fromString(deviceAddress))
                 .build()
@@ -354,6 +445,12 @@ class AndroidWifiDirectDataPath(
                 this.deviceAddress = deviceAddress
             }
         }
+
+        if (groupOwnerIntent != null) {
+            config.groupOwnerIntent = groupOwnerIntent
+        }
+        return config
+    }
 
     private fun closeServerSocket() {
         try {
