@@ -165,3 +165,27 @@ access follows the separate Recovery Lab permission framework.
 The AVD orchestrator explicitly enables Location Mode before discovery. This is
 required by Android's Wi-Fi Direct peer-discovery APIs even when
 `NEARBY_WIFI_DEVICES` is used.
+
+
+## System join approval in the AVD court
+
+When an already-created group owner receives a new peer join request, Android
+enters a user-authorization state and shows a system Wi-Fi Direct invitation
+dialog.
+
+The application does not receive ordinary permission to silently accept that
+request. The framework API for programmatic connection-request decisions
+requires privileged Wi-Fi network-selection authority.
+
+For deterministic CI only, the host orchestrator therefore:
+
+1. waits for the owner system dialog;
+2. dumps the active UI hierarchy with UiAutomator;
+3. locates the positive/Accept control;
+4. taps it through ADB input;
+5. stores the UI XML and approval coordinates in the evidence bundle;
+6. records `join_approval=AVD_UI_AUTOMATION`.
+
+This models a user approving the connection. It is not a product bypass and
+does not change the requirement for user/framework authorization on real
+devices.
