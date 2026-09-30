@@ -19,8 +19,8 @@ signal-frontier encoder
   -> Android Emulator -camera-back videofile:<source.mp4>
   -> Camera2 CameraDevice
   -> ImageReader YUV_420_888
-  -> exact Y plane extraction with row/pixel stride handling
-  -> app-owned mono Y4M capture
+  -> exact sensor-native Y plane extraction with row/pixel stride handling
+  -> app-owned sensor-native mono Y4M capture
   -> adb run-as extraction
   -> signal-trace-replay Y4M parser
   -> translation + uniform-scale registration
@@ -39,7 +39,7 @@ only reads the Y4M captured back through Camera2.
 - `encode_optical_repetition()`;
 - `render_optical_cells()`;
 - 1x project raster scale so the emulator camera's orientation/crop path does not discard symbols;
-- portrait 480x640 source canvas, aligned with the emulator back camera's 90-degree sensor orientation;
+- landscape 640x480 source canvas matching the requested Camera2 sensor stream;
 - centered low-intensity canvas;
 - 30 fps mono Y4M.
 
@@ -50,7 +50,7 @@ cargo run -p signal-trace-replay-cli -- \
   optical-y4m-fixture \
   a53cc35a \
   source.y4m \
-  480 640 120
+  640 480 120
 ```
 
 The CI workflow converts this deterministic Y4M into a lossless H.264/yuv420p
@@ -66,17 +66,19 @@ MP4 for the emulator camera backend.
 4. prefers 640x480 and otherwise selects the closest 4:3 output size;
 5. discards configurable warmup frames;
 6. reads the Y plane using the actual row and pixel strides;
-7. reads `SENSOR_ORIENTATION` and rotates the tight luma into logical upright
-   orientation before serialization;
-8. swaps Y4M output dimensions for 90/270 degree sensors;
+7. records `SENSOR_ORIENTATION` as camera metadata but does not rotate the
+   captured luma;
+8. preserves the exact Camera2 stream width/height in the Y4M output;
 9. writes a tight `Cmono` Y4M stream;
 10. fsyncs the capture before declaring PASS.
 
 The first real AVD evidence showed a 90-degree back-camera sensor orientation.
-Keeping the original 2x fixture caused the emulator camera's center-crop path to
-truncate the active raster. The court therefore uses the 1x raster and preserves
-camera orientation handling as an explicit part of the capture path rather than
-teaching the decoder a one-off artifact crop.
+Feeding a portrait 480x640 fixture into a 640x480 Camera2 sensor caused the
+emulator camera backend to center-crop the source before the app received it,
+which physically removed optical cells. The court now feeds a sensor-native
+640x480 fixture and stores the raw Camera2 luma in that same geometry. This
+avoids asking the decoder to reconstruct symbols that the camera backend already
+discarded.
 
 The capture defaults are:
 
@@ -129,7 +131,7 @@ A PASS requires all of:
 - the app captures the requested number of post-warmup frames;
 - capture bytes are extracted from app storage;
 - Y4M parsing succeeds;
-- optical translation+scale registration succeeds;
+- optical translation + bounded independent X/Y scale registration succeeds;
 - logical payload reconstruction has BER=0;
 - evidence is labeled `ANDROID_AVD_CAMERA`.
 
@@ -150,8 +152,8 @@ It does not prove:
 Those remain physical F6/F7 evidence requirements.
 
 
-The CI source is intentionally portrait 480x640 while Camera2 requests a
-640x480 sensor stream. The emulator back camera reports a 90-degree sensor
-orientation. After the activity rotates sensor luma into logical orientation,
-the serialized capture returns to 480x640, matching the source geometry and
-avoiding the center-crop observed with a landscape source.
+The CI source is intentionally 640x480, matching the requested Camera2 sensor
+stream. The emulator may still report a 90-degree `SENSOR_ORIENTATION`; that
+value is retained as evidence metadata only. The court serializes the raw
+sensor-native Y plane without display-orientation rotation, so camera-backend
+cropping/resizing can be distinguished from app-side transforms.
