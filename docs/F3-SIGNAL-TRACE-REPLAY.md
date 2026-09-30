@@ -101,6 +101,45 @@ The CLI reports SHA-256 for every input frame and always labels the replay
 This is a useful bridge for exported/cropped camera frames, but it is not the
 still-open camera-video acquisition gate.
 
+## Automatic translation registration
+
+The replay bridge also supports a same-scale frame embedded inside a larger
+grayscale canvas:
+
+```bash
+cargo run -p signal-trace-replay-cli -- \
+  optical-pgm-auto <expected_hex> frame1.pgm [frame2.pgm ...]
+```
+
+The current detector is deliberately narrow and evidence-honest.
+
+It:
+
+1. derives the expected optical-grid dimensions from the symbol count and
+   `OpticalGridConfig`;
+2. scans for pixels above a conservative activation threshold between the
+   rendered quiet-zone background and logical-zero level;
+3. finds the first active data-cell origin;
+4. expands backward by the known quiet-zone width;
+5. crops the exact expected registered frame;
+6. runs the existing cell/repetition decoder.
+
+This closes **translation registration inside a larger same-scale canvas**.
+
+It does not estimate:
+
+- scale;
+- rotation;
+- projective perspective/homography;
+- lens distortion;
+- corners/finders under arbitrary backgrounds;
+- camera pose.
+
+The CLI reports the discovered origin for each frame.
+
+Synthetic CI fixtures intentionally place the same raster at different offsets
+inside larger low-noise canvases and require exact payload recovery.
+
 ## Windowed replay
 
 Both transports support:
