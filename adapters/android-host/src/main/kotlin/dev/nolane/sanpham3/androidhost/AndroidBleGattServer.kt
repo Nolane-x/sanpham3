@@ -68,6 +68,10 @@ internal object AndroidBleGattAdvertisement {
 class AndroidBleGattServer(
     context: Context,
 ) : Closeable {
+    companion object {
+        fun discoveryMarker(): ByteArray =
+            AndroidBleGattAdvertisement.encode()
+    }
     private data class SessionState(
         val nativeHandle: Long,
         val peerNodeId: Long,
@@ -258,7 +262,7 @@ class AndroidBleGattServer(
     }
 
     fun discoveryInfo(): ByteArray =
-        AndroidBleGattAdvertisement.encode()
+        discoveryMarker()
 
     private fun handleCommand(
         device: BluetoothDevice,
