@@ -1,0 +1,40 @@
+name: f6-sms-gateway-court
+
+on:
+  push:
+    paths:
+      - "crates/sms-capsule/**"
+      - "apps/sms-gateway-court-cli/**"
+      - "crates/tiny-capsule/**"
+      - "crates/peer-egress/**"
+      - "crates/carrier-frontier/**"
+      - "Cargo.toml"
+      - ".github/workflows/f6-sms-gateway-court.yml"
+  pull_request:
+    paths:
+      - "crates/sms-capsule/**"
+      - "apps/sms-gateway-court-cli/**"
+      - "crates/tiny-capsule/**"
+      - "crates/peer-egress/**"
+      - "crates/carrier-frontier/**"
+      - "Cargo.toml"
+      - ".github/workflows/f6-sms-gateway-court.yml"
+
+jobs:
+  sms-gateway:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy -p sms-capsule -p sms-gateway-court-cli --all-targets -- -D warnings
+      - run: cargo test -p sms-capsule
+      - run: cargo run -p sms-gateway-court-cli
+      - run: cargo test -p carrier-frontier
