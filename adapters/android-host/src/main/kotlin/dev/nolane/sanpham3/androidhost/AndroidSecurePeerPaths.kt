@@ -128,3 +128,28 @@ fun AndroidLocalHotspotClientDataPath.connectPeerSession(
         nodeId = nodeId,
         peerKey = peerKey,
     )
+
+
+fun AndroidUsbBulkTransport.clientPeerSession(
+    nodeId: Long,
+    peerKey: ByteArray,
+): AndroidPeerSession =
+    AndroidPeerSession.client(
+        input = inputStream,
+        output = outputStream,
+        transport = this,
+        nodeId = nodeId,
+        peerKey = peerKey,
+    )
+
+fun AndroidUsbBulkTransport.serverPeerSession(
+    nodeId: Long,
+    peerKey: ByteArray,
+): AndroidPeerSession =
+    AndroidPeerSession.server(
+        input = inputStream,
+        output = outputStream,
+        transport = this,
+        nodeId = nodeId,
+        peerKey = peerKey,
+    )
