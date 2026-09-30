@@ -5,6 +5,7 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission
         android:name="android.permission.NEARBY_WIFI_DEVICES"
@@ -37,6 +38,11 @@
             android:noHistory="true" />
         <activity
             android:name=".WifiDirectPairCourtActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true" />
+        <activity
+            android:name=".CameraOpticalCaptureActivity"
             android:exported="true"
             android:excludeFromRecents="true"
             android:noHistory="true" />
