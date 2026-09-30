@@ -20,3 +20,4 @@ jobs:
           components: clippy
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - run: python scripts/summarize-physical-evidence.py --self-test
