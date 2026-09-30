@@ -59,7 +59,8 @@ state="$(adb_run get-state | tr -d '\r')"
 adb_run shell pm path "$PACKAGE" >/dev/null
 adb_run shell pm grant "$PACKAGE" android.permission.CAMERA
 
-if ! adb_run shell pm list features     | tr -d '\r'     | grep -q 'feature:android.hardware.camera'; then
+FEATURES="$(adb_run shell pm list features | tr -d '\r')"
+if ! grep -q 'feature:android.hardware.camera' <<<"$FEATURES"; then
   echo "$SERIAL lacks android.hardware.camera" >&2
   exit 1
 fi
