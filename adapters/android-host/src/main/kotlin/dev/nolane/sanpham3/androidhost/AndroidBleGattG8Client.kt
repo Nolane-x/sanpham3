@@ -215,10 +215,94 @@ class AndroidBleGattG8Client(
                 "BLE GATT G8 ACK does not match challenge"
             }
 
+            val maxBenchmarkPayload =
+                AndroidBleGattProtocol.maxEncryptedProjectPlaintextBytes(mtu)
+            require(maxBenchmarkPayload >= 16) {
+                "BLE GATT MTU leaves less than 16 benchmark plaintext bytes"
+            }
+            val benchmarkConfig = AndroidPeerBenchmarkConfig(
+                rounds = 32,
+                payloadBytes = minOf(64, maxBenchmarkPayload),
+            )
+            val rtts = LongArray(benchmarkConfig.rounds)
+            val benchmarkStarted = System.nanoTime()
+
+            repeat(benchmarkConfig.rounds) { index ->
+                val benchmarkPayload =
+                    AndroidPeerSessionBenchmark.benchmarkPayload(
+                        sequence = index.toLong(),
+                        payloadBytes = benchmarkConfig.payloadBytes,
+                    )
+                val benchmarkFrame =
+                    AndroidPeerSessionNative.seal(
+                        sessionHandle,
+                        AndroidPeerSessionBenchmark.KIND_PROBE,
+                        benchmarkPayload,
+                    )
+
+                val roundStarted = System.nanoTime()
+                val benchmarkResponse = exchange(
+                    gatt,
+                    command,
+                    response,
+                    mtu,
+                    AndroidBleGattProtocol.OPCODE_FRAME,
+                    benchmarkFrame,
+                    events,
+                    System.nanoTime() +
+                        TimeUnit.MILLISECONDS.toNanos(timeoutMillis),
+                )
+                val roundFinished = System.nanoTime()
+                require(
+                    benchmarkResponse.opcode ==
+                        AndroidBleGattProtocol.OPCODE_FRAME,
+                )
+
+                val benchmarkOpened = AndroidPeerSessionNative.open(
+                    sessionHandle,
+                    benchmarkResponse.payload,
+                )
+                require(benchmarkOpened.isNotEmpty())
+                require(
+                    (benchmarkOpened[0].toInt() and 0xff) ==
+                        AndroidPeerSessionBenchmark.KIND_ACK,
+                ) {
+                    "BLE GATT benchmark response kind mismatch"
+                }
+                val replyPayload =
+                    benchmarkOpened.copyOfRange(1, benchmarkOpened.size)
+                require(replyPayload.contentEquals(benchmarkPayload)) {
+                    "BLE GATT benchmark ACK payload mismatch at round $index"
+                }
+
+                rtts[index] =
+                    (roundFinished - roundStarted).coerceAtLeast(1L)
+            }
+
+            val benchmark = AndroidPeerSessionBenchmark.benchmarkEvidence(
+                peerNodeId = peerNodeId,
+                config = benchmarkConfig,
+                elapsedNanos =
+                    (System.nanoTime() - benchmarkStarted)
+                        .coerceAtLeast(1L),
+                rtts = rtts,
+            )
+
             return AndroidBleGattEvidence(
                 authenticatedPeerNodeId = peerNodeId,
                 challenge = challenge,
                 mtu = mtu,
+                benchmarkRounds = benchmark.rounds,
+                benchmarkPayloadBytes = benchmark.payloadBytes,
+                benchmarkElapsedNanos = benchmark.elapsedNanos,
+                benchmarkMinRttNanos = benchmark.minRttNanos,
+                benchmarkMedianRttNanos = benchmark.medianRttNanos,
+                benchmarkP95RttNanos = benchmark.p95RttNanos,
+                benchmarkMaxRttNanos = benchmark.maxRttNanos,
+                benchmarkOneWayUsefulBitsPerSecond =
+                    benchmark.oneWayUsefulBitsPerSecond,
+                benchmarkRoundTripUsefulBitsPerSecond =
+                    benchmark.roundTripUsefulBitsPerSecond,
             )
         } finally {
             pendingHandle?.let(::closeNativeHandle)

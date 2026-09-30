@@ -77,6 +77,16 @@ internal object AndroidBleGattProtocol {
             plaintextBytes
     }
 
+    fun maxEncryptedProjectPlaintextBytes(
+        mtu: Int,
+    ): Int =
+        (
+            mtu -
+                ATT_VALUE_OVERHEAD -
+                ENVELOPE_HEADER_BYTES -
+                PEER_SESSION_FRAME_OVERHEAD
+        ).coerceAtLeast(0)
+
     fun requireFitsMtu(
         envelope: ByteArray,
         mtu: Int,
