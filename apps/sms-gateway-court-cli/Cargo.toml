@@ -1,0 +1,9 @@
+[package]
+name = "sms-gateway-court-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+peer-egress = { path = "../../crates/peer-egress" }
+sms-capsule = { path = "../../crates/sms-capsule" }
+tiny-capsule = { path = "../../crates/tiny-capsule" }
