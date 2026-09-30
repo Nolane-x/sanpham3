@@ -37,6 +37,7 @@ class WifiDirectPairCourtActivity : Activity() {
     private var dataPath: AndroidWifiDirectDataPath? = null
     private val completed = AtomicBoolean(false)
     private val groupFormedSeen = AtomicBoolean(false)
+    private val peerSessionStarted = AtomicBoolean(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -133,6 +134,18 @@ class WifiDirectPairCourtActivity : Activity() {
                             "owner_address=" +
                             "${event.endpoint.groupOwnerAddress?.hostAddress ?: "-"}",
                     )
+
+                    if (!peerSessionStarted.compareAndSet(
+                            false,
+                            true,
+                        )
+                    ) {
+                        record(
+                            "WIFI_DIRECT_GROUP_FORMED_DUPLICATE " +
+                                "role=owner session_already_started=true",
+                        )
+                        return@startGroupOwner
+                    }
 
                     Thread {
                         runCatching {
@@ -261,6 +274,18 @@ class WifiDirectPairCourtActivity : Activity() {
                         "WIFI_DIRECT_GROUP_FORMED role=client " +
                             "owner_address=${ownerAddress ?: "-"}",
                     )
+
+                    if (!peerSessionStarted.compareAndSet(
+                            false,
+                            true,
+                        )
+                    ) {
+                        record(
+                            "WIFI_DIRECT_GROUP_FORMED_DUPLICATE " +
+                                "role=client session_already_started=true",
+                        )
+                        return@start
+                    }
 
                     Thread {
                         runCatching {
