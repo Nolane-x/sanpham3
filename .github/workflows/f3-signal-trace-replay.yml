@@ -1,0 +1,35 @@
+name: f3-signal-trace-replay
+
+on:
+  push:
+    paths:
+      - "crates/signal-trace-replay/**"
+      - "apps/signal-trace-replay-cli/**"
+      - "crates/signal-frontier/**"
+      - "Cargo.toml"
+      - ".github/workflows/f3-signal-trace-replay.yml"
+  pull_request:
+    paths:
+      - "crates/signal-trace-replay/**"
+      - "apps/signal-trace-replay-cli/**"
+      - "crates/signal-frontier/**"
+      - "Cargo.toml"
+      - ".github/workflows/f3-signal-trace-replay.yml"
+
+jobs:
+  replay:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy -p signal-trace-replay -p signal-trace-replay-cli --all-targets -- -D warnings
+      - run: cargo test -p signal-trace-replay
+      - run: cargo build -p signal-trace-replay-cli
