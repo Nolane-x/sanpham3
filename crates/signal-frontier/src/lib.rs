@@ -1128,6 +1128,106 @@ impl MechanicalChannel {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MechanicalImpulseTap {
+    pub delay_samples: usize,
+    pub gain: f32,
+}
+
+pub fn apply_mechanical_impulse_response(
+    samples: &[f32],
+    taps: &[MechanicalImpulseTap],
+) -> Result<Vec<f32>, SignalError> {
+    if taps.is_empty() {
+        return Err(SignalError::InvalidConfig(
+            "mechanical impulse response requires at least one tap",
+        ));
+    }
+    if taps.iter().any(|tap| !tap.gain.is_finite()) {
+        return Err(SignalError::InvalidConfig(
+            "mechanical impulse response gain must be finite",
+        ));
+    }
+
+    let mut output = vec![0.0_f32; samples.len()];
+    for (index, slot) in output.iter_mut().enumerate() {
+        let mut value = 0.0_f32;
+        for tap in taps {
+            if index >= tap.delay_samples {
+                value += samples[index - tap.delay_samples] * tap.gain;
+            }
+        }
+        *slot = value.clamp(-1.0, 1.0);
+    }
+    Ok(output)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VibrationMountProfile {
+    pub signal_gain: f32,
+    pub noise_scale: f32,
+}
+
+impl VibrationMountProfile {
+    pub fn flat_table() -> Self {
+        Self {
+            signal_gain: 0.95,
+            noise_scale: 1.00,
+        }
+    }
+
+    pub fn edge_contact() -> Self {
+        Self {
+            signal_gain: 0.72,
+            noise_scale: 1.20,
+        }
+    }
+
+    pub fn handheld() -> Self {
+        Self {
+            signal_gain: 0.52,
+            noise_scale: 1.80,
+        }
+    }
+
+    pub fn validate(self) -> Result<(), SignalError> {
+        if !self.signal_gain.is_finite() || !self.noise_scale.is_finite() {
+            return Err(SignalError::InvalidConfig(
+                "vibration mount profile parameters must be finite",
+            ));
+        }
+        if !(0.0 < self.signal_gain && self.signal_gain <= 1.5) {
+            return Err(SignalError::InvalidConfig(
+                "vibration mount signal gain is invalid",
+            ));
+        }
+        if !(0.0 < self.noise_scale && self.noise_scale <= 8.0) {
+            return Err(SignalError::InvalidConfig(
+                "vibration mount noise scale is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub fn apply_profiled_mechanical_channel(
+    samples: &[f32],
+    channel: MechanicalChannel,
+    profile: VibrationMountProfile,
+    seed: u64,
+) -> Result<Vec<f32>, SignalError> {
+    profile.validate()?;
+    apply_mechanical_channel(
+        samples,
+        MechanicalChannel {
+            gain: channel.gain * profile.signal_gain,
+            white_noise_amplitude:
+                channel.white_noise_amplitude * profile.noise_scale,
+        },
+        seed,
+    )
+}
+
 pub fn encode_vibration_ook(
     bits: &[u8],
     config: VibrationOokConfig,
@@ -1504,6 +1604,85 @@ mod tests {
                 "optical frame pixel length does not match dimensions",
             )),
         );
+    }
+
+    #[test]
+    fn vibration_roundtrips_with_resonance_and_flat_table_profile() {
+        let bits = payload();
+        let config = VibrationOokConfig::surface_2_5bps();
+        let encoded = encode_vibration_ook(&bits, config).unwrap();
+        let resonant = apply_mechanical_impulse_response(
+            &encoded,
+            &[
+                MechanicalImpulseTap {
+                    delay_samples: 0,
+                    gain: 0.90,
+                },
+                MechanicalImpulseTap {
+                    delay_samples: 3,
+                    gain: 0.10,
+                },
+                MechanicalImpulseTap {
+                    delay_samples: 8,
+                    gain: -0.03,
+                },
+            ],
+        )
+        .unwrap();
+        let impaired = apply_profiled_mechanical_channel(
+            &resonant,
+            MechanicalChannel {
+                gain: 0.62,
+                white_noise_amplitude: 0.025,
+            },
+            VibrationMountProfile::flat_table(),
+            0x051B_A710,
+        )
+        .unwrap();
+        let decoded =
+            decode_vibration_ook(&impaired, config).unwrap();
+
+        assert_eq!(decoded, bits);
+        assert_eq!(bit_error_count(&bits, &decoded), 0);
+    }
+
+    #[test]
+    fn mechanical_impulse_response_is_causal_and_deterministic() {
+        let input = vec![1.0_f32, 0.0, 0.0, 0.0, 0.0];
+        let taps = [
+            MechanicalImpulseTap {
+                delay_samples: 0,
+                gain: 0.6,
+            },
+            MechanicalImpulseTap {
+                delay_samples: 2,
+                gain: 0.2,
+            },
+        ];
+
+        let first =
+            apply_mechanical_impulse_response(&input, &taps).unwrap();
+        let second =
+            apply_mechanical_impulse_response(&input, &taps).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first, vec![0.6, 0.0, 0.2, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn mount_profiles_model_progressively_harder_contact() {
+        let flat = VibrationMountProfile::flat_table();
+        let edge = VibrationMountProfile::edge_contact();
+        let hand = VibrationMountProfile::handheld();
+
+        assert!(flat.signal_gain > edge.signal_gain);
+        assert!(edge.signal_gain > hand.signal_gain);
+        assert!(flat.noise_scale < edge.noise_scale);
+        assert!(edge.noise_scale < hand.noise_scale);
+
+        flat.validate().unwrap();
+        edge.validate().unwrap();
+        hand.validate().unwrap();
     }
 
     #[test]
