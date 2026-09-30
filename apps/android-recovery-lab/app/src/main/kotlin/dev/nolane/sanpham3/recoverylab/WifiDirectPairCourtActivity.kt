@@ -49,13 +49,13 @@ class WifiDirectPairCourtActivity : Activity() {
         }.start()
 
         runCatching {
-            require(
-                packageManager.hasSystemFeature(
-                    "android.hardware.wifi.direct",
-                ),
-            ) {
-                "android.hardware.wifi.direct missing"
-            }
+            val featureFlag = packageManager.hasSystemFeature(
+                "android.hardware.wifi.direct",
+            )
+            record(
+                "WIFI_DIRECT_CAPABILITY feature_flag=$featureFlag " +
+                    "api=${Build.VERSION.SDK_INT}",
+            )
 
             val missing = RecoveryLabPermissions
                 .peerLanPermissions(Build.VERSION.SDK_INT)
