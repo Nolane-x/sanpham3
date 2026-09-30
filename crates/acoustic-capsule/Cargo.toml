@@ -2,8 +2,7 @@
 name = "acoustic-capsule"
 version = "0.1.0"
 edition = "2021"
-description = "Authenticated replay-protected tiny request capsules for sanpham3 acoustic research"
+description = "SP3A compatibility wrapper over the shared sanpham3 tiny-capsule core"
 
 [dependencies]
-hmac = "0.13"
-sha2 = "0.11"
+tiny-capsule = { path = "../tiny-capsule" }
