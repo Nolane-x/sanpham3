@@ -1013,6 +1013,18 @@ pub struct OpticalScaleRegistration {
     pub scale_y: f32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct OpticalScaleBboxCandidate {
+    score: f32,
+    threshold: usize,
+    min_x: usize,
+    min_y: usize,
+    max_x: usize,
+    max_y: usize,
+    scale_x: f32,
+    scale_y: f32,
+}
+
 fn optical_scale_active_bbox(
     frame: &OpticalGrayFrame,
     symbol_count: usize,
@@ -1060,16 +1072,7 @@ fn optical_scale_active_bbox(
     let mut cumulative_max_x = 0_usize;
     let mut cumulative_max_y = 0_usize;
 
-    let mut best: Option<(
-        f32,
-        usize,
-        usize,
-        usize,
-        usize,
-        usize,
-        f32,
-        f32,
-    )> = None;
+    let mut best: Option<OpticalScaleBboxCandidate> = None;
 
     for threshold in (1..LEVELS).rev() {
         if counts[threshold] > 0 {
@@ -1119,48 +1122,38 @@ fn optical_scale_active_bbox(
         let score = balance + (coverage - 1.0).abs();
 
         let replace = best.as_ref().is_none_or(|current| {
-            score < current.0 - 1.0e-6
-                || ((score - current.0).abs() <= 1.0e-6
-                    && threshold < current.1)
+            score < current.score - 1.0e-6
+                || ((score - current.score).abs() <= 1.0e-6
+                    && threshold < current.threshold)
         });
 
         if replace {
-            best = Some((
+            best = Some(OpticalScaleBboxCandidate {
                 score,
                 threshold,
-                cumulative_min_x,
-                cumulative_min_y,
-                cumulative_max_x,
-                cumulative_max_y,
+                min_x: cumulative_min_x,
+                min_y: cumulative_min_y,
+                max_x: cumulative_max_x,
+                max_y: cumulative_max_y,
                 scale_x,
                 scale_y,
-            ));
+            });
         }
     }
 
-    let Some((
-        _,
-        _,
-        min_x,
-        min_y,
-        max_x,
-        max_y,
-        scale_x,
-        scale_y,
-    )) = best
-    else {
+    let Some(best) = best else {
         return Err(ReplayError::OpticalRegistrationFailed(
             "no activation threshold produced bounded optical geometry",
         ));
     };
 
     Ok((
-        min_x,
-        min_y,
-        max_x,
-        max_y,
-        scale_x,
-        scale_y,
+        best.min_x,
+        best.min_y,
+        best.max_x,
+        best.max_y,
+        best.scale_x,
+        best.scale_y,
     ))
 }
 
