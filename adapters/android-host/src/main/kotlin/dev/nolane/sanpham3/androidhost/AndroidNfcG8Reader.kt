@@ -13,6 +13,7 @@ data class AndroidNfcG8Evidence(
     val authenticatedPeerNodeId: Long,
     val challenge: ByteArray,
     val maxTransceiveLength: Int,
+    val benchmark: AndroidPeerBenchmarkEvidence,
 )
 
 sealed interface AndroidNfcReaderEvent {
@@ -32,6 +33,10 @@ class AndroidNfcG8Reader(
     private val nodeId: Long,
     peerKey: ByteArray,
 ) : Closeable, NfcAdapter.ReaderCallback {
+    companion object {
+        const val BENCHMARK_ROUNDS: Int = 16
+        const val BENCHMARK_PAYLOAD_BYTES: Int = 64
+    }
     private val key = peerKey.copyOf()
     private val active = AtomicBoolean(false)
     private var listener: ((AndroidNfcReaderEvent) -> Unit)? = null
@@ -191,10 +196,82 @@ class AndroidNfcG8Reader(
                 "NFC G8 ACK does not echo the original challenge"
             }
 
+            val benchmarkConfig = AndroidPeerBenchmarkConfig(
+                rounds = BENCHMARK_ROUNDS,
+                payloadBytes = BENCHMARK_PAYLOAD_BYTES,
+            )
+            val rtts = LongArray(benchmarkConfig.rounds)
+            val benchmarkStarted = System.nanoTime()
+
+            repeat(benchmarkConfig.rounds) { index ->
+                val payload =
+                    AndroidPeerSessionBenchmark.benchmarkPayload(
+                        sequence = index.toLong(),
+                        payloadBytes = benchmarkConfig.payloadBytes,
+                    )
+                val probe = AndroidPeerSessionNative.seal(
+                    sessionHandle,
+                    AndroidPeerSessionBenchmark.KIND_PROBE,
+                    payload,
+                )
+                require(
+                    probe.size <= AndroidNfcApdu.MAX_SHORT_PAYLOAD,
+                ) {
+                    "encrypted NFC benchmark probe exceeds short APDU budget"
+                }
+
+                val roundStarted = System.nanoTime()
+                val response = AndroidNfcApdu.parseSuccessResponse(
+                    isoDep.transceive(
+                        AndroidNfcApdu.command(
+                            AndroidNfcApdu.INS_FRAME,
+                            probe,
+                        ),
+                    ),
+                )
+                val roundFinished = System.nanoTime()
+                val openedBenchmark =
+                    AndroidPeerSessionNative.open(
+                        sessionHandle,
+                        response,
+                    )
+                require(openedBenchmark.isNotEmpty()) {
+                    "NFC benchmark ACK is empty"
+                }
+                require(
+                    (openedBenchmark[0].toInt() and 0xff) ==
+                        AndroidPeerSessionBenchmark.KIND_ACK,
+                ) {
+                    "NFC benchmark response has wrong kind"
+                }
+                val echoed = openedBenchmark.copyOfRange(
+                    1,
+                    openedBenchmark.size,
+                )
+                require(echoed.contentEquals(payload)) {
+                    "NFC benchmark payload mismatch at round $index"
+                }
+
+                rtts[index] =
+                    (roundFinished - roundStarted).coerceAtLeast(1L)
+            }
+
+            val benchmarkFinished = System.nanoTime()
+            val benchmark =
+                AndroidPeerSessionBenchmark.benchmarkEvidence(
+                    peerNodeId = peerNodeId,
+                    config = benchmarkConfig,
+                    elapsedNanos =
+                        (benchmarkFinished - benchmarkStarted)
+                            .coerceAtLeast(1L),
+                    rtts = rtts,
+                )
+
             return AndroidNfcG8Evidence(
                 authenticatedPeerNodeId = peerNodeId,
                 challenge = challenge,
                 maxTransceiveLength = isoDep.maxTransceiveLength,
+                benchmark = benchmark,
             )
         } finally {
             pendingHandle?.let {
