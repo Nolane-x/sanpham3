@@ -223,14 +223,14 @@ pub fn parse_pcm16_wav(bytes: &[u8]) -> Result<Pcm16Wav, ReplayError> {
     }
 
     let frame_bytes = channels as usize * 2;
-    if data.len().is_multiple_of(frame_bytes) == false {
+    if !data.len().is_multiple_of(frame_bytes) {
         return Err(ReplayError::InvalidWav(
             "PCM data is not aligned to whole frames",
         ));
     }
 
     let mut samples = Vec::with_capacity(data.len() / 2);
-    for chunk in data.chunks_exact(2) {
+    for chunk in data.as_chunks::<2>().0 {
         samples.push(i16::from_le_bytes([chunk[0], chunk[1]]));
     }
 
