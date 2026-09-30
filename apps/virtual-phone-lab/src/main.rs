@@ -379,8 +379,14 @@ fn optical_synthetic() -> Result<(), String> {
         perspective,
     )
     .map_err(|error| format!("{error:?}"))?;
+    let banded =
+        signal_frontier::apply_optical_rolling_shutter_banding(
+            &warped,
+            signal_frontier::OpticalRollingShutterBanding::phone_pwm_baseline(),
+        )
+        .map_err(|error| format!("{error:?}"))?;
     let blurred = signal_frontier::apply_optical_box_blur(
-        &warped,
+        &banded,
         1,
     )
     .map_err(|error| format!("{error:?}"))?;
@@ -405,7 +411,7 @@ fn optical_synthetic() -> Result<(), String> {
     let erasures = sampled.iter().filter(|symbol| symbol.is_none()).count();
 
     println!(
-        "OPTICAL_SYNTHETIC bits={} symbols={} frame={}x{} erasures={} errors={} perspective=true blur_radius=1 exposure_gamma=true",
+        "OPTICAL_SYNTHETIC bits={} symbols={} frame={}x{} erasures={} errors={} perspective=true rolling_shutter=true blur_radius=1 exposure_gamma=true",
         bits.len(),
         symbols.len(),
         photographed.width,
