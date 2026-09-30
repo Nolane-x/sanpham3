@@ -489,8 +489,18 @@ fn acoustic_synthetic() -> Result<(), String> {
     let drifted =
         signal_frontier::apply_clock_drift_resampling(&multipath, 80)
             .map_err(|error| format!("{error:?}"))?;
-    let impaired = signal_frontier::apply_acoustic_channel(
+    let agc = signal_frontier::apply_acoustic_agc(
         &drifted,
+        signal_frontier::AcousticAgcConfig::phone_baseline(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let nonlinear = signal_frontier::apply_acoustic_nonlinearity(
+        &agc,
+        signal_frontier::AcousticNonlinearity::phone_baseline(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let impaired = signal_frontier::apply_acoustic_channel(
+        &nonlinear,
         signal_frontier::AcousticChannel {
             gain: 0.90,
             white_noise_amplitude: 0.025,
@@ -505,7 +515,7 @@ fn acoustic_synthetic() -> Result<(), String> {
     let errors = signal_frontier::bit_error_count(&bits, &decoded.bits);
 
     println!(
-        "ACOUSTIC_SYNTHETIC bits={} samples={} errors={} min_confidence={:.4} multipath=true drift_ppm=80",
+        "ACOUSTIC_SYNTHETIC bits={} samples={} errors={} min_confidence={:.4} multipath=true drift_ppm=80 agc=true nonlinear=true",
         bits.len(),
         impaired.len(),
         errors,
