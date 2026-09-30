@@ -154,6 +154,39 @@ Prototype support:
 OWE / OWE transition are currently rejected instead of being silently
 misclassified as open networks.
 
+## Authenticated stream benchmark
+
+After the encrypted G8 challenge/ACK succeeds, the current Recovery Lab court
+runs the shared `AndroidPeerSessionBenchmark` before recording PASS.
+
+Reference workload:
+
+```text
+rounds        = 32
+payload_bytes = 1024
+```
+
+The client evidence records:
+
+- benchmark rounds and application payload bytes;
+- total benchmark elapsed time;
+- minimum RTT;
+- median RTT;
+- p95 RTT;
+- maximum RTT;
+- one-way useful bytes;
+- one-way useful bits/s;
+- round-trip useful bits/s.
+
+The server records the same configured workload and total serve duration.
+
+If the benchmark message kind, payload length, sequence or exact echoed payload
+does not match, the physical court run fails instead of recording a partial
+PASS.
+
+The reported useful bits/s is authenticated application-payload throughput.
+It is not raw Wi-Fi PHY/link throughput.
+
 ## Required evidence
 
 Capture on both devices:

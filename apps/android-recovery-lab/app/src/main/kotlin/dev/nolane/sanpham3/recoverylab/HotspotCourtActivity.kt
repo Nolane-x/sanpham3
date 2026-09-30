@@ -21,7 +21,9 @@ import dev.nolane.sanpham3.androidhost.AndroidLocalHotspotClientDataPath
 import dev.nolane.sanpham3.androidhost.AndroidLocalHotspotClientEvent
 import dev.nolane.sanpham3.androidhost.AndroidLocalHotspotServerDataPath
 import dev.nolane.sanpham3.androidhost.AndroidLocalHotspotServerEvent
+import dev.nolane.sanpham3.androidhost.AndroidPeerBenchmarkConfig
 import dev.nolane.sanpham3.androidhost.AndroidPeerSession
+import dev.nolane.sanpham3.androidhost.AndroidPeerSessionBenchmark
 import dev.nolane.sanpham3.androidhost.acceptPeerSession
 import dev.nolane.sanpham3.androidhost.connectPeerSession
 import java.io.Closeable
@@ -38,6 +40,10 @@ class HotspotCourtActivity : Activity() {
         private const val permissionRequestCode = 7101
         private const val defaultPort = 45125
         private const val timeoutMillis = 120_000
+        private val benchmarkConfig = AndroidPeerBenchmarkConfig(
+            rounds = 32,
+            payloadBytes = 1024,
+        )
         private val evidenceStamp = DateTimeFormatter
             .ofPattern("yyyyMMdd'T'HHmmss'Z'")
             .withZone(ZoneOffset.UTC)
@@ -404,10 +410,21 @@ class HotspotCourtActivity : Activity() {
             val g8Ms = (System.nanoTime() - acceptAt) / 1_000_000
             val challenge = LabCodec.hex(evidence.challenge)
 
+            val benchmarkAt = System.nanoTime()
+            AndroidPeerSessionBenchmark.serve(
+                session,
+                benchmarkConfig,
+            )
+            val benchmarkServeMs =
+                (System.nanoTime() - benchmarkAt) / 1_000_000
+
             appendLog(
                 "G8_PASS role=server carrier=local_only_hotspot " +
                     "local_node=${config.nodeId} peer_node=${evidence.peerNodeId} " +
-                    "challenge=$challenge g8_wait_ms=$g8Ms",
+                    "challenge=$challenge g8_wait_ms=$g8Ms " +
+                    "benchmark_rounds=${benchmarkConfig.rounds} " +
+                    "benchmark_payload_bytes=${benchmarkConfig.payloadBytes} " +
+                    "benchmark_serve_ms=$benchmarkServeMs",
             )
             saveEvidence(
                 "g8-hotspot-server-pass",
@@ -420,6 +437,9 @@ class HotspotCourtActivity : Activity() {
                     "authenticated_peer_node=${evidence.peerNodeId}",
                     "challenge_hex=$challenge",
                     "g8_wait_ms=$g8Ms",
+                    "benchmark_rounds=${benchmarkConfig.rounds}",
+                    "benchmark_payload_bytes=${benchmarkConfig.payloadBytes}",
+                    "benchmark_serve_ms=$benchmarkServeMs",
                     "result=PASS",
                 ),
             )
@@ -578,11 +598,22 @@ class HotspotCourtActivity : Activity() {
             val evidence = AndroidG8PairCourt.runClient(session)
             val g8Ms = (System.nanoTime() - connectAt) / 1_000_000
             val challenge = LabCodec.hex(evidence.challenge)
+            val benchmark = AndroidPeerSessionBenchmark.runClient(
+                session,
+                benchmarkConfig,
+            )
 
             appendLog(
                 "G8_PASS role=client carrier=local_only_hotspot " +
                     "local_node=${config.nodeId} peer_node=${evidence.peerNodeId} " +
-                    "challenge=$challenge join_ms=$joinMs g8_ms=$g8Ms",
+                    "challenge=$challenge join_ms=$joinMs g8_ms=$g8Ms " +
+                    "benchmark_rounds=${benchmark.rounds} " +
+                    "payload_bytes=${benchmark.payloadBytes} " +
+                    "rtt_min_ns=${benchmark.minRttNanos} " +
+                    "rtt_median_ns=${benchmark.medianRttNanos} " +
+                    "rtt_p95_ns=${benchmark.p95RttNanos} " +
+                    "rtt_max_ns=${benchmark.maxRttNanos} " +
+                    "one_way_useful_bps=${benchmark.oneWayUsefulBitsPerSecond}",
             )
             saveEvidence(
                 "g8-hotspot-client-pass",
@@ -595,6 +626,16 @@ class HotspotCourtActivity : Activity() {
                     "authenticated_peer_node=${evidence.peerNodeId}",
                     "challenge_hex=$challenge",
                     "g8_ms=$g8Ms",
+                    "benchmark_rounds=${benchmark.rounds}",
+                    "benchmark_payload_bytes=${benchmark.payloadBytes}",
+                    "benchmark_elapsed_ns=${benchmark.elapsedNanos}",
+                    "benchmark_rtt_min_ns=${benchmark.minRttNanos}",
+                    "benchmark_rtt_median_ns=${benchmark.medianRttNanos}",
+                    "benchmark_rtt_p95_ns=${benchmark.p95RttNanos}",
+                    "benchmark_rtt_max_ns=${benchmark.maxRttNanos}",
+                    "benchmark_one_way_useful_bytes=${benchmark.oneWayUsefulBytes}",
+                    "benchmark_one_way_useful_bps=${benchmark.oneWayUsefulBitsPerSecond}",
+                    "benchmark_round_trip_useful_bps=${benchmark.roundTripUsefulBitsPerSecond}",
                     "result=PASS",
                 ),
             )
