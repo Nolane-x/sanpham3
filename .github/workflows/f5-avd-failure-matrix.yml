@@ -1,0 +1,157 @@
+name: f5-avd-failure-matrix
+
+on:
+  push:
+    paths:
+      - "scripts/virtual-phone-avd-failure-matrix.sh"
+      - "docs/F5-AVD-FAILURE-DOZE-MATRIX.md"
+      - ".github/workflows/f5-avd-failure-matrix.yml"
+  pull_request:
+    paths:
+      - "scripts/virtual-phone-avd-failure-matrix.sh"
+      - "docs/F5-AVD-FAILURE-DOZE-MATRIX.md"
+      - ".github/workflows/f5-avd-failure-matrix.yml"
+
+jobs:
+  failure-matrix-state-machine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Bash syntax
+        run: bash -n scripts/virtual-phone-avd-failure-matrix.sh
+
+      - name: Build fake adb
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATE="$RUNNER_TEMP/fake-adb-failure-state"
+          mkdir -p "$STATE"
+          printf 'ACTIVE\n' >"$STATE/emulator-5554-doze"
+          printf 'ACTIVE\n' >"$STATE/emulator-5556-doze"
+
+          cat >"$RUNNER_TEMP/fake-adb-failure" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          serial=""
+          if [[ "${1:-}" == "-s" ]]; then
+            serial="$2"
+            shift 2
+          fi
+
+          command="${1:-}"
+          shift || true
+          doze_file="$FAKE_ADB_FAILURE_STATE/${serial}-doze"
+
+          case "$command" in
+            get-state)
+              echo device
+              ;;
+            shell)
+              sub="${1:-}"
+              shift || true
+              case "$sub" in
+                pm)
+                  action="${1:-}"
+                  shift || true
+                  if [[ "$action" == "path" ]]; then
+                    echo "package:/data/app/com.example.app/base.apk"
+                  else
+                    echo "unsupported fake pm action: $action" >&2
+                    exit 2
+                  fi
+                  ;;
+                dumpsys)
+                  service="${1:-}"
+                  shift || true
+                  case "$service" in
+                    deviceidle)
+                      action="${1:-}"
+                      shift || true
+                      case "$action" in
+                        get)
+                          [[ "${1:-}" == "deep" ]] || exit 2
+                          cat "$doze_file"
+                          ;;
+                        force-idle)
+                          [[ "${1:-}" == "deep" ]] || exit 2
+                          printf 'IDLE\n' >"$doze_file"
+                          echo "Now forced in to deep idle mode"
+                          ;;
+                        unforce)
+                          printf 'ACTIVE\n' >"$doze_file"
+                          echo "Light state: ACTIVE, deep state: ACTIVE"
+                          ;;
+                        "")
+                          state="$(cat "$doze_file")"
+                          echo "mState=$state"
+                          ;;
+                        *)
+                          echo "unsupported fake deviceidle action: $action" >&2
+                          exit 2
+                          ;;
+                      esac
+                      ;;
+                    package)
+                      echo "Package [com.example.app]"
+                      ;;
+                    activity)
+                      echo "ACTIVITY MANAGER RUNNING PROCESSES"
+                      ;;
+                    connectivity)
+                      echo "NetworkAgentInfo fake"
+                      ;;
+                    *)
+                      echo "fake dumpsys service=$service serial=$serial"
+                      ;;
+                  esac
+                  ;;
+                am)
+                  exit 0
+                  ;;
+                monkey)
+                  echo "Events injected: 1"
+                  ;;
+                *)
+                  echo "unsupported fake shell command: $sub" >&2
+                  exit 2
+                  ;;
+              esac
+              ;;
+            logcat)
+              echo "fake logcat serial=$serial"
+              ;;
+            *)
+              echo "unsupported fake adb command: $command" >&2
+              exit 2
+              ;;
+          esac
+          EOF
+          chmod +x "$RUNNER_TEMP/fake-adb-failure"
+
+      - name: Exercise restart and Doze restore matrix
+        shell: bash
+        env:
+          FAKE_ADB_FAILURE_STATE: ${{ runner.temp }}/fake-adb-failure-state
+          SP3_ADB_BIN: ${{ runner.temp }}/fake-adb-failure
+          SP3_MATRIX_WAIT_MS: "0"
+          SP3_REQUIRE_DOZE: "1"
+          SP3_EVIDENCE_LEVEL: MODEL_ONLY_FAKE_ADB
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/f5-failure-evidence"
+          bash scripts/virtual-phone-avd-failure-matrix.sh \
+            emulator-5554 emulator-5556 com.example.app "$evidence" \
+            | tee "$RUNNER_TEMP/f5-failure-output.txt"
+
+          grep -q 'F5_AVD_FAILURE_MATRIX_PASS' "$RUNNER_TEMP/f5-failure-output.txt"
+          grep -q 'restarts=2' "$RUNNER_TEMP/f5-failure-output.txt"
+          grep -q 'doze=2' "$RUNNER_TEMP/f5-failure-output.txt"
+          grep -q 'PASS serial=emulator-5554 scenario=app_restart' "$evidence/matrix-results.txt"
+          grep -q 'PASS serial=emulator-5556 scenario=deep_doze' "$evidence/matrix-results.txt"
+          grep -q 'evidence_level=MODEL_ONLY_FAKE_ADB' "$evidence/metadata.txt"
+          test -s "$evidence/SHA256SUMS"
+
+          test "$(cat "$FAKE_ADB_FAILURE_STATE/emulator-5554-doze")" = ACTIVE
+          test "$(cat "$FAKE_ADB_FAILURE_STATE/emulator-5556-doze")" = ACTIVE
