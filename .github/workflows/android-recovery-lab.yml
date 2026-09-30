@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - "apps/android-recovery-lab/**"
+      - "scripts/virtual-phone-avd-exact-network.sh"
       - "adapters/android-host/**"
       - "adapters/android-peer-session-jni/**"
       - "crates/peer-session/**"
@@ -11,6 +12,7 @@ on:
   pull_request:
     paths:
       - "apps/android-recovery-lab/**"
+      - "scripts/virtual-phone-avd-exact-network.sh"
       - "adapters/android-host/**"
       - "adapters/android-peer-session-jni/**"
       - "crates/peer-session/**"
@@ -69,6 +71,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.6.0"
+
+      - name: Validate exact-Network AVD court script
+        run: bash -n scripts/virtual-phone-avd-exact-network.sh
 
       - name: Unit test and assemble Recovery Lab APK
         run: >
