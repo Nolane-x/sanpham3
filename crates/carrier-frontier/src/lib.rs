@@ -305,6 +305,132 @@ impl AndroidPermissionProfile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AndroidOemQuirkProfile {
+    pub background_wifi_peer_unreliable: bool,
+    pub background_bluetooth_unreliable: bool,
+    pub local_hotspot_unreliable: bool,
+    pub deep_doze_peer_radios_unreliable: bool,
+}
+
+impl AndroidOemQuirkProfile {
+    pub fn reference() -> Self {
+        Self {
+            background_wifi_peer_unreliable: false,
+            background_bluetooth_unreliable: false,
+            local_hotspot_unreliable: false,
+            deep_doze_peer_radios_unreliable: false,
+        }
+    }
+
+    pub fn aggressive_background() -> Self {
+        Self {
+            background_wifi_peer_unreliable: true,
+            background_bluetooth_unreliable: true,
+            local_hotspot_unreliable: true,
+            deep_doze_peer_radios_unreliable: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AndroidExecutionProfile {
+    pub app_foreground: bool,
+    pub background_restricted: bool,
+    pub deep_doze: bool,
+    pub battery_saver: bool,
+}
+
+impl AndroidExecutionProfile {
+    pub fn foreground() -> Self {
+        Self {
+            app_foreground: true,
+            background_restricted: false,
+            deep_doze: false,
+            battery_saver: false,
+        }
+    }
+
+    pub fn restricted_background() -> Self {
+        Self {
+            app_foreground: false,
+            background_restricted: true,
+            deep_doze: false,
+            battery_saver: false,
+        }
+    }
+
+    pub fn deep_doze() -> Self {
+        Self {
+            app_foreground: false,
+            background_restricted: true,
+            deep_doze: true,
+            battery_saver: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AndroidThermalLevel {
+    Nominal,
+    Warm,
+    Hot,
+    Critical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AndroidResourceState {
+    pub battery_percent: u8,
+    pub charging: bool,
+    pub thermal: AndroidThermalLevel,
+}
+
+impl AndroidResourceState {
+    pub fn nominal() -> Self {
+        Self {
+            battery_percent: 100,
+            charging: false,
+            thermal: AndroidThermalLevel::Nominal,
+        }
+    }
+
+    pub fn validate(self) -> Result<(), &'static str> {
+        if self.battery_percent > 100 {
+            return Err("battery_percent must be <= 100");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AndroidResourceMode {
+    Normal,
+    Conserve,
+    Critical,
+}
+
+pub fn android_resource_mode(
+    execution: AndroidExecutionProfile,
+    resources: AndroidResourceState,
+) -> Result<AndroidResourceMode, &'static str> {
+    resources.validate()?;
+
+    if resources.thermal == AndroidThermalLevel::Critical
+        || (!resources.charging && resources.battery_percent <= 3)
+    {
+        return Ok(AndroidResourceMode::Critical);
+    }
+
+    if resources.thermal >= AndroidThermalLevel::Hot
+        || execution.battery_saver
+        || (!resources.charging && resources.battery_percent <= 10)
+    {
+        return Ok(AndroidResourceMode::Conserve);
+    }
+
+    Ok(AndroidResourceMode::Normal)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VirtualAndroidPhone {
     pub api_level: u16,
     pub hardware: AndroidHardwareProfile,
@@ -312,6 +438,76 @@ pub struct VirtualAndroidPhone {
 }
 
 impl VirtualAndroidPhone {
+    pub fn capabilities_for_execution(
+        &self,
+        execution: AndroidExecutionProfile,
+        quirks: AndroidOemQuirkProfile,
+        resources: AndroidResourceState,
+    ) -> Result<DeviceCapabilities, &'static str> {
+        let mut caps = self.capabilities();
+
+        if !execution.app_foreground && execution.background_restricted {
+            caps.wifi_direct = false;
+            caps.wifi_aware = false;
+            caps.local_only_hotspot = false;
+        }
+
+        if !execution.app_foreground
+            && quirks.background_wifi_peer_unreliable
+        {
+            caps.wifi_direct = false;
+            caps.wifi_aware = false;
+            caps.local_only_hotspot = false;
+        }
+
+        if !execution.app_foreground
+            && quirks.background_bluetooth_unreliable
+        {
+            caps.bluetooth_le = false;
+            caps.ble_l2cap_coc = false;
+            caps.bluetooth_classic = false;
+        }
+
+        if quirks.local_hotspot_unreliable {
+            caps.local_only_hotspot = false;
+        }
+
+        if execution.deep_doze
+            && quirks.deep_doze_peer_radios_unreliable
+        {
+            caps.wifi_direct = false;
+            caps.wifi_aware = false;
+            caps.local_only_hotspot = false;
+            caps.bluetooth_le = false;
+            caps.ble_l2cap_coc = false;
+            caps.bluetooth_classic = false;
+        }
+
+        match android_resource_mode(execution, resources)? {
+            AndroidResourceMode::Normal => {}
+            AndroidResourceMode::Conserve => {
+                // Conservative policy: nontraditional active transducers are
+                // suppressed first. This is a project policy default, not a
+                // measured OEM energy claim.
+                caps.microphone = false;
+                caps.camera = false;
+                caps.vibrator = false;
+            }
+            AndroidResourceMode::Critical => {
+                caps.wifi_direct = false;
+                caps.wifi_aware = false;
+                caps.local_only_hotspot = false;
+                caps.ble_l2cap_coc = false;
+                caps.bluetooth_classic = false;
+                caps.microphone = false;
+                caps.camera = false;
+                caps.vibrator = false;
+            }
+        }
+
+        Ok(caps)
+    }
+
     pub fn capabilities(&self) -> DeviceCapabilities {
         let wifi_permission = if self.api_level >= 33 {
             self.permissions.nearby_wifi_devices
@@ -1404,6 +1600,126 @@ mod tests {
         assert!(!api33.wifi_direct);
         assert!(!api33.wifi_aware);
         assert!(!api33.local_only_hotspot);
+    }
+
+    #[test]
+    fn android_execution_constraints_only_remove_capabilities() {
+        let phone = VirtualAndroidPhone {
+            api_level: 36,
+            hardware: AndroidHardwareProfile::broad_phone(),
+            permissions: AndroidPermissionProfile::all_granted(),
+        };
+        let base = phone.capabilities();
+
+        let constrained = phone
+            .capabilities_for_execution(
+                AndroidExecutionProfile::restricted_background(),
+                AndroidOemQuirkProfile::aggressive_background(),
+                AndroidResourceState {
+                    battery_percent: 8,
+                    charging: false,
+                    thermal: AndroidThermalLevel::Hot,
+                },
+            )
+            .unwrap();
+
+        assert!(!constrained.wifi_direct);
+        assert!(!constrained.wifi_aware);
+        assert!(!constrained.bluetooth_le);
+        assert!(!constrained.bluetooth_classic);
+        assert!(!constrained.microphone);
+        assert!(!constrained.camera);
+        assert!(!constrained.vibrator);
+
+        assert!(!constrained.wifi_direct || base.wifi_direct);
+        assert!(!constrained.bluetooth_le || base.bluetooth_le);
+        assert!(!constrained.microphone || base.microphone);
+        assert!(!constrained.camera || base.camera);
+        assert!(!constrained.usb || base.usb);
+    }
+
+    #[test]
+    fn clean_foreground_profile_preserves_base_capabilities() {
+        let phone = VirtualAndroidPhone {
+            api_level: 36,
+            hardware: AndroidHardwareProfile::broad_phone(),
+            permissions: AndroidPermissionProfile::all_granted(),
+        };
+        let base = phone.capabilities();
+        let effective = phone
+            .capabilities_for_execution(
+                AndroidExecutionProfile::foreground(),
+                AndroidOemQuirkProfile::reference(),
+                AndroidResourceState::nominal(),
+            )
+            .unwrap();
+
+        assert_eq!(effective, base);
+    }
+
+    #[test]
+    fn critical_resource_mode_blocks_high_cost_carriers_conservatively() {
+        let phone = VirtualAndroidPhone {
+            api_level: 36,
+            hardware: AndroidHardwareProfile::broad_phone(),
+            permissions: AndroidPermissionProfile::all_granted(),
+        };
+
+        let critical = phone
+            .capabilities_for_execution(
+                AndroidExecutionProfile::foreground(),
+                AndroidOemQuirkProfile::reference(),
+                AndroidResourceState {
+                    battery_percent: 2,
+                    charging: false,
+                    thermal: AndroidThermalLevel::Nominal,
+                },
+            )
+            .unwrap();
+
+        assert!(!critical.wifi_direct);
+        assert!(!critical.ble_l2cap_coc);
+        assert!(!critical.bluetooth_classic);
+        assert!(!CarrierProfile::baseline(
+            CarrierKind::AcousticNearUltrasonic,
+        )
+        .supported_by(&critical));
+        assert!(!CarrierProfile::baseline(
+            CarrierKind::OpticalScreenCamera,
+        )
+        .supported_by(&critical));
+        assert!(!CarrierProfile::baseline(
+            CarrierKind::VibrationSurface,
+        )
+        .supported_by(&critical));
+        assert!(critical.usb);
+    }
+
+    #[test]
+    fn charging_prevents_low_battery_alone_from_forcing_conserve_mode() {
+        let mode = android_resource_mode(
+            AndroidExecutionProfile::foreground(),
+            AndroidResourceState {
+                battery_percent: 2,
+                charging: true,
+                thermal: AndroidThermalLevel::Nominal,
+            },
+        )
+        .unwrap();
+        assert_eq!(mode, AndroidResourceMode::Normal);
+    }
+
+    #[test]
+    fn battery_percent_above_100_is_rejected() {
+        assert!(android_resource_mode(
+            AndroidExecutionProfile::foreground(),
+            AndroidResourceState {
+                battery_percent: 101,
+                charging: false,
+                thermal: AndroidThermalLevel::Nominal,
+            },
+        )
+        .is_err());
     }
 
     #[test]
