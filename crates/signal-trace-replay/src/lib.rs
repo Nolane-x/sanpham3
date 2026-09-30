@@ -881,26 +881,25 @@ pub fn register_optical_translation_scale(
         ));
     }
 
-    let anisotropy =
-        (scale_x - scale_y).abs() / scale_x.max(scale_y);
-    if anisotropy > 0.12 {
-        return Err(ReplayError::OpticalRegistrationFailed(
-            "non-uniform scale exceeds baseline tolerance",
-        ));
-    }
-
-    let scale = (scale_x + scale_y) * 0.5;
-    let scaled_quiet = (quiet_pixels as f32 * scale).round() as usize;
-    if min_x < scaled_quiet || min_y < scaled_quiet {
+    // Camera pipelines can resize/crop the luma plane differently on the two
+    // axes. Treat X/Y scale independently, but keep each axis inside the same
+    // bounded research range enforced above.
+    let scaled_quiet_x =
+        (quiet_pixels as f32 * scale_x).round() as usize;
+    let scaled_quiet_y =
+        (quiet_pixels as f32 * scale_y).round() as usize;
+    if min_x < scaled_quiet_x || min_y < scaled_quiet_y {
         return Err(ReplayError::OpticalRegistrationFailed(
             "scaled grid is too close to source-frame edge",
         ));
     }
 
-    let source_origin_x = min_x - scaled_quiet;
-    let source_origin_y = min_y - scaled_quiet;
-    let source_width = (target_width as f32 * scale).round() as usize;
-    let source_height = (target_height as f32 * scale).round() as usize;
+    let source_origin_x = min_x - scaled_quiet_x;
+    let source_origin_y = min_y - scaled_quiet_y;
+    let source_width =
+        (target_width as f32 * scale_x).round() as usize;
+    let source_height =
+        (target_height as f32 * scale_y).round() as usize;
 
     if source_width == 0 || source_height == 0 {
         return Err(ReplayError::OpticalRegistrationFailed(
@@ -1324,6 +1323,71 @@ mod tests {
             height,
             pixels,
         }
+    }
+
+    #[test]
+    fn optical_scale_registration_supports_bounded_axis_scaling() {
+        use signal_frontier::{
+            encode_optical_repetition, render_optical_cells,
+        };
+
+        let bits = vec![
+            1, 0, 1, 1, 0, 0, 1, 0,
+            1, 1, 0, 1, 0, 1, 0, 0,
+        ];
+        let repetition = OpticalRepetitionConfig::robust_default();
+        let grid = OpticalGridConfig::camera_baseline();
+        let symbols =
+            encode_optical_repetition(&bits, repetition).unwrap();
+        let frame = render_optical_cells(&symbols, grid).unwrap();
+
+        let width = frame.width * 3 / 2;
+        let height = frame.height * 2;
+        let mut scaled = OpticalGrayFrame {
+            width,
+            height,
+            pixels: vec![0.0; width * height],
+        };
+        for y in 0..height {
+            let source_y = (y * frame.height / height)
+                .min(frame.height - 1);
+            for x in 0..width {
+                let source_x = (x * frame.width / width)
+                    .min(frame.width - 1);
+                scaled.pixels[y * width + x] =
+                    frame.pixels[source_y * frame.width + source_x];
+            }
+        }
+
+        let source = embed_optical_frame(
+            &scaled,
+            scaled.width + 96,
+            scaled.height + 88,
+            41,
+            33,
+        );
+
+        let (registered, info) =
+            register_optical_translation_scale(
+                &source,
+                symbols.len(),
+                grid,
+            )
+            .unwrap();
+
+        assert!((info.scale_x - 1.5).abs() < 0.04);
+        assert!((info.scale_y - 2.0).abs() < 0.04);
+
+        let decoded = decode_optical_cells(
+            &registered,
+            symbols.len(),
+            grid,
+            None,
+        )
+        .unwrap();
+        let logical =
+            decode_optical_repetition(&decoded, repetition).unwrap();
+        assert_eq!(bit_error_count(&bits, &logical), 0);
     }
 
     #[test]
