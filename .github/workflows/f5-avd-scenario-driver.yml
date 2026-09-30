@@ -122,7 +122,9 @@ jobs:
         run: |
           set -euo pipefail
           evidence="$RUNNER_TEMP/f5-evidence"
-          scripts/virtual-phone-avd-scenarios.sh             emulator-5554 emulator-5556 com.example.app "$evidence"             | tee "$RUNNER_TEMP/f5-output.txt"
+          bash scripts/virtual-phone-avd-scenarios.sh \
+            emulator-5554 emulator-5556 com.example.app "$evidence" \
+            | tee "$RUNNER_TEMP/f5-output.txt"
 
           grep -q 'F5_AVD_SCENARIO_PASS' "$RUNNER_TEMP/f5-output.txt"
           grep -q 'exercised=2' "$RUNNER_TEMP/f5-output.txt"
