@@ -155,12 +155,12 @@ class RecordedTraceCaptureActivity : Activity() {
                     recorder?.stop()
                     stream.fd.sync()
 
-                    val dataBytes = samplesWritten
-                        .checked_mul(2)
-                        ?: error("WAV data size overflow")
-                    check(dataBytes <= UInt.MAX_VALUE.toLong()) {
+                    check(
+                        samplesWritten <= UInt.MAX_VALUE.toLong() / 2L,
+                    ) {
                         "WAV data exceeds RIFF32 bound"
                     }
+                    val dataBytes = samplesWritten * 2L
 
                     stream.channel.position(0)
                     stream.write(
