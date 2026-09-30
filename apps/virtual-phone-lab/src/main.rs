@@ -433,9 +433,31 @@ fn vibration_synthetic() -> Result<(), String> {
         config,
     )
     .map_err(|error| format!("{error:?}"))?;
-    let impaired = signal_frontier::apply_mechanical_channel(
+    let resonant = signal_frontier::apply_mechanical_impulse_response(
         &encoded,
-        signal_frontier::MechanicalChannel::shared_table(),
+        &[
+            signal_frontier::MechanicalImpulseTap {
+                delay_samples: 0,
+                gain: 0.90,
+            },
+            signal_frontier::MechanicalImpulseTap {
+                delay_samples: 3,
+                gain: 0.10,
+            },
+            signal_frontier::MechanicalImpulseTap {
+                delay_samples: 8,
+                gain: -0.03,
+            },
+        ],
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let impaired = signal_frontier::apply_profiled_mechanical_channel(
+        &resonant,
+        signal_frontier::MechanicalChannel {
+            gain: 0.62,
+            white_noise_amplitude: 0.025,
+        },
+        signal_frontier::VibrationMountProfile::flat_table(),
         99,
     )
     .map_err(|error| format!("{error:?}"))?;
@@ -447,7 +469,7 @@ fn vibration_synthetic() -> Result<(), String> {
     let errors = signal_frontier::bit_error_count(&bits, &decoded);
 
     println!(
-        "VIBRATION_SYNTHETIC bits={} samples={} errors={}",
+        "VIBRATION_SYNTHETIC bits={} samples={} errors={} resonance=true mount=flat_table",
         bits.len(),
         impaired.len(),
         errors,
