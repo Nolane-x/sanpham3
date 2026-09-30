@@ -74,10 +74,40 @@ require_avd() {
 
   adb_run "$serial" shell pm path "$PACKAGE" >/dev/null
 
-  if ! adb_run "$serial" shell pm list features       | tr -d '\r'       | grep -q 'feature:android.hardware.wifi.direct'; then
-    echo "$serial lacks android.hardware.wifi.direct" >&2
+  local features feature_flag p2p_service location_mode
+  features="$(adb_run "$serial" shell pm list features | tr -d '\r')"
+  feature_flag=false
+  if grep -q 'feature:android.hardware.wifi.direct' <<<"$features"; then
+    feature_flag=true
+  fi
+
+  adb_run "$serial" shell svc wifi enable >/dev/null 2>&1 || true
+  if ! adb_run "$serial" shell cmd location set-location-enabled true \
+      >/dev/null 2>&1; then
+    adb_run "$serial" shell settings put secure location_mode 3
+  fi
+  sleep 2
+
+  location_mode="$(
+    adb_run "$serial" shell settings get secure location_mode \
+      | tr -d '\r'
+  )"
+  if [[ -z "$location_mode" || "$location_mode" == "0" ]]; then
+    echo "$serial location mode is disabled" >&2
     return 1
   fi
+
+  p2p_service="$(
+    adb_run "$serial" shell service check wifip2p 2>&1 \
+      | tr -d '\r' \
+      || true
+  )"
+  if ! grep -qi 'found' <<<"$p2p_service"; then
+    echo "$serial lacks a live wifip2p service: $p2p_service" >&2
+    return 1
+  fi
+
+  echo "WIFI_DIRECT_AVD_CAPABILITY serial=$serial feature_flag=$feature_flag location_mode=$location_mode p2p_service=found"
 
   api="$(api_level "$serial")"
   if (( api >= 33 )); then
@@ -95,6 +125,8 @@ snapshot() {
   local prefix="$2"
   adb_run "$serial" shell getprop >"$EVIDENCE/${prefix}-getprop.txt"
   adb_run "$serial" shell pm list features >"$EVIDENCE/${prefix}-features.txt"
+  adb_run "$serial" shell service check wifip2p >"$EVIDENCE/${prefix}-wifip2p-service.txt" 2>&1 || true
+  adb_run "$serial" shell settings get secure location_mode >"$EVIDENCE/${prefix}-location-mode.txt" || true
   adb_run "$serial" shell ip addr >"$EVIDENCE/${prefix}-ip-addr.txt" || true
   adb_run "$serial" shell ip route >"$EVIDENCE/${prefix}-ip-route.txt" || true
   adb_run "$serial" shell dumpsys wifi >"$EVIDENCE/${prefix}-wifi.txt" || true
