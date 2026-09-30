@@ -1013,6 +1013,184 @@ pub struct OpticalScaleRegistration {
     pub scale_y: f32,
 }
 
+fn optical_scale_active_bbox(
+    frame: &OpticalGrayFrame,
+    symbol_count: usize,
+    cell_pixels: usize,
+    data_width: usize,
+    data_height: usize,
+) -> Result<(usize, usize, usize, usize, f32, f32), ReplayError> {
+    const LEVELS: usize = 256;
+
+    let mut counts = [0_usize; LEVELS];
+    let mut min_x_by_level = [usize::MAX; LEVELS];
+    let mut min_y_by_level = [usize::MAX; LEVELS];
+    let mut max_x_by_level = [0_usize; LEVELS];
+    let mut max_y_by_level = [0_usize; LEVELS];
+
+    for y in 0..frame.height {
+        let row_start = y * frame.width;
+        for x in 0..frame.width {
+            let level = (frame.pixels[row_start + x]
+                .clamp(0.0, 1.0)
+                * 255.0)
+                .round() as usize;
+            counts[level] += 1;
+            min_x_by_level[level] =
+                min_x_by_level[level].min(x);
+            min_y_by_level[level] =
+                min_y_by_level[level].min(y);
+            max_x_by_level[level] =
+                max_x_by_level[level].max(x);
+            max_y_by_level[level] =
+                max_y_by_level[level].max(y);
+        }
+    }
+
+    let expected_cell_area = symbol_count
+        .checked_mul(cell_pixels)
+        .and_then(|value| value.checked_mul(cell_pixels))
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "expected active optical area overflow",
+        ))? as f32;
+
+    let mut cumulative_count = 0_usize;
+    let mut cumulative_min_x = usize::MAX;
+    let mut cumulative_min_y = usize::MAX;
+    let mut cumulative_max_x = 0_usize;
+    let mut cumulative_max_y = 0_usize;
+
+    let mut best: Option<(
+        f32,
+        usize,
+        usize,
+        usize,
+        usize,
+        f32,
+        f32,
+    )> = None;
+
+    for threshold in (1..LEVELS).rev() {
+        if counts[threshold] > 0 {
+            cumulative_count += counts[threshold];
+            cumulative_min_x =
+                cumulative_min_x.min(min_x_by_level[threshold]);
+            cumulative_min_y =
+                cumulative_min_y.min(min_y_by_level[threshold]);
+            cumulative_max_x =
+                cumulative_max_x.max(max_x_by_level[threshold]);
+            cumulative_max_y =
+                cumulative_max_y.max(max_y_by_level[threshold]);
+        }
+
+        if cumulative_count == 0
+            || cumulative_min_x == usize::MAX
+            || cumulative_min_y == usize::MAX
+        {
+            continue;
+        }
+
+        let observed_width =
+            cumulative_max_x - cumulative_min_x + 1;
+        let observed_height =
+            cumulative_max_y - cumulative_min_y + 1;
+        let scale_x =
+            observed_width as f32 / data_width as f32;
+        let scale_y =
+            observed_height as f32 / data_height as f32;
+
+        if !(0.50..=3.00).contains(&scale_x)
+            || !(0.50..=3.00).contains(&scale_y)
+        {
+            continue;
+        }
+
+        let expected_active_area =
+            expected_cell_area * scale_x * scale_y;
+        if expected_active_area <= 0.0 {
+            continue;
+        }
+
+        let coverage =
+            cumulative_count as f32 / expected_active_area;
+        let balance =
+            (scale_x / scale_y).ln().abs();
+        let score = balance + (coverage - 1.0).abs();
+
+        let replace = best.as_ref().is_none_or(|current| {
+            score < current.0 - 1.0e-6
+                || ((score - current.0).abs() <= 1.0e-6
+                    && threshold < current.1)
+        });
+
+        if replace {
+            best = Some((
+                score,
+                threshold,
+                cumulative_min_x,
+                cumulative_min_y,
+                cumulative_max_x,
+                scale_x,
+                scale_y,
+            ));
+            // max_y is derived below from the same cumulative state and
+            // packed separately to keep the tuple small enough to compare
+            // clearly.
+            if let Some(current) = best.as_mut() {
+                current.4 = cumulative_max_x;
+            }
+        }
+    }
+
+    let Some((
+        _,
+        chosen_threshold,
+        min_x,
+        min_y,
+        max_x,
+        scale_x,
+        scale_y,
+    )) = best
+    else {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "no activation threshold produced bounded optical geometry",
+        ));
+    };
+
+    // Rebuild only the chosen cumulative Y maximum. This keeps threshold
+    // selection O(pixels + 256) without storing a second large candidate set.
+    let mut max_y = 0_usize;
+    let mut found = false;
+    for y in 0..frame.height {
+        let row_start = y * frame.width;
+        for x in 0..frame.width {
+            let level = (frame.pixels[row_start + x]
+                .clamp(0.0, 1.0)
+                * 255.0)
+                .round() as usize;
+            if level >= chosen_threshold {
+                max_y = max_y.max(y);
+                found = true;
+            }
+        }
+    }
+
+    if !found {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "chosen activation threshold contains no pixels",
+        ));
+    }
+
+    Ok((
+        min_x,
+        min_y,
+        max_x,
+        max_y,
+        scale_x,
+        scale_y,
+    ))
+}
+
 pub fn register_optical_translation_scale(
     frame: &OpticalGrayFrame,
     symbol_count: usize,
@@ -1064,47 +1242,20 @@ pub fn register_optical_translation_scale(
             "target height overflow",
         ))?;
 
-    let background = (grid.zero_level * 0.25).clamp(0.0, 1.0);
-    let activation_threshold =
-        background + (grid.zero_level - background) * 0.50;
-
-    let mut min_x = usize::MAX;
-    let mut min_y = usize::MAX;
-    let mut max_x = 0_usize;
-    let mut max_y = 0_usize;
-    let mut found = false;
-
-    for y in 0..frame.height {
-        let row_start = y * frame.width;
-        for x in 0..frame.width {
-            if frame.pixels[row_start + x] >= activation_threshold {
-                min_x = min_x.min(x);
-                min_y = min_y.min(y);
-                max_x = max_x.max(x);
-                max_y = max_y.max(y);
-                found = true;
-            }
-        }
-    }
-
-    if !found {
-        return Err(ReplayError::OpticalRegistrationFailed(
-            "no active optical cells found",
-        ));
-    }
-
-    let observed_data_width = max_x - min_x + 1;
-    let observed_data_height = max_y - min_y + 1;
-    let scale_x = observed_data_width as f32 / data_width as f32;
-    let scale_y = observed_data_height as f32 / data_height as f32;
-
-    if !(0.50..=3.00).contains(&scale_x)
-        || !(0.50..=3.00).contains(&scale_y)
-    {
-        return Err(ReplayError::OpticalRegistrationFailed(
-            "detected scale is outside research bounds",
-        ));
-    }
+    let (
+        min_x,
+        min_y,
+        max_x,
+        max_y,
+        scale_x,
+        scale_y,
+    ) = optical_scale_active_bbox(
+        frame,
+        symbol_count,
+        grid.cell_pixels,
+        data_width,
+        data_height,
+    )?;
 
     // Camera pipelines can resize/crop the luma plane differently on the two
     // axes. Keep X/Y scale independent while preserving the same bounded
@@ -1594,6 +1745,74 @@ mod tests {
             height,
             pixels,
         }
+    }
+
+    #[test]
+    fn optical_scale_registration_ignores_low_level_camera_halo() {
+        use signal_frontier::{
+            decode_optical_cells, decode_optical_repetition,
+            encode_optical_repetition, render_optical_cells,
+        };
+
+        let bits = vec![
+            1, 0, 1, 1, 0, 0, 1, 0,
+            0, 1, 1, 0, 1, 0, 0, 1,
+        ];
+        let repetition = OpticalRepetitionConfig::robust_default();
+        let grid = OpticalGridConfig::camera_baseline();
+        let symbols =
+            encode_optical_repetition(&bits, repetition).unwrap();
+        let base = render_optical_cells(&symbols, grid).unwrap();
+
+        let mut camera_like = base.clone();
+        for value in &mut camera_like.pixels {
+            *value = if *value > 0.50 {
+                0.82
+            } else if *value > 0.15 {
+                0.21
+            } else if *value > 0.07 {
+                0.13
+            } else {
+                0.07
+            };
+        }
+
+        let mut source = embed_optical_frame(
+            &camera_like,
+            camera_like.width + 80,
+            camera_like.height + 80,
+            40,
+            40,
+        );
+
+        // This halo is above the historical fixed activation threshold but
+        // below the logical-zero cluster. Geometry+coverage selection must
+        // reject it as data.
+        for y in 20..source.height - 20 {
+            source.pixels[y * source.width + 20] = 0.13;
+        }
+
+        let (registered, info) =
+            register_optical_translation_scale(
+                &source,
+                symbols.len(),
+                grid,
+            )
+            .unwrap();
+
+        assert!((info.scale_x - 1.0).abs() < 0.02);
+        assert!((info.scale_y - 1.0).abs() < 0.02);
+
+        let decoded = decode_optical_cells(
+            &registered,
+            symbols.len(),
+            grid,
+            None,
+        )
+        .unwrap();
+        let logical =
+            decode_optical_repetition(&decoded, repetition).unwrap();
+        assert_eq!(bit_error_count(&bits, &logical), 0);
     }
 
     #[test]
