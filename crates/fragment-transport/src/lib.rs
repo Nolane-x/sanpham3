@@ -7,12 +7,16 @@ type HmacSha256 = Hmac<Sha256>;
 
 pub const MAGIC: [u8; 4] = *b"SP3F";
 pub const PARITY_MAGIC: [u8; 4] = *b"SP3E";
+pub const RATELESS_MAGIC: [u8; 4] = *b"SP3R";
 pub const VERSION: u8 = 1;
 pub const TAG_BYTES: usize = 16;
 pub const HEADER_BYTES: usize = 4 + 1 + 16 + 8 + 8 + 32 + 4;
 pub const MIN_WIRE_BYTES: usize = HEADER_BYTES + TAG_BYTES;
 pub const PARITY_HEADER_BYTES: usize = 4 + 1 + 16 + 8 + 32 + 4 + 8 + 4 + 2;
 pub const MIN_PARITY_WIRE_BYTES: usize = PARITY_HEADER_BYTES + TAG_BYTES;
+pub const RATELESS_HEADER_BYTES: usize = 4 + 1 + 16 + 8 + 32 + 2 + 4 + 8 + 4;
+pub const MIN_RATELESS_WIRE_BYTES: usize = RATELESS_HEADER_BYTES + TAG_BYTES;
+pub const MAX_RATELESS_SOURCE_SHARDS: usize = 256;
 
 pub type Digest32 = [u8; 32];
 pub type TransferId = [u8; 16];
@@ -344,6 +348,431 @@ pub fn fragment_with_xor_parity(
         shard_payload_bytes,
         stripe_width,
     })
+}
+
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RatelessSymbolEnvelope {
+    pub transfer_id: TransferId,
+    pub total_len: u64,
+    pub whole_digest: Digest32,
+    pub source_count: u16,
+    pub shard_payload_bytes: u32,
+    pub symbol_id: u64,
+    pub payload: Vec<u8>,
+}
+
+impl RatelessSymbolEnvelope {
+    pub fn seal(&self, key: &FragmentKey) -> Result<Vec<u8>, FragmentError> {
+        validate_rateless_symbol(self)?;
+        let payload_len = u32::try_from(self.payload.len())
+            .map_err(|_| FragmentError::PayloadTooLarge)?;
+
+        let mut wire = Vec::with_capacity(
+            RATELESS_HEADER_BYTES + self.payload.len() + TAG_BYTES,
+        );
+        wire.extend_from_slice(&RATELESS_MAGIC);
+        wire.push(VERSION);
+        wire.extend_from_slice(&self.transfer_id);
+        wire.extend_from_slice(&self.total_len.to_be_bytes());
+        wire.extend_from_slice(&self.whole_digest);
+        wire.extend_from_slice(&self.source_count.to_be_bytes());
+        wire.extend_from_slice(&self.shard_payload_bytes.to_be_bytes());
+        wire.extend_from_slice(&self.symbol_id.to_be_bytes());
+        wire.extend_from_slice(&payload_len.to_be_bytes());
+        wire.extend_from_slice(&self.payload);
+
+        let tag = authentication_tag(&wire, key);
+        wire.extend_from_slice(&tag);
+        Ok(wire)
+    }
+
+    pub fn open(
+        wire: &[u8],
+        key: &FragmentKey,
+    ) -> Result<Self, FragmentError> {
+        if wire.len() < MIN_RATELESS_WIRE_BYTES {
+            return Err(FragmentError::Truncated);
+        }
+
+        let authenticated_len = wire.len() - TAG_BYTES;
+        let provided_tag = &wire[authenticated_len..];
+        let expected_tag = authentication_tag(&wire[..authenticated_len], key);
+        if !constant_time_eq(provided_tag, &expected_tag) {
+            return Err(FragmentError::AuthenticationFailed);
+        }
+
+        let mut cursor = Cursor::new(&wire[..authenticated_len]);
+        if cursor.take(4)? != RATELESS_MAGIC {
+            return Err(FragmentError::WrongMagic);
+        }
+        let version = cursor.u8()?;
+        if version != VERSION {
+            return Err(FragmentError::WrongVersion(version));
+        }
+
+        let envelope = Self {
+            transfer_id: cursor.array16()?,
+            total_len: cursor.u64()?,
+            whole_digest: cursor.array32()?,
+            source_count: cursor.u16()?,
+            shard_payload_bytes: cursor.u32()?,
+            symbol_id: cursor.u64()?,
+            payload: {
+                let payload_len = cursor.u32()? as usize;
+                cursor.take(payload_len)?.to_vec()
+            },
+        };
+
+        if cursor.remaining() != 0 {
+            return Err(FragmentError::TrailingBytes);
+        }
+        validate_rateless_symbol(&envelope)?;
+        Ok(envelope)
+    }
+}
+
+/// Generates one authenticated SP3R symbol.
+///
+/// The stream is systematic for symbol IDs 0..K. IDs >= K generate
+/// deterministic random-linear XOR repair equations. There is no fixed repair
+/// count: the sender can keep increasing symbol_id until the receiver reports
+/// full rank.
+pub fn rateless_symbol_for_wire_budget(
+    bytes: &[u8],
+    wire_budget: usize,
+    symbol_id: u64,
+    key: &FragmentKey,
+) -> Result<Vec<u8>, FragmentError> {
+    if bytes.is_empty() {
+        return Err(FragmentError::RatelessEmptyTransfer);
+    }
+    if wire_budget <= MIN_RATELESS_WIRE_BYTES {
+        return Err(FragmentError::WireBudgetTooSmall {
+            minimum: MIN_RATELESS_WIRE_BYTES + 1,
+            got: wire_budget,
+        });
+    }
+
+    let shard_payload_bytes = wire_budget - MIN_RATELESS_WIRE_BYTES;
+    let source_count = bytes.len().div_ceil(shard_payload_bytes);
+    if source_count == 0 || source_count > MAX_RATELESS_SOURCE_SHARDS {
+        return Err(FragmentError::ResourceLimit);
+    }
+
+    let descriptor = TransferDescriptor::from_bytes(bytes);
+    let coefficients = rateless_coefficients(
+        descriptor.transfer_id,
+        symbol_id,
+        source_count,
+    );
+    let mut payload = vec![0_u8; shard_payload_bytes];
+
+    for source_index in 0..source_count {
+        if !coefficient_is_set(&coefficients, source_index) {
+            continue;
+        }
+        let start = source_index
+            .checked_mul(shard_payload_bytes)
+            .ok_or(FragmentError::RangeOverflow)?;
+        let end = start
+            .saturating_add(shard_payload_bytes)
+            .min(bytes.len());
+        for (target, &value) in payload
+            .iter_mut()
+            .zip(bytes[start..end].iter())
+        {
+            *target ^= value;
+        }
+    }
+
+    RatelessSymbolEnvelope {
+        transfer_id: descriptor.transfer_id,
+        total_len: descriptor.total_len,
+        whole_digest: descriptor.whole_digest,
+        source_count: u16::try_from(source_count)
+            .map_err(|_| FragmentError::ResourceLimit)?,
+        shard_payload_bytes: u32::try_from(shard_payload_bytes)
+            .map_err(|_| FragmentError::PayloadTooLarge)?,
+        symbol_id,
+        payload,
+    }
+    .seal(key)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RatelessDescriptor {
+    transfer_id: TransferId,
+    total_len: u64,
+    whole_digest: Digest32,
+    source_count: usize,
+    shard_payload_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RatelessRow {
+    coefficients: Vec<u64>,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RatelessAcceptOutcome {
+    Innovative { rank: usize },
+    Dependent { rank: usize },
+    DuplicateSymbol { rank: usize },
+}
+
+pub struct RatelessDecoder {
+    max_total_len: u64,
+    descriptor: Option<RatelessDescriptor>,
+    rows: BTreeMap<usize, RatelessRow>,
+    seen_symbols: BTreeMap<u64, Digest32>,
+}
+
+impl RatelessDecoder {
+    pub fn new(max_total_len: u64) -> Self {
+        Self {
+            max_total_len,
+            descriptor: None,
+            rows: BTreeMap::new(),
+            seen_symbols: BTreeMap::new(),
+        }
+    }
+
+    pub fn rank(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn source_count(&self) -> Option<usize> {
+        self.descriptor.as_ref().map(|value| value.source_count)
+    }
+
+    pub fn is_decodable(&self) -> bool {
+        self.source_count()
+            .is_some_and(|source_count| self.rank() == source_count)
+    }
+
+    pub fn accept_wire(
+        &mut self,
+        wire: &[u8],
+        key: &FragmentKey,
+    ) -> Result<RatelessAcceptOutcome, FragmentError> {
+        let envelope = RatelessSymbolEnvelope::open(wire, key)?;
+        let wire_digest = sha256(wire);
+
+        if envelope.total_len > self.max_total_len {
+            return Err(FragmentError::ResourceLimit);
+        }
+
+        let descriptor = RatelessDescriptor {
+            transfer_id: envelope.transfer_id,
+            total_len: envelope.total_len,
+            whole_digest: envelope.whole_digest,
+            source_count: envelope.source_count as usize,
+            shard_payload_bytes: envelope.shard_payload_bytes as usize,
+        };
+
+        match &self.descriptor {
+            None => self.descriptor = Some(descriptor.clone()),
+            Some(existing) if existing == &descriptor => {}
+            Some(_) => return Err(FragmentError::TransferMismatch),
+        }
+
+        if let Some(existing) = self.seen_symbols.get(&envelope.symbol_id) {
+            return if existing == &wire_digest {
+                Ok(RatelessAcceptOutcome::DuplicateSymbol {
+                    rank: self.rank(),
+                })
+            } else {
+                Err(FragmentError::ConflictingRatelessSymbol)
+            };
+        }
+
+        let symbol_id = envelope.symbol_id;
+        let mut row = RatelessRow {
+            coefficients: rateless_coefficients(
+                envelope.transfer_id,
+                envelope.symbol_id,
+                envelope.source_count as usize,
+            ),
+            payload: envelope.payload,
+        };
+
+        for (&pivot, basis) in &self.rows {
+            if coefficient_is_set(&row.coefficients, pivot) {
+                xor_coefficients(
+                    &mut row.coefficients,
+                    &basis.coefficients,
+                );
+                xor_bytes(&mut row.payload, &basis.payload);
+            }
+        }
+
+        let Some(pivot) = first_set_coefficient(
+            &row.coefficients,
+            descriptor.source_count,
+        ) else {
+            if row.payload.iter().any(|&byte| byte != 0) {
+                return Err(FragmentError::InconsistentRatelessEquation);
+            }
+            self.seen_symbols.insert(symbol_id, wire_digest);
+            return Ok(RatelessAcceptOutcome::Dependent {
+                rank: self.rank(),
+            });
+        };
+
+        self.rows.insert(pivot, row);
+        self.seen_symbols.insert(symbol_id, wire_digest);
+        Ok(RatelessAcceptOutcome::Innovative {
+            rank: self.rank(),
+        })
+    }
+
+    pub fn reconstruct(&self) -> Result<Vec<u8>, FragmentError> {
+        let descriptor = self
+            .descriptor
+            .as_ref()
+            .ok_or(FragmentError::Incomplete)?;
+        if self.rank() != descriptor.source_count {
+            return Err(FragmentError::Incomplete);
+        }
+
+        let mut shards =
+            vec![None::<Vec<u8>>; descriptor.source_count];
+
+        for pivot in (0..descriptor.source_count).rev() {
+            let row = self
+                .rows
+                .get(&pivot)
+                .ok_or(FragmentError::Incomplete)?;
+            let mut recovered = row.payload.clone();
+
+            for (source_index, known) in shards
+                .iter()
+                .enumerate()
+                .skip(pivot + 1)
+            {
+                if coefficient_is_set(
+                    &row.coefficients,
+                    source_index,
+                ) {
+                    let known = known
+                        .as_ref()
+                        .ok_or(FragmentError::Incomplete)?;
+                    xor_bytes(&mut recovered, known);
+                }
+            }
+
+            shards[pivot] = Some(recovered);
+        }
+
+        let capacity = usize::try_from(descriptor.total_len)
+            .map_err(|_| FragmentError::ResourceLimit)?;
+        let mut output = Vec::with_capacity(capacity);
+        for shard in shards {
+            output.extend_from_slice(
+                &shard.ok_or(FragmentError::Incomplete)?,
+            );
+        }
+        output.truncate(capacity);
+
+        if output.len() != capacity {
+            return Err(FragmentError::Incomplete);
+        }
+        if sha256(&output) != descriptor.whole_digest {
+            return Err(FragmentError::WholeDigestMismatch);
+        }
+
+        Ok(output)
+    }
+}
+
+fn rateless_coefficients(
+    transfer_id: TransferId,
+    symbol_id: u64,
+    source_count: usize,
+) -> Vec<u64> {
+    let mut coefficients =
+        vec![0_u64; source_count.div_ceil(64)];
+
+    if (symbol_id as u128) < source_count as u128 {
+        set_coefficient(
+            &mut coefficients,
+            symbol_id as usize,
+        );
+        return coefficients;
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"SP3R-COEFFICIENT-V1");
+    hasher.update(transfer_id);
+    hasher.update(symbol_id.to_be_bytes());
+    let digest = hasher.finalize();
+    let mut seed_bytes = [0_u8; 8];
+    seed_bytes.copy_from_slice(&digest[..8]);
+    let mut state = u64::from_be_bytes(seed_bytes);
+    if state == 0 {
+        state = 0x9e37_79b9_7f4a_7c15;
+    }
+
+    let mut any = false;
+    for source_index in 0..source_count {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        if state & 1 == 1 {
+            set_coefficient(&mut coefficients, source_index);
+            any = true;
+        }
+    }
+
+    if !any {
+        set_coefficient(
+            &mut coefficients,
+            symbol_id as usize % source_count,
+        );
+    }
+
+    coefficients
+}
+
+fn set_coefficient(coefficients: &mut [u64], index: usize) {
+    coefficients[index / 64] |= 1_u64 << (index % 64);
+}
+
+fn coefficient_is_set(coefficients: &[u64], index: usize) -> bool {
+    coefficients
+        .get(index / 64)
+        .is_some_and(|word| word & (1_u64 << (index % 64)) != 0)
+}
+
+fn first_set_coefficient(
+    coefficients: &[u64],
+    source_count: usize,
+) -> Option<usize> {
+    for (word_index, &word) in coefficients.iter().enumerate() {
+        if word == 0 {
+            continue;
+        }
+        let bit = word.trailing_zeros() as usize;
+        let index = word_index * 64 + bit;
+        if index < source_count {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn xor_coefficients(target: &mut [u64], source: &[u64]) {
+    for (left, right) in target.iter_mut().zip(source) {
+        *left ^= *right;
+    }
+}
+
+fn xor_bytes(target: &mut [u8], source: &[u8]) {
+    for (left, right) in target.iter_mut().zip(source) {
+        *left ^= *right;
+    }
 }
 
 pub fn fragment_for_wire_budget(
@@ -764,6 +1193,10 @@ pub enum FragmentError {
     InvalidStripeWidth,
     InvalidParity,
     InvalidProvenance,
+    RatelessEmptyTransfer,
+    InvalidRatelessSymbol,
+    ConflictingRatelessSymbol,
+    InconsistentRatelessEquation,
 }
 
 impl fmt::Display for FragmentError {
@@ -806,6 +1239,18 @@ impl fmt::Display for FragmentError {
             Self::InvalidProvenance => {
                 write!(f, "fragment provenance metadata is invalid")
             }
+            Self::RatelessEmptyTransfer => {
+                write!(f, "rateless transfer cannot encode an empty object")
+            }
+            Self::InvalidRatelessSymbol => {
+                write!(f, "rateless symbol metadata is invalid")
+            }
+            Self::ConflictingRatelessSymbol => {
+                write!(f, "same rateless symbol ID carried different authenticated bytes")
+            }
+            Self::InconsistentRatelessEquation => {
+                write!(f, "rateless equation reduced to zero coefficients with nonzero payload")
+            }
         }
     }
 }
@@ -814,6 +1259,30 @@ impl std::error::Error for FragmentError {}
 
 pub fn sha256(bytes: &[u8]) -> Digest32 {
     Sha256::digest(bytes).into()
+}
+
+fn validate_rateless_symbol(
+    envelope: &RatelessSymbolEnvelope,
+) -> Result<(), FragmentError> {
+    let source_count = envelope.source_count as usize;
+    let shard_payload_bytes = envelope.shard_payload_bytes as usize;
+
+    if envelope.total_len == 0
+        || source_count == 0
+        || source_count > MAX_RATELESS_SOURCE_SHARDS
+        || shard_payload_bytes == 0
+        || envelope.payload.len() != shard_payload_bytes
+    {
+        return Err(FragmentError::InvalidRatelessSymbol);
+    }
+
+    let total_len = usize::try_from(envelope.total_len)
+        .map_err(|_| FragmentError::ResourceLimit)?;
+    if total_len.div_ceil(shard_payload_bytes) != source_count {
+        return Err(FragmentError::InvalidRatelessSymbol);
+    }
+
+    Ok(())
 }
 
 fn validate_provenance(
@@ -1162,6 +1631,116 @@ mod tests {
                 .recover_with_parity_wire(&transfer.parity_wires[0], &key)
                 .unwrap_err(),
             FragmentError::AuthenticationFailed,
+        );
+    }
+
+    #[test]
+    fn rateless_repairs_multiple_missing_systematic_shards() {
+        let input = (0..12 * 1024)
+            .map(|index| ((index * 29 + 7) % 251) as u8)
+            .collect::<Vec<_>>();
+        let key = key();
+
+        let first =
+            rateless_symbol_for_wire_budget(&input, 220, 0, &key).unwrap();
+        let first_envelope =
+            RatelessSymbolEnvelope::open(&first, &key).unwrap();
+        let source_count = first_envelope.source_count as usize;
+
+        let mut decoder = RatelessDecoder::new(32 * 1024);
+        let mut delivered = 0_usize;
+
+        // Deliberately lose every fourth systematic source shard.
+        for symbol_id in 0..source_count as u64 {
+            if symbol_id.is_multiple_of(4) {
+                continue;
+            }
+            let wire = rateless_symbol_for_wire_budget(
+                &input,
+                220,
+                symbol_id,
+                &key,
+            )
+            .unwrap();
+            decoder.accept_wire(&wire, &key).unwrap();
+            delivered += 1;
+        }
+        assert!(!decoder.is_decodable());
+
+        let mut symbol_id = source_count as u64;
+        let max_symbol_id = source_count as u64 * 8;
+        while !decoder.is_decodable() && symbol_id < max_symbol_id {
+            // Model additional repair-symbol loss without changing the code.
+            if !symbol_id.is_multiple_of(7) {
+                let wire = rateless_symbol_for_wire_budget(
+                    &input,
+                    220,
+                    symbol_id,
+                    &key,
+                )
+                .unwrap();
+                decoder.accept_wire(&wire, &key).unwrap();
+                delivered += 1;
+            }
+            symbol_id += 1;
+        }
+
+        assert!(decoder.is_decodable());
+        assert_eq!(decoder.rank(), source_count);
+        assert_eq!(decoder.reconstruct().unwrap(), input);
+        assert!(delivered >= source_count);
+    }
+
+    #[test]
+    fn rateless_duplicate_symbol_is_idempotent() {
+        let input = b"rateless duplicate".repeat(100);
+        let key = key();
+        let wire =
+            rateless_symbol_for_wire_budget(&input, 220, 0, &key).unwrap();
+        let mut decoder = RatelessDecoder::new(8 * 1024);
+
+        assert!(matches!(
+            decoder.accept_wire(&wire, &key).unwrap(),
+            RatelessAcceptOutcome::Innovative { .. },
+        ));
+        let rank = decoder.rank();
+        assert_eq!(
+            decoder.accept_wire(&wire, &key).unwrap(),
+            RatelessAcceptOutcome::DuplicateSymbol { rank },
+        );
+    }
+
+    #[test]
+    fn rateless_tampering_is_rejected() {
+        let input = b"rateless authentication".repeat(100);
+        let key = key();
+        let mut wire =
+            rateless_symbol_for_wire_budget(&input, 220, 0, &key).unwrap();
+        let last = wire.len() - 1;
+        wire[last] ^= 1;
+
+        let mut decoder = RatelessDecoder::new(8 * 1024);
+        assert_eq!(
+            decoder.accept_wire(&wire, &key).unwrap_err(),
+            FragmentError::AuthenticationFailed,
+        );
+    }
+
+    #[test]
+    fn rateless_transfer_descriptor_mismatch_is_rejected() {
+        let key = key();
+        let first =
+            rateless_symbol_for_wire_budget(b"first object", 220, 0, &key)
+                .unwrap();
+        let second =
+            rateless_symbol_for_wire_budget(b"second object", 220, 0, &key)
+                .unwrap();
+
+        let mut decoder = RatelessDecoder::new(1_024);
+        decoder.accept_wire(&first, &key).unwrap();
+        assert_eq!(
+            decoder.accept_wire(&second, &key).unwrap_err(),
+            FragmentError::TransferMismatch,
         );
     }
 
