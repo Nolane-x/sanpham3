@@ -1,0 +1,43 @@
+name: f6-optical-capsule-court
+
+on:
+  push:
+    paths:
+      - "crates/tiny-capsule/**"
+      - "crates/acoustic-capsule/**"
+      - "apps/optical-capsule-court-cli/**"
+      - "apps/acoustic-capsule-court-cli/**"
+      - "crates/signal-frontier/**"
+      - "crates/peer-egress/**"
+      - "Cargo.toml"
+      - ".github/workflows/f6-optical-capsule-court.yml"
+  pull_request:
+    paths:
+      - "crates/tiny-capsule/**"
+      - "crates/acoustic-capsule/**"
+      - "apps/optical-capsule-court-cli/**"
+      - "apps/acoustic-capsule-court-cli/**"
+      - "crates/signal-frontier/**"
+      - "crates/peer-egress/**"
+      - "Cargo.toml"
+      - ".github/workflows/f6-optical-capsule-court.yml"
+
+jobs:
+  optical-capsule:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy -p tiny-capsule -p acoustic-capsule -p optical-capsule-court-cli --all-targets -- -D warnings
+      - run: cargo test -p tiny-capsule
+      - run: cargo test -p acoustic-capsule
+      - run: cargo run -p acoustic-capsule-court-cli
+      - run: cargo run -p optical-capsule-court-cli

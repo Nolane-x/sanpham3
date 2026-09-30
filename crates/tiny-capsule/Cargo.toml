@@ -1,0 +1,9 @@
+[package]
+name = "tiny-capsule"
+version = "0.1.0"
+edition = "2021"
+description = "Domain-separated authenticated replay-protected tiny capsules for sanpham3 constrained carriers"
+
+[dependencies]
+hmac = "0.13"
+sha2 = "0.11"
