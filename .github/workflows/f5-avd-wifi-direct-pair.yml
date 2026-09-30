@@ -127,6 +127,9 @@ jobs:
           :app:assembleDebug
           --stacktrace
 
+      - name: Validate Wi-Fi Direct court orchestrator
+        run: bash -n scripts/virtual-phone-avd-wifi-direct.sh
+
       - name: Create two Android 17 AVDs
         shell: bash
         run: |
