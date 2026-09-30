@@ -1184,8 +1184,8 @@ fn optical_scale_active_bbox(
     Ok((
         min_x,
         min_y,
-        max_x,
-        max_y,
+        _max_x,
+        _max_y,
         scale_x,
         scale_y,
     ))
