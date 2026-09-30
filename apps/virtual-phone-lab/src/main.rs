@@ -1,7 +1,8 @@
 use carrier_frontier::{
     android_resource_mode, choose_failure_diverse_carriers,
     primary_failure_domain, rank_candidates, scavenge_across_contacts,
-    AndroidExecutionProfile, AndroidHardwareProfile, AndroidOemQuirkProfile,
+    AndroidExecutionProfile, AndroidHardwareProfile, AndroidLocalNetworkAccess,
+    AndroidLocalNetworkPolicy, AndroidOemQuirkProfile,
     AndroidPermissionProfile, AndroidResourceMode, AndroidResourceState,
     AndroidThermalLevel,
     CarrierKind, CarrierProfile, ContactWindow, DesktopHardwareProfile,
@@ -26,6 +27,7 @@ fn run() -> Result<(), String> {
         Some("scavenge") => scavenge_demo(),
         Some("android-matrix") => android_matrix(),
         Some("android-execution-matrix") => android_execution_matrix(),
+        Some("android-local-network-matrix") => android_local_network_matrix(),
         Some("desktop-matrix") => desktop_matrix(),
         Some("acoustic-synthetic") => acoustic_synthetic(),
         Some("optical-synthetic") => optical_synthetic(),
@@ -563,6 +565,138 @@ fn acoustic_synthetic() -> Result<(), String> {
     Ok(())
 }
 
+fn android_local_network_matrix() -> Result<(), String> {
+    let base = VirtualAndroidPhone {
+        api_level: 37,
+        hardware: AndroidHardwareProfile::broad_phone(),
+        permissions: AndroidPermissionProfile::all_granted(),
+    }
+    .capabilities();
+
+    let denied = AndroidLocalNetworkPolicy {
+        os_api_level: 37,
+        target_sdk: 37,
+        access_local_network_granted: false,
+        system_mediated_selected_device: false,
+        android16_restrict_local_network_opt_in: false,
+        nearby_wifi_devices_granted: true,
+    };
+    let denied_caps = denied.apply_to_project_capabilities(base);
+
+    println!(
+        "ANDROID_LOCAL_NETWORK os=37 target=37 decision={:?} arbitrary_lan={} selected_device={} internet={} wifi_direct={} wifi_aware={} hotspot={}",
+        denied.decision(),
+        denied.allows_arbitrary_lan(),
+        denied.allows_selected_device_lan(),
+        denied.allows_internet(),
+        denied_caps.wifi_direct,
+        denied_caps.wifi_aware,
+        denied_caps.local_only_hotspot,
+    );
+
+    if denied.decision() != AndroidLocalNetworkAccess::Denied
+        || denied.allows_arbitrary_lan()
+        || denied.allows_selected_device_lan()
+        || !denied.allows_internet()
+        || denied_caps.wifi_direct
+        || denied_caps.wifi_aware
+        || denied_caps.local_only_hotspot
+    {
+        return Err(
+            "Android 17 denied permission did not block arbitrary LAN correctly"
+                .to_owned(),
+        );
+    }
+
+    let granted = AndroidLocalNetworkPolicy {
+        access_local_network_granted: true,
+        ..denied
+    };
+    println!(
+        "ANDROID_LOCAL_NETWORK os=37 target=37 decision={:?} arbitrary_lan={} selected_device={} internet={}",
+        granted.decision(),
+        granted.allows_arbitrary_lan(),
+        granted.allows_selected_device_lan(),
+        granted.allows_internet(),
+    );
+    if !granted.allows_arbitrary_lan()
+        || !granted.allows_selected_device_lan()
+        || !granted.allows_internet()
+    {
+        return Err(
+            "Android 17 explicit permission failed to restore LAN access"
+                .to_owned(),
+        );
+    }
+
+    let picker = AndroidLocalNetworkPolicy {
+        access_local_network_granted: false,
+        system_mediated_selected_device: true,
+        ..denied
+    };
+    let picker_caps = picker.apply_to_project_capabilities(base);
+    println!(
+        "ANDROID_LOCAL_NETWORK os=37 target=37 decision={:?} arbitrary_lan={} selected_device={} internet={} project_wifi_direct={}",
+        picker.decision(),
+        picker.allows_arbitrary_lan(),
+        picker.allows_selected_device_lan(),
+        picker.allows_internet(),
+        picker_caps.wifi_direct,
+    );
+    if picker.decision()
+        != AndroidLocalNetworkAccess::SystemMediatedSelectedDevice
+        || picker.allows_arbitrary_lan()
+        || !picker.allows_selected_device_lan()
+        || picker_caps.wifi_direct
+    {
+        return Err(
+            "system-mediated selected-device access was promoted to broad LAN"
+                .to_owned(),
+        );
+    }
+
+    let legacy = AndroidLocalNetworkPolicy {
+        target_sdk: 36,
+        access_local_network_granted: false,
+        system_mediated_selected_device: false,
+        ..denied
+    };
+    println!(
+        "ANDROID_LOCAL_NETWORK os=37 target=36 decision={:?} arbitrary_lan={} internet={}",
+        legacy.decision(),
+        legacy.allows_arbitrary_lan(),
+        legacy.allows_internet(),
+    );
+    if legacy.decision() != AndroidLocalNetworkAccess::LegacyUnrestricted
+        || !legacy.allows_arbitrary_lan()
+    {
+        return Err(
+            "target SDK 36 was incorrectly put under Android 17 mandatory enforcement"
+                .to_owned(),
+        );
+    }
+
+    let android16 = AndroidLocalNetworkPolicy {
+        os_api_level: 36,
+        target_sdk: 36,
+        access_local_network_granted: false,
+        system_mediated_selected_device: false,
+        android16_restrict_local_network_opt_in: true,
+        nearby_wifi_devices_granted: false,
+    };
+    if android16.decision() != AndroidLocalNetworkAccess::Denied
+        || android16.allows_arbitrary_lan()
+        || !android16.allows_internet()
+    {
+        return Err(
+            "Android 16 opt-in compatibility restriction was modeled incorrectly"
+                .to_owned(),
+        );
+    }
+
+    Ok(())
+}
+
 fn android_execution_matrix() -> Result<(), String> {
     let phone = VirtualAndroidPhone {
         api_level: 36,
@@ -895,6 +1029,7 @@ fn usage() -> String {
         "  virtual-phone-lab scavenge",
         "  virtual-phone-lab android-matrix",
         "  virtual-phone-lab android-execution-matrix",
+        "  virtual-phone-lab android-local-network-matrix",
         "  virtual-phone-lab desktop-matrix",
         "  virtual-phone-lab acoustic-synthetic",
         "  virtual-phone-lab optical-synthetic",
