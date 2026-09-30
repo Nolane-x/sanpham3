@@ -65,6 +65,7 @@ pub enum ReplayError {
         columns: usize,
     },
     EmptyTrace,
+    WindowOutsideTrace,
     SampleRateMismatch {
         expected: u32,
         actual: u32,
@@ -103,6 +104,9 @@ impl fmt::Display for ReplayError {
                 "CSV line {line} has {columns} columns; requested {requested}",
             ),
             Self::EmptyTrace => write!(f, "replay trace contains no samples"),
+            Self::WindowOutsideTrace => {
+                write!(f, "requested replay window is outside the trace")
+            }
             Self::SampleRateMismatch { expected, actual } => write!(
                 f,
                 "trace sample rate {actual} Hz does not match decoder {expected} Hz",
@@ -264,6 +268,39 @@ pub fn replay_acoustic_wav(
     Ok(decode_fsk(&samples, config)?)
 }
 
+pub fn replay_acoustic_wav_window(
+    wav_bytes: &[u8],
+    channel_index: usize,
+    config: AcousticFskConfig,
+    start_sample: usize,
+    bit_count: usize,
+) -> Result<DecodeResult, ReplayError> {
+    if bit_count == 0 {
+        return Err(ReplayError::EmptyTrace);
+    }
+    let wav = parse_pcm16_wav(wav_bytes)?;
+    if wav.sample_rate_hz != config.sample_rate_hz {
+        return Err(ReplayError::SampleRateMismatch {
+            expected: config.sample_rate_hz,
+            actual: wav.sample_rate_hz,
+        });
+    }
+
+    let samples = wav.channel_f32(channel_index)?;
+    let samples_per_bit = config.samples_per_bit()?;
+    let needed = bit_count
+        .checked_mul(samples_per_bit)
+        .ok_or(ReplayError::WindowOutsideTrace)?;
+    let end = start_sample
+        .checked_add(needed)
+        .ok_or(ReplayError::WindowOutsideTrace)?;
+    let window = samples
+        .get(start_sample..end)
+        .ok_or(ReplayError::WindowOutsideTrace)?;
+
+    Ok(decode_fsk(window, config)?)
+}
+
 pub fn replay_vibration_csv(
     csv_text: &str,
     value_column: usize,
@@ -271,6 +308,31 @@ pub fn replay_vibration_csv(
 ) -> Result<Vec<u8>, ReplayError> {
     let trace = parse_scalar_csv_column(csv_text, value_column)?;
     Ok(decode_vibration_ook(&trace.values, config)?)
+}
+
+pub fn replay_vibration_csv_window(
+    csv_text: &str,
+    value_column: usize,
+    config: VibrationOokConfig,
+    start_sample: usize,
+    bit_count: usize,
+) -> Result<Vec<u8>, ReplayError> {
+    if bit_count == 0 {
+        return Err(ReplayError::EmptyTrace);
+    }
+    let trace = parse_scalar_csv_column(csv_text, value_column)?;
+    let samples_per_bit = config.samples_per_bit()?;
+    let needed = bit_count
+        .checked_mul(samples_per_bit)
+        .ok_or(ReplayError::WindowOutsideTrace)?;
+    let end = start_sample
+        .checked_add(needed)
+        .ok_or(ReplayError::WindowOutsideTrace)?;
+    let window = trace
+        .values
+        .get(start_sample..end)
+        .ok_or(ReplayError::WindowOutsideTrace)?;
+    Ok(decode_vibration_ook(window, config)?)
 }
 
 fn read_u16_le(bytes: &[u8], offset: usize) -> Result<u16, ReplayError> {
@@ -335,6 +397,58 @@ mod tests {
 
         let decoded = replay_acoustic_wav(&wav, 0, config).unwrap();
         assert_eq!(bit_error_count(&bits, &decoded.bits), 0);
+    }
+
+    #[test]
+    fn acoustic_window_replay_ignores_leading_and_trailing_samples() {
+        let bits = vec![1, 0, 1, 0];
+        let config = AcousticFskConfig::near_ultrasonic_50bps();
+        let encoded = encode_fsk(&bits, config).unwrap();
+        let prefix = vec![0.0_f32; 137];
+        let suffix = vec![0.0_f32; 91];
+        let mut samples = prefix.clone();
+        samples.extend_from_slice(&encoded);
+        samples.extend_from_slice(&suffix);
+        let wav = pcm16_wav(config.sample_rate_hz, &samples);
+
+        let decoded = replay_acoustic_wav_window(
+            &wav,
+            0,
+            config,
+            prefix.len(),
+            bits.len(),
+        )
+        .unwrap();
+
+        assert_eq!(bit_error_count(&bits, &decoded.bits), 0);
+    }
+
+    #[test]
+    fn vibration_window_replay_ignores_leading_and_trailing_samples() {
+        let bits = vec![1, 0, 1, 1];
+        let config = VibrationOokConfig::surface_2_5bps();
+        let encoded = encode_vibration_ook(&bits, config).unwrap();
+        let prefix = vec![0.0_f32; 23];
+        let suffix = vec![0.0_f32; 17];
+        let mut samples = prefix.clone();
+        samples.extend_from_slice(&encoded);
+        samples.extend_from_slice(&suffix);
+
+        let mut csv = String::from("index,value\n");
+        for (index, sample) in samples.iter().enumerate() {
+            csv.push_str(&format!("{index},{sample}\n"));
+        }
+
+        let decoded = replay_vibration_csv_window(
+            &csv,
+            1,
+            config,
+            prefix.len(),
+            bits.len(),
+        )
+        .unwrap();
+
+        assert_eq!(bit_error_count(&bits, &decoded), 0);
     }
 
     #[test]
