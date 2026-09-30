@@ -1,6 +1,9 @@
 use carrier_frontier::{
-    choose_failure_diverse_carriers, primary_failure_domain, rank_candidates,
-    scavenge_across_contacts, AndroidHardwareProfile, AndroidPermissionProfile,
+    android_resource_mode, choose_failure_diverse_carriers,
+    primary_failure_domain, rank_candidates, scavenge_across_contacts,
+    AndroidExecutionProfile, AndroidHardwareProfile, AndroidOemQuirkProfile,
+    AndroidPermissionProfile, AndroidResourceMode, AndroidResourceState,
+    AndroidThermalLevel,
     CarrierKind, CarrierProfile, ContactWindow, DesktopHardwareProfile,
     DesktopProjectAdapters, DeviceCapabilities, FailureDomain, FailureScenario,
     InformationTask, LinuxPrivilegeProfile, Platform, VirtualAndroidPhone,
@@ -22,6 +25,7 @@ fn run() -> Result<(), String> {
         Some("android-minimal") => android_minimal_sweep(),
         Some("scavenge") => scavenge_demo(),
         Some("android-matrix") => android_matrix(),
+        Some("android-execution-matrix") => android_execution_matrix(),
         Some("desktop-matrix") => desktop_matrix(),
         Some("acoustic-synthetic") => acoustic_synthetic(),
         Some("optical-synthetic") => optical_synthetic(),
@@ -559,6 +563,136 @@ fn acoustic_synthetic() -> Result<(), String> {
     Ok(())
 }
 
+fn android_execution_matrix() -> Result<(), String> {
+    let phone = VirtualAndroidPhone {
+        api_level: 36,
+        hardware: AndroidHardwareProfile::broad_phone(),
+        permissions: AndroidPermissionProfile::all_granted(),
+    };
+
+    let base = phone.capabilities();
+    let foreground = phone
+        .capabilities_for_execution(
+            AndroidExecutionProfile::foreground(),
+            AndroidOemQuirkProfile::reference(),
+            AndroidResourceState::nominal(),
+        )
+        .map_err(str::to_owned)?;
+
+    println!(
+        "ANDROID_EXEC profile=foreground resource={:?} wifi_direct={} ble={} rfcomm={} acoustic={} optical={} vibration={} usb={}",
+        android_resource_mode(
+            AndroidExecutionProfile::foreground(),
+            AndroidResourceState::nominal(),
+        )
+        .map_err(str::to_owned)?,
+        foreground.wifi_direct,
+        foreground.bluetooth_le,
+        foreground.bluetooth_classic,
+        foreground.microphone && foreground.speaker,
+        foreground.camera && foreground.screen,
+        foreground.vibrator && foreground.accelerometer,
+        foreground.usb,
+    );
+
+    if foreground != base {
+        return Err(
+            "clean foreground execution profile changed base capabilities"
+                .to_owned(),
+        );
+    }
+
+    let constrained_execution =
+        AndroidExecutionProfile::restricted_background();
+    let constrained_resources = AndroidResourceState {
+        battery_percent: 8,
+        charging: false,
+        thermal: AndroidThermalLevel::Hot,
+    };
+    let constrained = phone
+        .capabilities_for_execution(
+            constrained_execution,
+            AndroidOemQuirkProfile::aggressive_background(),
+            constrained_resources,
+        )
+        .map_err(str::to_owned)?;
+
+    println!(
+        "ANDROID_EXEC profile=restricted-aggressive resource={:?} wifi_direct={} ble={} rfcomm={} acoustic={} optical={} vibration={} usb={}",
+        android_resource_mode(
+            constrained_execution,
+            constrained_resources,
+        )
+        .map_err(str::to_owned)?,
+        constrained.wifi_direct,
+        constrained.bluetooth_le,
+        constrained.bluetooth_classic,
+        constrained.microphone && constrained.speaker,
+        constrained.camera && constrained.screen,
+        constrained.vibrator && constrained.accelerometer,
+        constrained.usb,
+    );
+
+    if constrained.wifi_direct
+        || constrained.bluetooth_le
+        || constrained.bluetooth_classic
+        || constrained.microphone
+        || constrained.camera
+        || constrained.vibrator
+    {
+        return Err(
+            "restricted execution profile failed to remove risky carriers"
+                .to_owned(),
+        );
+    }
+
+    let critical_execution = AndroidExecutionProfile::foreground();
+    let critical_resources = AndroidResourceState {
+        battery_percent: 2,
+        charging: false,
+        thermal: AndroidThermalLevel::Nominal,
+    };
+    let critical = phone
+        .capabilities_for_execution(
+            critical_execution,
+            AndroidOemQuirkProfile::reference(),
+            critical_resources,
+        )
+        .map_err(str::to_owned)?;
+    let critical_mode =
+        android_resource_mode(critical_execution, critical_resources)
+            .map_err(str::to_owned)?;
+
+    println!(
+        "ANDROID_EXEC profile=critical-resource resource={:?} wifi_direct={} ble_l2cap={} rfcomm={} acoustic={} optical={} vibration={} usb={}",
+        critical_mode,
+        critical.wifi_direct,
+        critical.ble_l2cap_coc,
+        critical.bluetooth_classic,
+        critical.microphone && critical.speaker,
+        critical.camera && critical.screen,
+        critical.vibrator && critical.accelerometer,
+        critical.usb,
+    );
+
+    if critical_mode != AndroidResourceMode::Critical
+        || critical.wifi_direct
+        || critical.ble_l2cap_coc
+        || critical.bluetooth_classic
+        || critical.microphone
+        || critical.camera
+        || critical.vibrator
+        || !critical.usb
+    {
+        return Err(
+            "critical resource policy violated conservative carrier budget"
+                .to_owned(),
+        );
+    }
+
+    Ok(())
+}
+
 fn desktop_matrix() -> Result<(), String> {
     let hardware = DesktopHardwareProfile::broad_laptop();
 
@@ -760,6 +894,7 @@ fn usage() -> String {
         "  virtual-phone-lab android-minimal",
         "  virtual-phone-lab scavenge",
         "  virtual-phone-lab android-matrix",
+        "  virtual-phone-lab android-execution-matrix",
         "  virtual-phone-lab desktop-matrix",
         "  virtual-phone-lab acoustic-synthetic",
         "  virtual-phone-lab optical-synthetic",
