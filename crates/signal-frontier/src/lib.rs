@@ -812,6 +812,66 @@ impl OpticalPerspective {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpticalRollingShutterBanding {
+    pub period_rows: usize,
+    pub minimum_exposure: f32,
+    pub phase_rows: usize,
+}
+
+impl OpticalRollingShutterBanding {
+    pub fn phone_pwm_baseline() -> Self {
+        Self {
+            period_rows: 24,
+            minimum_exposure: 0.72,
+            phase_rows: 5,
+        }
+    }
+
+    pub fn validate(self) -> Result<(), SignalError> {
+        if self.period_rows < 2 {
+            return Err(SignalError::InvalidConfig(
+                "rolling-shutter period must be at least two rows",
+            ));
+        }
+        if !self.minimum_exposure.is_finite()
+            || !(0.0 < self.minimum_exposure
+                && self.minimum_exposure <= 1.0)
+        {
+            return Err(SignalError::InvalidConfig(
+                "rolling-shutter minimum exposure must be in (0, 1]",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub fn apply_optical_rolling_shutter_banding(
+    frame: &OpticalGrayFrame,
+    model: OpticalRollingShutterBanding,
+) -> Result<OpticalGrayFrame, SignalError> {
+    frame.validate()?;
+    model.validate()?;
+
+    let mut output = frame.clone();
+    for y in 0..frame.height {
+        let phase_row = (y + model.phase_rows) % model.period_rows;
+        let phase =
+            TAU * phase_row as f32 / model.period_rows as f32;
+        let normalized = 0.5 + 0.5 * phase.cos();
+        let exposure = model.minimum_exposure
+            + (1.0 - model.minimum_exposure) * normalized;
+
+        let row_start = y * frame.width;
+        let row_end = row_start + frame.width;
+        for pixel in &mut output.pixels[row_start..row_end] {
+            *pixel = (*pixel * exposure).clamp(0.0, 1.0);
+        }
+    }
+
+    Ok(output)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpticalPhotometric {
     pub exposure: f32,
     pub gamma: f32,
@@ -1573,6 +1633,73 @@ mod tests {
 
         assert_eq!(decoded, bits);
         assert_eq!(bit_error_count(&bits, &decoded), 0);
+    }
+
+    #[test]
+    fn optical_raster_survives_rolling_shutter_banding() {
+        let bits = payload();
+        let repetition = OpticalRepetitionConfig::robust_default();
+        let grid = OpticalGridConfig::camera_baseline();
+        let perspective = OpticalPerspective::mild_keystone();
+
+        let symbols =
+            encode_optical_repetition(&bits, repetition).unwrap();
+        let rendered = render_optical_cells(&symbols, grid).unwrap();
+        let warped =
+            warp_optical_perspective(&rendered, perspective).unwrap();
+        let banded = apply_optical_rolling_shutter_banding(
+            &warped,
+            OpticalRollingShutterBanding::phone_pwm_baseline(),
+        )
+        .unwrap();
+        let blurred = apply_optical_box_blur(&banded, 1).unwrap();
+        let photographed = apply_optical_photometric(
+            &blurred,
+            OpticalPhotometric::phone_camera_baseline(),
+        )
+        .unwrap();
+        let sampled = decode_optical_cells(
+            &photographed,
+            symbols.len(),
+            grid,
+            Some(perspective),
+        )
+        .unwrap();
+        let decoded =
+            decode_optical_repetition(&sampled, repetition).unwrap();
+
+        assert_eq!(decoded, bits);
+        assert_eq!(bit_error_count(&bits, &decoded), 0);
+    }
+
+    #[test]
+    fn rolling_shutter_banding_is_deterministic_and_row_variant() {
+        let frame = OpticalGrayFrame {
+            width: 4,
+            height: 32,
+            pixels: vec![1.0; 128],
+        };
+        let model = OpticalRollingShutterBanding {
+            period_rows: 8,
+            minimum_exposure: 0.60,
+            phase_rows: 1,
+        };
+
+        let first =
+            apply_optical_rolling_shutter_banding(&frame, model).unwrap();
+        let second =
+            apply_optical_rolling_shutter_banding(&frame, model).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first.width, frame.width);
+        assert_eq!(first.height, frame.height);
+        assert_ne!(
+            first.pixel(0, 0).unwrap(),
+            first.pixel(0, 3).unwrap(),
+        );
+        assert!(first.pixels.iter().all(|value| {
+            *value >= model.minimum_exposure && *value <= 1.0
+        }));
     }
 
     #[test]
