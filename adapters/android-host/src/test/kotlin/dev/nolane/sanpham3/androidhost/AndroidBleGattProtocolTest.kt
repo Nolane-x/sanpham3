@@ -50,6 +50,26 @@ class AndroidBleGattProtocolTest {
     }
 
     @Test
+    fun encryptedPlaintextBudgetMatchesMtuAccounting() {
+        assertEquals(
+            122,
+            AndroidBleGattProtocol.maxEncryptedProjectPlaintextBytes(
+                AndroidBleGattProtocol.TARGET_MTU,
+            ),
+        )
+        assertEquals(
+            58,
+            AndroidBleGattProtocol.maxEncryptedProjectPlaintextBytes(
+                AndroidBleGattProtocol.MIN_REQUIRED_MTU,
+            ),
+        )
+        assertEquals(
+            0,
+            AndroidBleGattProtocol.maxEncryptedProjectPlaintextBytes(20),
+        )
+    }
+
+    @Test
     fun undersizedMtuFailsInsteadOfPretendingFragmentationExists() {
         val envelope = AndroidBleGattProtocol.encode(
             AndroidBleGattProtocol.OPCODE_FRAME,
