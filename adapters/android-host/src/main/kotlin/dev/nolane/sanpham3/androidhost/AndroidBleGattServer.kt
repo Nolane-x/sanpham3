@@ -17,6 +17,15 @@ data class AndroidBleGattEvidence(
     val authenticatedPeerNodeId: Long,
     val challenge: ByteArray,
     val mtu: Int,
+    val benchmarkRounds: Int = 0,
+    val benchmarkPayloadBytes: Int = 0,
+    val benchmarkElapsedNanos: Long = 0,
+    val benchmarkMinRttNanos: Long = 0,
+    val benchmarkMedianRttNanos: Long = 0,
+    val benchmarkP95RttNanos: Long = 0,
+    val benchmarkMaxRttNanos: Long = 0,
+    val benchmarkOneWayUsefulBitsPerSecond: Double = 0.0,
+    val benchmarkRoundTripUsefulBitsPerSecond: Double = 0.0,
 )
 
 sealed interface AndroidBleGattServerEvent {
@@ -28,6 +37,12 @@ sealed interface AndroidBleGattServerEvent {
 
     data class PairPassed(
         val evidence: AndroidBleGattEvidence,
+    ) : AndroidBleGattServerEvent
+
+    data class BenchmarkProbe(
+        val peerNodeId: Long,
+        val sequence: Long,
+        val payloadBytes: Int,
     ) : AndroidBleGattServerEvent
 
     data class Failed(
@@ -53,6 +68,10 @@ internal object AndroidBleGattAdvertisement {
 class AndroidBleGattServer(
     context: Context,
 ) : Closeable {
+    companion object {
+        fun discoveryMarker(): ByteArray =
+            AndroidBleGattAdvertisement.encode()
+    }
     private data class SessionState(
         val nativeHandle: Long,
         val peerNodeId: Long,
@@ -243,7 +262,7 @@ class AndroidBleGattServer(
     }
 
     fun discoveryInfo(): ByteArray =
-        AndroidBleGattAdvertisement.encode()
+        discoveryMarker()
 
     private fun handleCommand(
         device: BluetoothDevice,
@@ -325,31 +344,68 @@ class AndroidBleGattServer(
         require(opened.isNotEmpty())
 
         val kind = opened[0].toInt() and 0xff
-        val challenge = opened.copyOfRange(1, opened.size)
-        require(kind == AndroidG8PairCourt.KIND_CHALLENGE)
-        AndroidG8PairCourt.validateChallenge(challenge)
+        val payload = opened.copyOfRange(1, opened.size)
 
-        val replyFrame = AndroidPeerSessionNative.seal(
-            session.nativeHandle,
-            AndroidG8PairCourt.KIND_ACK,
-            challenge,
-        )
-        val response = AndroidBleGattProtocol.encode(
-            AndroidBleGattProtocol.OPCODE_FRAME,
-            replyFrame,
-        )
-        AndroidBleGattProtocol.requireFitsMtu(response, mtu)
-        pendingResponses[device] = response
+        when (kind) {
+            AndroidG8PairCourt.KIND_CHALLENGE -> {
+                AndroidG8PairCourt.validateChallenge(payload)
+                val replyFrame = AndroidPeerSessionNative.seal(
+                    session.nativeHandle,
+                    AndroidG8PairCourt.KIND_ACK,
+                    payload,
+                )
+                val response = AndroidBleGattProtocol.encode(
+                    AndroidBleGattProtocol.OPCODE_FRAME,
+                    replyFrame,
+                )
+                AndroidBleGattProtocol.requireFitsMtu(response, mtu)
+                pendingResponses[device] = response
 
-        listener?.invoke(
-            AndroidBleGattServerEvent.PairPassed(
-                AndroidBleGattEvidence(
-                    authenticatedPeerNodeId = session.peerNodeId,
-                    challenge = challenge.copyOf(),
-                    mtu = mtu,
-                ),
-            ),
-        )
+                listener?.invoke(
+                    AndroidBleGattServerEvent.PairPassed(
+                        AndroidBleGattEvidence(
+                            authenticatedPeerNodeId = session.peerNodeId,
+                            challenge = payload.copyOf(),
+                            mtu = mtu,
+                        ),
+                    ),
+                )
+            }
+
+            AndroidPeerSessionBenchmark.KIND_PROBE -> {
+                val sequence =
+                    AndroidPeerSessionBenchmark.benchmarkSequence(payload)
+                val expected =
+                    AndroidPeerSessionBenchmark.benchmarkPayload(
+                        sequence = sequence,
+                        payloadBytes = payload.size,
+                    )
+                require(payload.contentEquals(expected)) {
+                    "BLE GATT benchmark probe payload mismatch"
+                }
+
+                val replyFrame = AndroidPeerSessionNative.seal(
+                    session.nativeHandle,
+                    AndroidPeerSessionBenchmark.KIND_ACK,
+                    payload,
+                )
+                val response = AndroidBleGattProtocol.encode(
+                    AndroidBleGattProtocol.OPCODE_FRAME,
+                    replyFrame,
+                )
+                AndroidBleGattProtocol.requireFitsMtu(response, mtu)
+                pendingResponses[device] = response
+                listener?.invoke(
+                    AndroidBleGattServerEvent.BenchmarkProbe(
+                        peerNodeId = session.peerNodeId,
+                        sequence = sequence,
+                        payloadBytes = payload.size,
+                    ),
+                )
+            }
+
+            else -> error("unsupported encrypted BLE GATT frame kind $kind")
+        }
     }
 
     private fun respondWrite(
