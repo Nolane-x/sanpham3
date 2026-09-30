@@ -99,7 +99,7 @@ jobs:
             optical-y4m-fixture \
             "$SP3_EXPECTED_HEX" \
             "$RUNNER_TEMP/camera-source.y4m" \
-            640 480 120 160 170 270 170
+            640 480 120 160 170
 
           ffmpeg -hide_banner -loglevel warning -y \
             -i "$RUNNER_TEMP/camera-source.y4m" \
