@@ -1,9 +1,10 @@
 use carrier_frontier::{
     choose_failure_diverse_carriers, primary_failure_domain, rank_candidates,
     scavenge_across_contacts, AndroidHardwareProfile, AndroidPermissionProfile,
-    CarrierKind, CarrierProfile, ContactWindow, DeviceCapabilities,
-    FailureDomain, FailureScenario, InformationTask, Platform,
-    VirtualAndroidPhone,
+    CarrierKind, CarrierProfile, ContactWindow, DesktopHardwareProfile,
+    DesktopProjectAdapters, DeviceCapabilities, FailureDomain, FailureScenario,
+    InformationTask, LinuxPrivilegeProfile, Platform, VirtualAndroidPhone,
+    VirtualLinuxDevice, VirtualWindowsDevice, WindowsPermissionProfile,
 };
 
 fn main() {
@@ -21,6 +22,7 @@ fn run() -> Result<(), String> {
         Some("android-minimal") => android_minimal_sweep(),
         Some("scavenge") => scavenge_demo(),
         Some("android-matrix") => android_matrix(),
+        Some("desktop-matrix") => desktop_matrix(),
         Some("acoustic-synthetic") => acoustic_synthetic(),
         Some("optical-synthetic") => optical_synthetic(),
         Some("vibration-synthetic") => vibration_synthetic(),
@@ -557,6 +559,97 @@ fn acoustic_synthetic() -> Result<(), String> {
     Ok(())
 }
 
+fn desktop_matrix() -> Result<(), String> {
+    let hardware = DesktopHardwareProfile::broad_laptop();
+
+    let windows = VirtualWindowsDevice {
+        hardware,
+        permissions: WindowsPermissionProfile::all_granted(),
+        adapters: DesktopProjectAdapters::current_windows(),
+    }
+    .capabilities();
+
+    println!(
+        "DESKTOP platform=Windows profile=current-project wifi_direct={} ble={} rfcomm={} acoustic={} optical={} usb_peer={} external_interface={}",
+        windows.wifi_direct,
+        windows.bluetooth_le,
+        windows.bluetooth_classic,
+        windows.microphone && windows.speaker,
+        windows.camera && windows.screen,
+        windows.usb,
+        windows.external_os_interface,
+    );
+
+    let linux = VirtualLinuxDevice {
+        hardware,
+        privileges: LinuxPrivilegeProfile::all_granted(),
+        adapters: DesktopProjectAdapters::current_linux(),
+    }
+    .capabilities();
+
+    println!(
+        "DESKTOP platform=Linux profile=current-project wifi_direct={} ble={} rfcomm={} acoustic={} optical={} usb_peer={} external_interface={}",
+        linux.wifi_direct,
+        linux.bluetooth_le,
+        linux.bluetooth_classic,
+        linux.microphone && linux.speaker,
+        linux.camera && linux.screen,
+        linux.usb,
+        linux.external_os_interface,
+    );
+
+    let mut research_adapters = DesktopProjectAdapters::current_windows();
+    research_adapters.acoustic = true;
+    research_adapters.optical = true;
+    research_adapters.usb_peer = true;
+
+    let mut denied = WindowsPermissionProfile::all_granted();
+    denied.audio_capture = false;
+    denied.usb_device_access = false;
+
+    let gated = VirtualWindowsDevice {
+        hardware,
+        permissions: denied,
+        adapters: research_adapters,
+    }
+    .capabilities();
+
+    println!(
+        "DESKTOP platform=Windows profile=adapter-present-access-denied acoustic={} optical={} usb_peer={} external_interface={}",
+        gated.microphone && gated.speaker,
+        gated.camera && gated.screen,
+        gated.usb,
+        gated.external_os_interface,
+    );
+
+    if windows.wifi_direct
+        || windows.bluetooth_le
+        || windows.usb
+        || linux.wifi_direct
+        || linux.bluetooth_le
+        || linux.usb
+        || gated.microphone
+        || gated.usb
+    {
+        return Err(
+            "desktop capability model promoted an unimplemented or denied carrier"
+                .to_owned(),
+        );
+    }
+
+    if !windows.external_os_interface
+        || !linux.external_os_interface
+        || !(gated.camera && gated.screen)
+    {
+        return Err(
+            "desktop capability model blocked a supported modeled capability"
+                .to_owned(),
+        );
+    }
+
+    Ok(())
+}
+
 fn android_matrix() -> Result<(), String> {
     let hardware = AndroidHardwareProfile::broad_phone();
     let all = AndroidPermissionProfile::all_granted();
@@ -667,6 +760,7 @@ fn usage() -> String {
         "  virtual-phone-lab android-minimal",
         "  virtual-phone-lab scavenge",
         "  virtual-phone-lab android-matrix",
+        "  virtual-phone-lab desktop-matrix",
         "  virtual-phone-lab acoustic-synthetic",
         "  virtual-phone-lab optical-synthetic",
         "  virtual-phone-lab vibration-synthetic",

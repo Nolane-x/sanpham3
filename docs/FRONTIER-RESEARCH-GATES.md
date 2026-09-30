@@ -64,8 +64,14 @@ Future:
 - [ ] background restriction profiles
 - [ ] battery/thermal model
 - [ ] Android 17 local-network-permission model
-- [ ] Windows capability/permission profile
-- [ ] Linux capability/privilege profile
+- [x] Windows capability/permission profile
+- [x] Linux capability/privilege profile
+
+Desktop F2 now uses a three-way intersection of physical hardware, modeled
+OS/user access and project adapter implementation. Current Windows/Linux
+profiles deliberately leave special carriers false until a matching sanpham3
+adapter exists; ordinary/external OS network interfaces remain separately
+scavengable.
 
 ## F3 — synthetic signal courts
 

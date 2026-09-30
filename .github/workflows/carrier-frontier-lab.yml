@@ -45,6 +45,9 @@ jobs:
       - name: Android API and permission matrix
         run: cargo run -p virtual-phone-lab -- android-matrix
 
+      - name: Windows and Linux capability privilege matrix
+        run: cargo run -p virtual-phone-lab -- desktop-matrix
+
       - name: Full carrier frontier sweep
         run: cargo run -p virtual-phone-lab -- frontier
 

@@ -362,6 +362,290 @@ impl VirtualAndroidPhone {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DesktopHardwareProfile {
+    pub wifi_direct: bool,
+    pub wifi_aware: bool,
+    pub bluetooth_le: bool,
+    pub bluetooth_classic: bool,
+    pub telephony_messaging: bool,
+    pub nfc: bool,
+    pub microphone: bool,
+    pub speaker: bool,
+    pub camera: bool,
+    pub screen: bool,
+    pub vibrator: bool,
+    pub accelerometer: bool,
+    pub magnetometer: bool,
+    pub usb: bool,
+    pub external_os_interface: bool,
+}
+
+impl DesktopHardwareProfile {
+    pub fn broad_laptop() -> Self {
+        Self {
+            wifi_direct: true,
+            wifi_aware: false,
+            bluetooth_le: true,
+            bluetooth_classic: true,
+            telephony_messaging: false,
+            nfc: false,
+            microphone: true,
+            speaker: true,
+            camera: true,
+            screen: true,
+            vibrator: false,
+            accelerometer: false,
+            magnetometer: false,
+            usb: true,
+            external_os_interface: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DesktopProjectAdapters {
+    pub wifi_direct: bool,
+    pub wifi_aware: bool,
+    pub bluetooth_le: bool,
+    pub ble_l2cap_coc: bool,
+    pub bluetooth_classic: bool,
+    pub local_only_hotspot: bool,
+    pub telephony_messaging: bool,
+    pub nfc_hce_or_reader: bool,
+    pub acoustic: bool,
+    pub optical: bool,
+    pub vibration: bool,
+    pub magnetic: bool,
+    pub usb_peer: bool,
+    pub external_os_interface: bool,
+}
+
+impl DesktopProjectAdapters {
+    /// Conservative adapter inventory for the currently merged Windows host.
+    ///
+    /// The Windows adapter can inventory/bind/probe ordinary OS network
+    /// interfaces, including an already-present external network interface.
+    /// No dedicated Windows peer-radio/audio/optical/USB-peer carrier adapter
+    /// is merged yet.
+    pub fn current_windows() -> Self {
+        Self {
+            wifi_direct: false,
+            wifi_aware: false,
+            bluetooth_le: false,
+            ble_l2cap_coc: false,
+            bluetooth_classic: false,
+            local_only_hotspot: false,
+            telephony_messaging: false,
+            nfc_hce_or_reader: false,
+            acoustic: false,
+            optical: false,
+            vibration: false,
+            magnetic: false,
+            usb_peer: false,
+            external_os_interface: true,
+        }
+    }
+
+    /// Conservative adapter inventory for the currently merged Linux host.
+    ///
+    /// Linux currently inventories/routes/binds ordinary interfaces. Special
+    /// peer-radio/audio/optical/USB-peer carriers stay disabled until project
+    /// adapters exist, even if the machine hardware could theoretically do it.
+    pub fn current_linux() -> Self {
+        Self {
+            external_os_interface: true,
+            ..Self::current_windows()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowsPermissionProfile {
+    pub wifi_peer_access: bool,
+    pub bluetooth_access: bool,
+    pub audio_capture: bool,
+    pub audio_playback: bool,
+    pub camera_access: bool,
+    pub display_output: bool,
+    pub sensor_access: bool,
+    pub usb_device_access: bool,
+    pub external_interface_access: bool,
+}
+
+impl WindowsPermissionProfile {
+    pub fn all_granted() -> Self {
+        Self {
+            wifi_peer_access: true,
+            bluetooth_access: true,
+            audio_capture: true,
+            audio_playback: true,
+            camera_access: true,
+            display_output: true,
+            sensor_access: true,
+            usb_device_access: true,
+            external_interface_access: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinuxPrivilegeProfile {
+    pub wifi_peer_control: bool,
+    pub bluetooth_user_access: bool,
+    pub audio_capture: bool,
+    pub audio_playback: bool,
+    pub video_capture: bool,
+    pub display_output: bool,
+    pub sensor_access: bool,
+    pub usb_device_access: bool,
+    pub external_interface_access: bool,
+}
+
+impl LinuxPrivilegeProfile {
+    pub fn all_granted() -> Self {
+        Self {
+            wifi_peer_control: true,
+            bluetooth_user_access: true,
+            audio_capture: true,
+            audio_playback: true,
+            video_capture: true,
+            display_output: true,
+            sensor_access: true,
+            usb_device_access: true,
+            external_interface_access: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VirtualWindowsDevice {
+    pub hardware: DesktopHardwareProfile,
+    pub permissions: WindowsPermissionProfile,
+    pub adapters: DesktopProjectAdapters,
+}
+
+impl VirtualWindowsDevice {
+    pub fn capabilities(&self) -> DeviceCapabilities {
+        DeviceCapabilities {
+            platform: Platform::Windows,
+            wifi_direct: self.hardware.wifi_direct
+                && self.permissions.wifi_peer_access
+                && self.adapters.wifi_direct,
+            wifi_aware: self.hardware.wifi_aware
+                && self.permissions.wifi_peer_access
+                && self.adapters.wifi_aware,
+            bluetooth_le: self.hardware.bluetooth_le
+                && self.permissions.bluetooth_access
+                && self.adapters.bluetooth_le,
+            ble_l2cap_coc: self.hardware.bluetooth_le
+                && self.permissions.bluetooth_access
+                && self.adapters.ble_l2cap_coc,
+            bluetooth_classic: self.hardware.bluetooth_classic
+                && self.permissions.bluetooth_access
+                && self.adapters.bluetooth_classic,
+            local_only_hotspot: self.hardware.wifi_direct
+                && self.permissions.wifi_peer_access
+                && self.adapters.local_only_hotspot,
+            telephony_messaging: self.hardware.telephony_messaging
+                && self.adapters.telephony_messaging,
+            nfc_hce_or_reader: self.hardware.nfc
+                && self.adapters.nfc_hce_or_reader,
+            microphone: self.hardware.microphone
+                && self.permissions.audio_capture
+                && self.adapters.acoustic,
+            speaker: self.hardware.speaker
+                && self.permissions.audio_playback
+                && self.adapters.acoustic,
+            camera: self.hardware.camera
+                && self.permissions.camera_access
+                && self.adapters.optical,
+            screen: self.hardware.screen
+                && self.permissions.display_output
+                && self.adapters.optical,
+            vibrator: self.hardware.vibrator
+                && self.permissions.sensor_access
+                && self.adapters.vibration,
+            accelerometer: self.hardware.accelerometer
+                && self.permissions.sensor_access
+                && self.adapters.vibration,
+            magnetometer: self.hardware.magnetometer
+                && self.permissions.sensor_access
+                && self.adapters.magnetic,
+            usb: self.hardware.usb
+                && self.permissions.usb_device_access
+                && self.adapters.usb_peer,
+            external_os_interface: self.hardware.external_os_interface
+                && self.permissions.external_interface_access
+                && self.adapters.external_os_interface,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VirtualLinuxDevice {
+    pub hardware: DesktopHardwareProfile,
+    pub privileges: LinuxPrivilegeProfile,
+    pub adapters: DesktopProjectAdapters,
+}
+
+impl VirtualLinuxDevice {
+    pub fn capabilities(&self) -> DeviceCapabilities {
+        DeviceCapabilities {
+            platform: Platform::Linux,
+            wifi_direct: self.hardware.wifi_direct
+                && self.privileges.wifi_peer_control
+                && self.adapters.wifi_direct,
+            wifi_aware: self.hardware.wifi_aware
+                && self.privileges.wifi_peer_control
+                && self.adapters.wifi_aware,
+            bluetooth_le: self.hardware.bluetooth_le
+                && self.privileges.bluetooth_user_access
+                && self.adapters.bluetooth_le,
+            ble_l2cap_coc: self.hardware.bluetooth_le
+                && self.privileges.bluetooth_user_access
+                && self.adapters.ble_l2cap_coc,
+            bluetooth_classic: self.hardware.bluetooth_classic
+                && self.privileges.bluetooth_user_access
+                && self.adapters.bluetooth_classic,
+            local_only_hotspot: self.hardware.wifi_direct
+                && self.privileges.wifi_peer_control
+                && self.adapters.local_only_hotspot,
+            telephony_messaging: self.hardware.telephony_messaging
+                && self.adapters.telephony_messaging,
+            nfc_hce_or_reader: self.hardware.nfc
+                && self.adapters.nfc_hce_or_reader,
+            microphone: self.hardware.microphone
+                && self.privileges.audio_capture
+                && self.adapters.acoustic,
+            speaker: self.hardware.speaker
+                && self.privileges.audio_playback
+                && self.adapters.acoustic,
+            camera: self.hardware.camera
+                && self.privileges.video_capture
+                && self.adapters.optical,
+            screen: self.hardware.screen
+                && self.privileges.display_output
+                && self.adapters.optical,
+            vibrator: self.hardware.vibrator
+                && self.privileges.sensor_access
+                && self.adapters.vibration,
+            accelerometer: self.hardware.accelerometer
+                && self.privileges.sensor_access
+                && self.adapters.vibration,
+            magnetometer: self.hardware.magnetometer
+                && self.privileges.sensor_access
+                && self.adapters.magnetic,
+            usb: self.hardware.usb
+                && self.privileges.usb_device_access
+                && self.adapters.usb_peer,
+            external_os_interface: self.hardware.external_os_interface
+                && self.privileges.external_interface_access
+                && self.adapters.external_os_interface,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CarrierProfile {
     pub kind: CarrierKind,
@@ -1143,6 +1427,85 @@ mod tests {
         }
         .capabilities();
         assert!(allowed.telephony_messaging);
+    }
+
+    #[test]
+    fn current_windows_profile_does_not_invent_unimplemented_carriers() {
+        let caps = VirtualWindowsDevice {
+            hardware: DesktopHardwareProfile::broad_laptop(),
+            permissions: WindowsPermissionProfile::all_granted(),
+            adapters: DesktopProjectAdapters::current_windows(),
+        }
+        .capabilities();
+
+        assert_eq!(caps.platform, Platform::Windows);
+        assert!(caps.external_os_interface);
+        assert!(!caps.wifi_direct);
+        assert!(!caps.bluetooth_le);
+        assert!(!caps.bluetooth_classic);
+        assert!(!caps.microphone);
+        assert!(!caps.camera);
+        assert!(!caps.usb);
+    }
+
+    #[test]
+    fn windows_permission_and_project_adapter_both_gate_carriers() {
+        let mut adapters = DesktopProjectAdapters::current_windows();
+        adapters.acoustic = true;
+        adapters.optical = true;
+        adapters.usb_peer = true;
+
+        let mut permissions = WindowsPermissionProfile::all_granted();
+        permissions.audio_capture = false;
+
+        let caps = VirtualWindowsDevice {
+            hardware: DesktopHardwareProfile::broad_laptop(),
+            permissions,
+            adapters,
+        }
+        .capabilities();
+
+        assert!(!caps.microphone);
+        assert!(caps.speaker);
+        assert!(caps.camera);
+        assert!(caps.screen);
+        assert!(caps.usb);
+        assert!(!CarrierProfile::baseline(
+            CarrierKind::AcousticNearUltrasonic,
+        )
+        .supported_by(&caps));
+        assert!(CarrierProfile::baseline(
+            CarrierKind::OpticalScreenCamera,
+        )
+        .supported_by(&caps));
+    }
+
+    #[test]
+    fn current_linux_profile_is_conservative_and_privilege_aware() {
+        let current = VirtualLinuxDevice {
+            hardware: DesktopHardwareProfile::broad_laptop(),
+            privileges: LinuxPrivilegeProfile::all_granted(),
+            adapters: DesktopProjectAdapters::current_linux(),
+        }
+        .capabilities();
+
+        assert_eq!(current.platform, Platform::Linux);
+        assert!(current.external_os_interface);
+        assert!(!current.bluetooth_le);
+        assert!(!current.usb);
+
+        let mut adapters = DesktopProjectAdapters::current_linux();
+        adapters.usb_peer = true;
+        let mut privileges = LinuxPrivilegeProfile::all_granted();
+        privileges.usb_device_access = false;
+
+        let denied = VirtualLinuxDevice {
+            hardware: DesktopHardwareProfile::broad_laptop(),
+            privileges,
+            adapters,
+        }
+        .capabilities();
+        assert!(!denied.usb);
     }
 
     #[test]
