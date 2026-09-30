@@ -63,7 +63,7 @@ Opcodes:
 The prototype requests:
 
 ```text
-MTU = 128
+MTU = 160
 ```
 
 and currently requires:
@@ -187,3 +187,56 @@ CI cannot prove:
 - actual useful throughput.
 
 Those require physical Android devices.
+
+
+## Recovery Lab executable court
+
+The Android Recovery Lab now exposes:
+
+```text
+Open BLE GATT physical G8 court
+```
+
+The screen supports:
+
+- explicit project node ID and laboratory peer PSK;
+- runtime BLE scan/connect/advertise permission request;
+- GATT server mode with the canonical SP3G discovery marker;
+- BLE scan with explicit target address selection;
+- negotiated MTU reporting;
+- shared Rust peer-session authentication;
+- encrypted G8 challenge/ACK;
+- encrypted benchmark probes after G8.
+
+### Benchmark
+
+The client runs:
+
+```text
+rounds = 32
+payload_bytes = min(64, negotiated encrypted plaintext budget)
+```
+
+At the target MTU 160, the encrypted plaintext budget is 122 bytes, so the
+reference benchmark uses 64-byte application payloads.
+
+If the device only negotiates the prototype minimum MTU 96, the budget is
+58 bytes and the benchmark automatically reduces its application payload
+instead of pretending fragmentation exists.
+
+The server validates deterministic sequence-bound benchmark probes before
+returning encrypted ACKs.
+
+Client evidence records:
+
+- negotiated MTU;
+- min / median / p95 / max RTT;
+- benchmark elapsed time;
+- one-way useful bits/s;
+- round-trip useful bits/s;
+- authenticated peer project node ID;
+- route address and RSSI only as non-identity hints.
+
+The server records the final authenticated benchmark sequence and payload size.
+
+A benchmark frame mismatch, MTU overflow or transport failure prevents PASS.
