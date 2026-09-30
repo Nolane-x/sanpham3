@@ -109,12 +109,19 @@ Optical:
 - [x] deterministic perspective/keystone transform baseline
 - [x] blur/exposure/gamma photometric baseline
 - [x] rolling-shutter/PWM banding baseline
-- [ ] camera-video replay decoder
+- [x] camera-video replay decoder baseline
 
 Current optical software court renders grayscale cells and applies known
 perspective geometry, blur/exposure/gamma plus rolling-shutter/PWM banding before
-sampling/repetition decode. Automatic camera acquisition and real video replay
-remain open.
+sampling/repetition decode. The replay harness now also parses YUV4MPEG2 video,
+extracts exact luma frame windows, performs bounded translation+uniform-scale
+registration, votes symbols across frames and runs repetition decode.
+
+This closes the software camera-video replay decoder baseline only. Y4M input
+remains `UNCLASSIFIED_REPLAY`: Android Camera2/virtual-camera acquisition,
+capture provenance, automatic rotation/projective pose recovery, lens distortion
+and physical screen-camera interoperability remain open. The separate F5
+camera-video source gate therefore stays open.
 
 Vibration:
 
