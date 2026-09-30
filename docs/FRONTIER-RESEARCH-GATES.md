@@ -67,7 +67,13 @@ Future:
 Android F2 now applies execution state, conservative OEM quirk switches and a
 battery/thermal resource policy only as capability reductions. The presets are
 research policy models, not measured vendor-specific behavior.
-- [ ] Android 17 local-network-permission model
+- [x] Android 17 local-network-permission model
+
+Android 17 F2 now distinguishes broad `ACCESS_LOCAL_NETWORK`, a
+system-mediated selected-device path and denied LAN access. For target SDK 37+
+broad LAN is disabled without permission; ordinary Internet remains separate.
+Android 16 opt-in behavior remains a compatibility branch using
+`NEARBY_WIFI_DEVICES`.
 - [x] Windows capability/permission profile
 - [x] Linux capability/privilege profile
 
