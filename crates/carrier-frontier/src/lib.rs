@@ -305,6 +305,96 @@ impl AndroidPermissionProfile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AndroidLocalNetworkAccess {
+    /// Android 17 enforcement does not apply to this app/OS combination.
+    LegacyUnrestricted,
+    /// Android 17+ broad LAN permission is granted.
+    AccessLocalNetworkGranted,
+    /// Android 16 opt-in restriction is active and NEARBY_WIFI_DEVICES is
+    /// granted for the compatibility test phase.
+    Android16OptInGranted,
+    /// A privacy-preserving system picker selected a specific device/path.
+    /// This is intentionally not equivalent to arbitrary LAN permission.
+    SystemMediatedSelectedDevice,
+    Denied,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AndroidLocalNetworkPolicy {
+    pub os_api_level: u16,
+    pub target_sdk: u16,
+    pub access_local_network_granted: bool,
+    pub system_mediated_selected_device: bool,
+    pub android16_restrict_local_network_opt_in: bool,
+    pub nearby_wifi_devices_granted: bool,
+}
+
+impl AndroidLocalNetworkPolicy {
+    pub fn decision(self) -> AndroidLocalNetworkAccess {
+        if self.os_api_level >= 37 && self.target_sdk >= 37 {
+            if self.access_local_network_granted {
+                return AndroidLocalNetworkAccess::AccessLocalNetworkGranted;
+            }
+            if self.system_mediated_selected_device {
+                return AndroidLocalNetworkAccess::SystemMediatedSelectedDevice;
+            }
+            return AndroidLocalNetworkAccess::Denied;
+        }
+
+        if self.os_api_level == 36
+            && self.android16_restrict_local_network_opt_in
+        {
+            if self.nearby_wifi_devices_granted {
+                return AndroidLocalNetworkAccess::Android16OptInGranted;
+            }
+            if self.system_mediated_selected_device {
+                return AndroidLocalNetworkAccess::SystemMediatedSelectedDevice;
+            }
+            return AndroidLocalNetworkAccess::Denied;
+        }
+
+        AndroidLocalNetworkAccess::LegacyUnrestricted
+    }
+
+    pub fn allows_arbitrary_lan(self) -> bool {
+        matches!(
+            self.decision(),
+            AndroidLocalNetworkAccess::LegacyUnrestricted
+                | AndroidLocalNetworkAccess::AccessLocalNetworkGranted
+                | AndroidLocalNetworkAccess::Android16OptInGranted
+        )
+    }
+
+    pub fn allows_selected_device_lan(self) -> bool {
+        !matches!(self.decision(), AndroidLocalNetworkAccess::Denied)
+    }
+
+    /// Android local-network protection gates LAN traffic, not ordinary
+    /// Internet traffic. This remains true even when LAN access is denied.
+    pub fn allows_internet(self) -> bool {
+        true
+    }
+
+    /// Applies the current sanpham3 architecture boundary.
+    ///
+    /// Current Wi-Fi Direct/Aware/Local-Only Hotspot peer paths eventually
+    /// use app-owned LAN sockets. Until sanpham3 integrates a system-mediated
+    /// picker path, selected-device-only access is insufficient for these
+    /// arbitrary peer socket carriers.
+    pub fn apply_to_project_capabilities(
+        self,
+        mut capabilities: DeviceCapabilities,
+    ) -> DeviceCapabilities {
+        if !self.allows_arbitrary_lan() {
+            capabilities.wifi_direct = false;
+            capabilities.wifi_aware = false;
+            capabilities.local_only_hotspot = false;
+        }
+        capabilities
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AndroidOemQuirkProfile {
     pub background_wifi_peer_unreliable: bool,
     pub background_bluetooth_unreliable: bool,
@@ -1600,6 +1690,132 @@ mod tests {
         assert!(!api33.wifi_direct);
         assert!(!api33.wifi_aware);
         assert!(!api33.local_only_hotspot);
+    }
+
+    #[test]
+    fn android17_target37_denies_arbitrary_lan_without_permission() {
+        let policy = AndroidLocalNetworkPolicy {
+            os_api_level: 37,
+            target_sdk: 37,
+            access_local_network_granted: false,
+            system_mediated_selected_device: false,
+            android16_restrict_local_network_opt_in: false,
+            nearby_wifi_devices_granted: true,
+        };
+
+        assert_eq!(
+            policy.decision(),
+            AndroidLocalNetworkAccess::Denied,
+        );
+        assert!(!policy.allows_arbitrary_lan());
+        assert!(!policy.allows_selected_device_lan());
+        assert!(policy.allows_internet());
+
+        let caps = policy.apply_to_project_capabilities(
+            VirtualAndroidPhone {
+                api_level: 37,
+                hardware: AndroidHardwareProfile::broad_phone(),
+                permissions: AndroidPermissionProfile::all_granted(),
+            }
+            .capabilities(),
+        );
+        assert!(!caps.wifi_direct);
+        assert!(!caps.wifi_aware);
+        assert!(!caps.local_only_hotspot);
+        assert!(caps.bluetooth_le);
+    }
+
+    #[test]
+    fn android17_permission_restores_arbitrary_lan() {
+        let policy = AndroidLocalNetworkPolicy {
+            os_api_level: 37,
+            target_sdk: 37,
+            access_local_network_granted: true,
+            system_mediated_selected_device: false,
+            android16_restrict_local_network_opt_in: false,
+            nearby_wifi_devices_granted: true,
+        };
+
+        assert_eq!(
+            policy.decision(),
+            AndroidLocalNetworkAccess::AccessLocalNetworkGranted,
+        );
+        assert!(policy.allows_arbitrary_lan());
+        assert!(policy.allows_selected_device_lan());
+    }
+
+    #[test]
+    fn system_picker_does_not_become_broad_lan_permission() {
+        let policy = AndroidLocalNetworkPolicy {
+            os_api_level: 37,
+            target_sdk: 37,
+            access_local_network_granted: false,
+            system_mediated_selected_device: true,
+            android16_restrict_local_network_opt_in: false,
+            nearby_wifi_devices_granted: true,
+        };
+
+        assert_eq!(
+            policy.decision(),
+            AndroidLocalNetworkAccess::SystemMediatedSelectedDevice,
+        );
+        assert!(!policy.allows_arbitrary_lan());
+        assert!(policy.allows_selected_device_lan());
+
+        let caps = policy.apply_to_project_capabilities(
+            VirtualAndroidPhone {
+                api_level: 37,
+                hardware: AndroidHardwareProfile::broad_phone(),
+                permissions: AndroidPermissionProfile::all_granted(),
+            }
+            .capabilities(),
+        );
+        assert!(!caps.wifi_direct);
+        assert!(!caps.wifi_aware);
+        assert!(!caps.local_only_hotspot);
+    }
+
+    #[test]
+    fn target36_on_android17_keeps_legacy_lan_access() {
+        let policy = AndroidLocalNetworkPolicy {
+            os_api_level: 37,
+            target_sdk: 36,
+            access_local_network_granted: false,
+            system_mediated_selected_device: false,
+            android16_restrict_local_network_opt_in: false,
+            nearby_wifi_devices_granted: false,
+        };
+
+        assert_eq!(
+            policy.decision(),
+            AndroidLocalNetworkAccess::LegacyUnrestricted,
+        );
+        assert!(policy.allows_arbitrary_lan());
+    }
+
+    #[test]
+    fn android16_opt_in_uses_nearby_wifi_compatibility_gate() {
+        let denied = AndroidLocalNetworkPolicy {
+            os_api_level: 36,
+            target_sdk: 36,
+            access_local_network_granted: false,
+            system_mediated_selected_device: false,
+            android16_restrict_local_network_opt_in: true,
+            nearby_wifi_devices_granted: false,
+        };
+        assert_eq!(denied.decision(), AndroidLocalNetworkAccess::Denied);
+        assert!(!denied.allows_arbitrary_lan());
+        assert!(denied.allows_internet());
+
+        let allowed = AndroidLocalNetworkPolicy {
+            nearby_wifi_devices_granted: true,
+            ..denied
+        };
+        assert_eq!(
+            allowed.decision(),
+            AndroidLocalNetworkAccess::Android16OptInGranted,
+        );
+        assert!(allowed.allows_arbitrary_lan());
     }
 
     #[test]
