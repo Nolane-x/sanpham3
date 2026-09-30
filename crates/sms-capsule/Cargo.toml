@@ -1,0 +1,8 @@
+[package]
+name = "sms-capsule"
+version = "0.1.0"
+edition = "2021"
+description = "Bounded segmented SMS/data-SMS transport for sanpham3 tiny capsules"
+
+[dependencies]
+sha2 = "0.11"
