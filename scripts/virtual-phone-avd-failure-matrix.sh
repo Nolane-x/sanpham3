@@ -12,9 +12,11 @@ Environment:
   SP3_MATRIX_WAIT_MS    wait after state transition, default: 500
   SP3_REQUIRE_DOZE      1 fails if device-idle commands are unavailable;
                         0 (default) records an explicit SKIP
+  SP3_EVIDENCE_LEVEL    evidence label, default: ANDROID_AVD
 
-The script is intended for Android AVDs and records ANDROID_AVD evidence.
-A fake-adb CI court validates the state machine only.
+The script is intended for Android AVDs. Fake-adb courts must override
+SP3_EVIDENCE_LEVEL so modeled state-machine evidence cannot be mistaken for
+Android framework evidence.
 EOF
 }
 
@@ -26,6 +28,7 @@ PACKAGE="$3"
 ADB="${SP3_ADB_BIN:-adb}"
 WAIT_MS="${SP3_MATRIX_WAIT_MS:-500}"
 REQUIRE_DOZE="${SP3_REQUIRE_DOZE:-0}"
+EVIDENCE_LEVEL="${SP3_EVIDENCE_LEVEL:-ANDROID_AVD}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 EVIDENCE="${4:-evidence/virtual-phone-avd-failure-${STAMP}}"
 mkdir -p "$EVIDENCE"
@@ -224,7 +227,7 @@ fi
   echo "doze_pass=$DOZE_PASS"
   echo "doze_skip=$DOZE_SKIP"
   echo "failed=$FAILED"
-  echo "evidence_level=ANDROID_AVD"
+  echo "evidence_level=$EVIDENCE_LEVEL"
 } >"$EVIDENCE/metadata.txt"
 
 (
