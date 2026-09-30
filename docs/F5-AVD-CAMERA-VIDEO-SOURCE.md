@@ -38,7 +38,7 @@ only reads the Y4M captured back through Camera2.
 
 - `encode_optical_repetition()`;
 - `render_optical_cells()`;
-- fixed 2x nearest-neighbor scale;
+- 1x project raster scale so the emulator camera's orientation/crop path does not discard symbols;
 - centered low-intensity canvas;
 - 30 fps mono Y4M.
 
@@ -65,8 +65,17 @@ MP4 for the emulator camera backend.
 4. prefers 640x480 and otherwise selects the closest 4:3 output size;
 5. discards configurable warmup frames;
 6. reads the Y plane using the actual row and pixel strides;
-7. writes a tight `Cmono` Y4M stream;
-8. fsyncs the capture before declaring PASS.
+7. reads `SENSOR_ORIENTATION` and rotates the tight luma into logical upright
+   orientation before serialization;
+8. swaps Y4M output dimensions for 90/270 degree sensors;
+9. writes a tight `Cmono` Y4M stream;
+10. fsyncs the capture before declaring PASS.
+
+The first real AVD evidence showed a 90-degree back-camera sensor orientation.
+Keeping the original 2x fixture caused the emulator camera's center-crop path to
+truncate the active raster. The court therefore uses the 1x raster and preserves
+camera orientation handling as an explicit part of the capture path rather than
+teaching the decoder a one-off artifact crop.
 
 The capture defaults are:
 
