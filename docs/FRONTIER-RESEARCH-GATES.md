@@ -142,8 +142,6 @@ Future:
 
 The merged F5 driver exercises both AVD identities, captures
 package/connectivity/route/logcat evidence and restores runtime permissions.
-The merged F5 driver exercises both AVD identities, captures
-package/connectivity/route/logcat evidence and restores runtime permissions.
 - [ ] emulator Wi-Fi Direct pair court
 - [ ] exact-Network probe court across two AVDs
 - [ ] camera video-source optical replay
