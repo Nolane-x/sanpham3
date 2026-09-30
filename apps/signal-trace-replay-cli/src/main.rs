@@ -5,7 +5,8 @@ use signal_frontier::{
 };
 use signal_trace_replay::{
     parse_pcm16_wav, parse_scalar_csv_column,
-    replay_acoustic_wav_window, replay_optical_pgm_sequence,
+    register_optical_translation, replay_acoustic_wav_window,
+    replay_optical_pgm_sequence, replay_optical_pgm_sequence_registered,
     replay_vibration_csv_window,
 };
 use std::env;
@@ -22,6 +23,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "acoustic-wav" => acoustic_wav(&args[2..]),
         "vibration-csv" => vibration_csv(&args[2..]),
         "optical-pgm" => optical_pgm(&args[2..]),
+        "optical-pgm-auto" => optical_pgm_auto(&args[2..]),
         _ => Err(usage().into()),
     }
 }
@@ -155,6 +157,62 @@ fn optical_pgm(args: &[String]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn optical_pgm_auto(args: &[String]) -> Result<(), Box<dyn Error>> {
+    if args.len() < 2 {
+        return Err(usage().into());
+    }
+
+    let expected = hex_to_bits(&args[0])?;
+    let repetition = OpticalRepetitionConfig::robust_default();
+    let grid = OpticalGridConfig::camera_baseline();
+    let symbol_count = expected
+        .len()
+        .checked_mul(repetition.repeats_per_bit)
+        .ok_or("optical symbol count overflow")?;
+
+    let mut frames = Vec::with_capacity(args.len() - 1);
+    let mut hashes = Vec::with_capacity(args.len() - 1);
+    let mut origins = Vec::with_capacity(args.len() - 1);
+
+    for path in &args[1..] {
+        let bytes = fs::read(path)?;
+        let pgm = signal_trace_replay::parse_pgm_gray8(&bytes)?;
+        let source = pgm.to_optical_frame();
+        let (_, registration) =
+            register_optical_translation(&source, symbol_count, grid)?;
+        hashes.push(sha256_hex(&bytes));
+        origins.push(format!(
+            "{}:{}",
+            registration.source_origin_x,
+            registration.source_origin_y,
+        ));
+        frames.push(bytes);
+    }
+
+    let decoded = replay_optical_pgm_sequence_registered(
+        &frames,
+        symbol_count,
+        grid,
+        repetition,
+    )?;
+    let errors = bit_error_count(&expected, &decoded);
+
+    println!(
+        "F3_OPTICAL_AUTO_REPLAY evidence_level=UNCLASSIFIED_REPLAY frames={} frame_sha256={} registration=translation origins={} expected_bits={} decoded_bits={} bit_errors={}",
+        frames.len(),
+        hashes.join(","),
+        origins.join(","),
+        expected.len(),
+        decoded.len(),
+        errors,
+    );
+
+    if errors != 0 {
+        return Err(format!("optical auto replay has {errors} bit errors").into());
+    }
+    Ok(())
+}
+
 fn parse_optional_usize(
     value: Option<&String>,
     default: usize,
@@ -198,10 +256,12 @@ fn usage() -> String {
         "  signal-trace-replay-cli acoustic-wav <capture.wav> <expected_hex> [channel] [start_sample]",
         "  signal-trace-replay-cli vibration-csv <capture.csv> <expected_hex> [value_column] [start_sample]",
         "  signal-trace-replay-cli optical-pgm <expected_hex> <frame1.pgm> [frame2.pgm ...]",
+        "  signal-trace-replay-cli optical-pgm-auto <expected_hex> <frame1.pgm> [frame2.pgm ...]",
         "",
         "All commands use the current F3 reference decoder profiles.",
         "Input provenance is always printed as UNCLASSIFIED_REPLAY.",
-        "Optical PGM input must already be cropped/resized to the known court geometry.",
+        "optical-pgm requires crop/resize to the known court geometry.",
+        "optical-pgm-auto may discover translation inside a larger same-scale grayscale canvas.",
         "A physical court must separately prove how each capture was produced.",
     ]
     .join("\n")
