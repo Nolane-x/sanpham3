@@ -36,6 +36,7 @@ class WifiDirectPairCourtActivity : Activity() {
     private var discovery: AndroidWifiDirectDiscovery? = null
     private var dataPath: AndroidWifiDirectDataPath? = null
     private val completed = AtomicBoolean(false)
+    private val groupFormedSeen = AtomicBoolean(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -118,6 +119,7 @@ class WifiDirectPairCourtActivity : Activity() {
                 }
 
                 is AndroidWifiDirectDataPathEvent.GroupFormed -> {
+                    groupFormedSeen.set(true)
                     if (!event.endpoint.groupOwner) {
                         fail(
                             "owner_role_lost",
@@ -159,9 +161,7 @@ class WifiDirectPairCourtActivity : Activity() {
                 }
 
                 is AndroidWifiDirectDataPathEvent.Disconnected -> {
-                    if (!completed.get()) {
-                        fail("owner_disconnected", null)
-                    }
+                    handleDisconnect("owner")
                 }
 
                 is AndroidWifiDirectDataPathEvent.Failed -> {
@@ -246,6 +246,7 @@ class WifiDirectPairCourtActivity : Activity() {
                 }
 
                 is AndroidWifiDirectDataPathEvent.GroupFormed -> {
+                    groupFormedSeen.set(true)
                     if (event.endpoint.groupOwner) {
                         fail(
                             "client_became_group_owner",
@@ -288,9 +289,7 @@ class WifiDirectPairCourtActivity : Activity() {
                 }
 
                 is AndroidWifiDirectDataPathEvent.Disconnected -> {
-                    if (!completed.get()) {
-                        fail("client_disconnected", null)
-                    }
+                    handleDisconnect("client")
                 }
 
                 is AndroidWifiDirectDataPathEvent.Failed -> {
@@ -301,6 +300,22 @@ class WifiDirectPairCourtActivity : Activity() {
                 }
             }
         }
+    }
+
+    private fun handleDisconnect(role: String) {
+        if (completed.get()) {
+            return
+        }
+
+        if (!groupFormedSeen.get()) {
+            record(
+                "WIFI_DIRECT_DISCONNECTED_TRANSIENT role=$role " +
+                    "phase=before_group_formed",
+            )
+            return
+        }
+
+        fail("${role}_disconnected_after_group", null)
     }
 
     private fun pass(
