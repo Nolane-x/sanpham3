@@ -375,7 +375,7 @@ fn optical_y4m_fixture(
         .map_err(|error| format!("optical repetition encode failed: {error:?}"))?;
     let base = render_optical_cells(&symbols, grid)
         .map_err(|error| format!("optical raster render failed: {error:?}"))?;
-    let scaled = resize_optical_frame_nearest(&base, 2, 1)?;
+    let scaled = resize_optical_frame_nearest(&base, 1, 1)?;
     if scaled.width > canvas_width || scaled.height > canvas_height {
         return Err(format!(
             "scaled optical raster {}x{} does not fit canvas {}x{}",
