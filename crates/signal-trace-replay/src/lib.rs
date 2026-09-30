@@ -511,6 +511,220 @@ pub fn register_optical_translation(
     ))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpticalScaleRegistration {
+    pub source_origin_x: usize,
+    pub source_origin_y: usize,
+    pub source_width: usize,
+    pub source_height: usize,
+    pub scale_x: f32,
+    pub scale_y: f32,
+}
+
+pub fn register_optical_translation_scale(
+    frame: &OpticalGrayFrame,
+    symbol_count: usize,
+    grid: OpticalGridConfig,
+) -> Result<(OpticalGrayFrame, OpticalScaleRegistration), ReplayError> {
+    if symbol_count == 0 {
+        return Err(ReplayError::EmptyTrace);
+    }
+
+    grid.validate()?;
+    if frame.width == 0
+        || frame.height == 0
+        || frame.pixels.len() != frame.width.saturating_mul(frame.height)
+    {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "source frame dimensions are invalid",
+        ));
+    }
+
+    let rows = symbol_count.div_ceil(grid.columns);
+    let quiet_pixels = grid
+        .quiet_zone_cells
+        .checked_mul(grid.cell_pixels)
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "quiet-zone size overflow",
+        ))?;
+    let data_width = grid
+        .columns
+        .checked_mul(grid.cell_pixels)
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "data width overflow",
+        ))?;
+    let data_height = rows
+        .checked_mul(grid.cell_pixels)
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "data height overflow",
+        ))?;
+    let target_width = grid
+        .columns
+        .checked_add(grid.quiet_zone_cells.saturating_mul(2))
+        .and_then(|cells| cells.checked_mul(grid.cell_pixels))
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "target width overflow",
+        ))?;
+    let target_height = rows
+        .checked_add(grid.quiet_zone_cells.saturating_mul(2))
+        .and_then(|cells| cells.checked_mul(grid.cell_pixels))
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "target height overflow",
+        ))?;
+
+    let background = (grid.zero_level * 0.25).clamp(0.0, 1.0);
+    let activation_threshold =
+        background + (grid.zero_level - background) * 0.50;
+
+    let mut min_x = usize::MAX;
+    let mut min_y = usize::MAX;
+    let mut max_x = 0_usize;
+    let mut max_y = 0_usize;
+    let mut found = false;
+
+    for y in 0..frame.height {
+        let row_start = y * frame.width;
+        for x in 0..frame.width {
+            if frame.pixels[row_start + x] >= activation_threshold {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+                found = true;
+            }
+        }
+    }
+
+    if !found {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "no active optical cells found",
+        ));
+    }
+
+    let observed_data_width = max_x - min_x + 1;
+    let observed_data_height = max_y - min_y + 1;
+    let scale_x = observed_data_width as f32 / data_width as f32;
+    let scale_y = observed_data_height as f32 / data_height as f32;
+
+    if !(0.50..=3.00).contains(&scale_x)
+        || !(0.50..=3.00).contains(&scale_y)
+    {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "detected scale is outside research bounds",
+        ));
+    }
+
+    let anisotropy =
+        (scale_x - scale_y).abs() / scale_x.max(scale_y);
+    if anisotropy > 0.12 {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "non-uniform scale exceeds baseline tolerance",
+        ));
+    }
+
+    let scale = (scale_x + scale_y) * 0.5;
+    let scaled_quiet = (quiet_pixels as f32 * scale).round() as usize;
+    if min_x < scaled_quiet || min_y < scaled_quiet {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "scaled grid is too close to source-frame edge",
+        ));
+    }
+
+    let source_origin_x = min_x - scaled_quiet;
+    let source_origin_y = min_y - scaled_quiet;
+    let source_width = (target_width as f32 * scale).round() as usize;
+    let source_height = (target_height as f32 * scale).round() as usize;
+
+    if source_width == 0 || source_height == 0 {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "scaled crop dimensions are zero",
+        ));
+    }
+
+    let source_end_x = source_origin_x
+        .checked_add(source_width)
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "scaled crop x overflow",
+        ))?;
+    let source_end_y = source_origin_y
+        .checked_add(source_height)
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "scaled crop y overflow",
+        ))?;
+
+    if source_end_x > frame.width || source_end_y > frame.height {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "scaled crop exceeds source frame",
+        ));
+    }
+
+    let mut pixels =
+        Vec::with_capacity(target_width.saturating_mul(target_height));
+    for target_y in 0..target_height {
+        let source_y = source_origin_y
+            + ((target_y as f32 + 0.5)
+                * source_height as f32
+                / target_height as f32)
+                .floor() as usize;
+        let source_y = source_y.min(source_end_y - 1);
+
+        for target_x in 0..target_width {
+            let source_x = source_origin_x
+                + ((target_x as f32 + 0.5)
+                    * source_width as f32
+                    / target_width as f32)
+                    .floor() as usize;
+            let source_x = source_x.min(source_end_x - 1);
+            pixels.push(frame.pixels[source_y * frame.width + source_x]);
+        }
+    }
+
+    Ok((
+        OpticalGrayFrame {
+            width: target_width,
+            height: target_height,
+            pixels,
+        },
+        OpticalScaleRegistration {
+            source_origin_x,
+            source_origin_y,
+            source_width,
+            source_height,
+            scale_x,
+            scale_y,
+        },
+    ))
+}
+
+pub fn replay_optical_pgm_sequence_registered_scaled(
+    pgm_frames: &[Vec<u8>],
+    symbol_count: usize,
+    grid: OpticalGridConfig,
+    repetition: OpticalRepetitionConfig,
+) -> Result<Vec<u8>, ReplayError> {
+    if pgm_frames.is_empty() || symbol_count == 0 {
+        return Err(ReplayError::EmptyTrace);
+    }
+
+    let mut decoded_frames = Vec::with_capacity(pgm_frames.len());
+    for bytes in pgm_frames {
+        let pgm = parse_pgm_gray8(bytes)?;
+        let source = pgm.to_optical_frame();
+        let (registered, _) =
+            register_optical_translation_scale(&source, symbol_count, grid)?;
+        let decoded = decode_optical_cells(
+            &registered,
+            symbol_count,
+            grid,
+            None,
+        )?;
+        decoded_frames.push(decoded);
+    }
+
+    let voted = vote_optical_symbols(&decoded_frames)?;
+    Ok(decode_optical_repetition(&voted, repetition)?)
+}
+
 pub fn replay_optical_pgm_sequence_registered(
     pgm_frames: &[Vec<u8>],
     symbol_count: usize,
@@ -790,6 +1004,120 @@ mod tests {
         }
 
         canvas
+    }
+
+    fn resize_optical_nearest(
+        frame: &OpticalGrayFrame,
+        numerator: usize,
+        denominator: usize,
+    ) -> OpticalGrayFrame {
+        assert!(numerator > 0);
+        assert!(denominator > 0);
+        let width = frame.width * numerator / denominator;
+        let height = frame.height * numerator / denominator;
+        assert!(width > 0 && height > 0);
+
+        let mut pixels = Vec::with_capacity(width * height);
+        for y in 0..height {
+            let source_y = (y * denominator / numerator)
+                .min(frame.height - 1);
+            for x in 0..width {
+                let source_x = (x * denominator / numerator)
+                    .min(frame.width - 1);
+                pixels.push(
+                    frame.pixels[source_y * frame.width + source_x],
+                );
+            }
+        }
+
+        OpticalGrayFrame {
+            width,
+            height,
+            pixels,
+        }
+    }
+
+    #[test]
+    fn optical_scale_registration_recovers_two_x_shifted_grid() {
+        use signal_frontier::{
+            encode_optical_repetition, render_optical_cells,
+        };
+
+        let bits = vec![
+            1, 0, 1, 1, 0, 0, 1, 0,
+            1, 1, 0, 1, 0, 1, 0, 0,
+        ];
+        let repetition = OpticalRepetitionConfig::robust_default();
+        let grid = OpticalGridConfig::camera_baseline();
+        let symbols =
+            encode_optical_repetition(&bits, repetition).unwrap();
+        let frame = render_optical_cells(&symbols, grid).unwrap();
+        let scaled = resize_optical_nearest(&frame, 2, 1);
+        let source = embed_optical_frame(
+            &scaled,
+            scaled.width + 127,
+            scaled.height + 99,
+            43,
+            37,
+        );
+
+        let (registered, info) =
+            register_optical_translation_scale(
+                &source,
+                symbols.len(),
+                grid,
+            )
+            .unwrap();
+
+        assert!((info.scale_x - 2.0).abs() < 0.02);
+        assert!((info.scale_y - 2.0).abs() < 0.02);
+        assert_eq!(info.source_origin_x, 43);
+        assert_eq!(info.source_origin_y, 37);
+        assert_eq!(registered, frame);
+    }
+
+    #[test]
+    fn optical_scaled_pgm_replay_roundtrips_multiple_scales() {
+        use signal_frontier::{
+            encode_optical_repetition, render_optical_cells,
+        };
+
+        let bits = vec![
+            1, 0, 1, 1, 0, 0, 1, 0,
+            0, 1, 1, 0, 1, 0, 0, 1,
+        ];
+        let repetition = OpticalRepetitionConfig::robust_default();
+        let grid = OpticalGridConfig::camera_baseline();
+        let symbols =
+            encode_optical_repetition(&bits, repetition).unwrap();
+        let frame = render_optical_cells(&symbols, grid).unwrap();
+
+        let scaled_a = resize_optical_nearest(&frame, 2, 1);
+        let scaled_b = resize_optical_nearest(&frame, 3, 2);
+        let first = embed_optical_frame(
+            &scaled_a,
+            scaled_a.width + 100,
+            scaled_a.height + 88,
+            31,
+            29,
+        );
+        let second = embed_optical_frame(
+            &scaled_b,
+            scaled_b.width + 120,
+            scaled_b.height + 92,
+            47,
+            33,
+        );
+
+        let decoded = replay_optical_pgm_sequence_registered_scaled(
+            &[pgm_from_frame(&first), pgm_from_frame(&second)],
+            symbols.len(),
+            grid,
+            repetition,
+        )
+        .unwrap();
+
+        assert_eq!(bit_error_count(&bits, &decoded), 0);
     }
 
     #[test]
