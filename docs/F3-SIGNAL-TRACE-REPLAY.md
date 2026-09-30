@@ -140,6 +140,40 @@ The CLI reports the discovered origin for each frame.
 Synthetic CI fixtures intentionally place the same raster at different offsets
 inside larger low-noise canvases and require exact payload recovery.
 
+## Automatic translation + uniform-scale registration
+
+A second acquisition bridge handles a bounded uniform scale change in addition
+to translation:
+
+```bash
+cargo run -p signal-trace-replay-cli -- \
+  optical-pgm-auto-scale <expected_hex> frame1.pgm [frame2.pgm ...]
+```
+
+The detector:
+
+1. finds the active optical-data bounding box;
+2. compares observed active width/height with the known logical grid;
+3. derives independent `scale_x` / `scale_y`;
+4. rejects scales outside 0.50x..3.00x;
+5. rejects more than 12% anisotropy;
+6. expands the quiet zone at the inferred scale;
+7. crops the scaled raster;
+8. nearest-resamples it back to the reference grid;
+9. runs normal cell/repetition decoding.
+
+The CLI reports, for every frame:
+
+```text
+origin_x:origin_y:scale_x:scale_y
+```
+
+Synthetic courts require exact payload recovery with different offsets and
+both 2.0x and 1.5x input scale.
+
+This baseline still does **not** estimate rotation, perspective/homography,
+camera pose, lens distortion or arbitrary visual finders.
+
 ## Windowed replay
 
 Both transports support:
