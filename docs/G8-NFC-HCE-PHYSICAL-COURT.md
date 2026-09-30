@@ -119,6 +119,74 @@ reader.start { event ->
 Call `reader.destroy()` when the lab screen is finished so the key copy is
 wiped and reader mode is disabled.
 
+## Executable Recovery Lab court
+
+The Recovery Lab exposes:
+
+```text
+Open NFC HCE / Reader physical G8 court
+```
+
+Run the same 32-byte laboratory peer key on two physical devices.
+
+On the HCE device:
+
+1. enter a project node ID;
+2. enter the shared laboratory key;
+3. tap `Configure HCE role`;
+4. leave the court screen active.
+
+On the Reader device:
+
+1. enter a different project node ID;
+2. enter the same key;
+3. tap `Start Reader role`;
+4. bring the devices into NFC range.
+
+The HCE role does not report PASS immediately after authentication. It waits
+until the reader has completed all authenticated benchmark probes.
+
+### Authenticated APDU benchmark
+
+After the normal encrypted G8 challenge/ACK, the reader performs:
+
+```text
+rounds        = 16
+payload_bytes = 64
+```
+
+Each round:
+
+1. builds a deterministic sequence-bound payload;
+2. encrypts it as peer-session kind `0x60`;
+3. sends it through the existing short-APDU frame command;
+4. HCE decrypts and validates the sequence;
+5. HCE returns the exact payload as encrypted kind `0x61`;
+6. reader requires byte-for-byte equality.
+
+The 64-byte useful payload remains below the 240-byte short-APDU project
+ceiling after peer-session framing.
+
+Reader evidence records:
+
+- authenticated peer node ID;
+- challenge;
+- `IsoDep.maxTransceiveLength`;
+- completed rounds;
+- payload bytes;
+- total benchmark elapsed time;
+- min / median / p95 / max RTT;
+- one-way useful bytes;
+- round-trip useful bytes;
+- one-way useful bits/s;
+- round-trip useful bits/s.
+
+HCE evidence records the authenticated peer/challenge and number of benchmark
+frames completed.
+
+These are application-level useful-throughput measurements. They are not raw
+NFC controller bitrate or energy measurements.
+
 ## Security boundary
 
 AID selection is routing only.
@@ -162,6 +230,9 @@ Record on both devices:
 - challenge hex;
 - reader max transceive length;
 - result PASS/FAIL;
+- benchmark rounds/payload size;
+- RTT summary;
+- useful-throughput summary;
 - raw logcat around the tap.
 
 The Reader and HCE challenge bytes must match.
