@@ -48,6 +48,9 @@ jobs:
       - name: Android execution OEM and resource matrix
         run: cargo run -p virtual-phone-lab -- android-execution-matrix
 
+      - name: Android 17 local network permission matrix
+        run: cargo run -p virtual-phone-lab -- android-local-network-matrix
+
       - name: Windows and Linux capability privilege matrix
         run: cargo run -p virtual-phone-lab -- desktop-matrix
 
