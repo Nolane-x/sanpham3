@@ -49,6 +49,9 @@
             android:name=".G9PeerEgressActivity"
             android:exported="false" />
         <activity
+            android:name=".GattCourtActivity"
+            android:exported="false" />
+        <activity
             android:name=".HotspotCourtActivity"
             android:exported="false" />
         <activity
