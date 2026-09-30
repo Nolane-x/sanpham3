@@ -567,9 +567,10 @@ fn decode_optical_cells_best_quarter_turn(
     repetition.validate()?;
 
     let mut best: Option<(
-        usize,
-        usize,
         f32,
+        f32,
+        usize,
+        usize,
         Vec<Option<u8>>,
     )> = None;
     let mut last_error = None;
@@ -600,10 +601,16 @@ fn decode_optical_cells_best_quarter_turn(
                 );
             let balance =
                 (info.scale_x / info.scale_y).ln().abs();
+            let marker_score =
+                optical_orientation_marker_score(
+                    &registered,
+                    grid,
+                )?;
             Ok((
+                marker_score,
+                balance,
                 disagreements,
                 resolved,
-                balance,
                 decoded,
             ))
         });
@@ -613,12 +620,19 @@ fn decode_optical_cells_best_quarter_turn(
                 let replace = best
                     .as_ref()
                     .is_none_or(|current| {
-                        candidate.0 < current.0
-                            || (candidate.0 == current.0
-                                && candidate.1 > current.1)
-                            || (candidate.0 == current.0
-                                && candidate.1 == current.1
-                                && candidate.2 < current.2)
+                        let marker_delta =
+                            candidate.0 - current.0;
+                        if marker_delta.abs() > 0.01 {
+                            marker_delta > 0.0
+                        } else if
+                            (candidate.1 - current.1).abs() > 0.02
+                        {
+                            candidate.1 < current.1
+                        } else if candidate.2 != current.2 {
+                            candidate.2 < current.2
+                        } else {
+                            candidate.3 > current.3
+                        }
                     });
                 if replace {
                     best = Some(candidate);
@@ -628,7 +642,7 @@ fn decode_optical_cells_best_quarter_turn(
         }
     }
 
-    best.map(|(_, _, _, decoded)| decoded)
+    best.map(|(_, _, _, _, decoded)| decoded)
         .ok_or_else(|| {
             last_error.unwrap_or(
                 ReplayError::OpticalRegistrationFailed(
@@ -636,6 +650,47 @@ fn decode_optical_cells_best_quarter_turn(
                 ),
             )
         })
+}
+
+fn optical_orientation_marker_score(
+    frame: &OpticalGrayFrame,
+    grid: OpticalGridConfig,
+) -> Result<f32, ReplayError> {
+    frame.validate()?;
+    grid.validate()?;
+
+    let cell = grid.cell_pixels;
+    if frame.width < cell || frame.height < cell {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "registered frame is too small for orientation finder",
+        ));
+    }
+
+    let mean_block = |x0: usize, y0: usize| -> f32 {
+        let mut sum = 0.0_f32;
+        for y in y0..y0 + cell {
+            let start = y * frame.width + x0;
+            sum += frame.pixels[start..start + cell]
+                .iter()
+                .sum::<f32>();
+        }
+        sum / (cell * cell) as f32
+    };
+
+    let top_left = mean_block(0, 0);
+    let top_right = mean_block(frame.width - cell, 0);
+    let bottom_left = mean_block(0, frame.height - cell);
+    let bottom_right = mean_block(
+        frame.width - cell,
+        frame.height - cell,
+    );
+
+    Ok(
+        top_left
+            - top_right
+                .max(bottom_left)
+                .max(bottom_right),
+    )
 }
 
 fn optical_repetition_disagreements(
