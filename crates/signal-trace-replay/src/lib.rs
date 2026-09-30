@@ -1066,6 +1066,7 @@ fn optical_scale_active_bbox(
         usize,
         usize,
         usize,
+        usize,
         f32,
         f32,
     )> = None;
@@ -1130,24 +1131,20 @@ fn optical_scale_active_bbox(
                 cumulative_min_x,
                 cumulative_min_y,
                 cumulative_max_x,
+                cumulative_max_y,
                 scale_x,
                 scale_y,
             ));
-            // max_y is derived below from the same cumulative state and
-            // packed separately to keep the tuple small enough to compare
-            // clearly.
-            if let Some(current) = best.as_mut() {
-                current.4 = cumulative_max_x;
-            }
         }
     }
 
     let Some((
         _,
-        chosen_threshold,
+        _,
         min_x,
         min_y,
         max_x,
+        max_y,
         scale_x,
         scale_y,
     )) = best
@@ -1157,35 +1154,11 @@ fn optical_scale_active_bbox(
         ));
     };
 
-    // Rebuild only the chosen cumulative Y maximum. This keeps threshold
-    // selection O(pixels + 256) without storing a second large candidate set.
-    let mut max_y = 0_usize;
-    let mut found = false;
-    for y in 0..frame.height {
-        let row_start = y * frame.width;
-        for x in 0..frame.width {
-            let level = (frame.pixels[row_start + x]
-                .clamp(0.0, 1.0)
-                * 255.0)
-                .round() as usize;
-            if level >= chosen_threshold {
-                max_y = max_y.max(y);
-                found = true;
-            }
-        }
-    }
-
-    if !found {
-        return Err(ReplayError::OpticalRegistrationFailed(
-            "chosen activation threshold contains no pixels",
-        ));
-    }
-
     Ok((
         min_x,
         min_y,
-        _max_x,
-        _max_y,
+        max_x,
+        max_y,
         scale_x,
         scale_y,
     ))
@@ -1245,8 +1218,8 @@ pub fn register_optical_translation_scale(
     let (
         min_x,
         min_y,
-        max_x,
-        max_y,
+        _max_x,
+        _max_y,
         scale_x,
         scale_y,
     ) = optical_scale_active_bbox(
