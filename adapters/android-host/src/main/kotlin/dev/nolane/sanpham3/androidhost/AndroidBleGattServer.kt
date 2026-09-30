@@ -39,6 +39,12 @@ sealed interface AndroidBleGattServerEvent {
         val evidence: AndroidBleGattEvidence,
     ) : AndroidBleGattServerEvent
 
+    data class BenchmarkProbe(
+        val peerNodeId: Long,
+        val sequence: Long,
+        val payloadBytes: Int,
+    ) : AndroidBleGattServerEvent
+
     data class Failed(
         val detail: String,
     ) : AndroidBleGattServerEvent
@@ -385,6 +391,13 @@ class AndroidBleGattServer(
                 )
                 AndroidBleGattProtocol.requireFitsMtu(response, mtu)
                 pendingResponses[device] = response
+                listener?.invoke(
+                    AndroidBleGattServerEvent.BenchmarkProbe(
+                        peerNodeId = session.peerNodeId,
+                        sequence = sequence,
+                        payloadBytes = payload.size,
+                    ),
+                )
             }
 
             else -> error("unsupported encrypted BLE GATT frame kind $kind")
