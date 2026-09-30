@@ -58,7 +58,7 @@ jobs:
       - name: Synthetic near-ultrasonic waveform court
         run: cargo run -p virtual-phone-lab -- acoustic-synthetic
 
-      - name: Synthetic optical erasure court
+      - name: Synthetic optical raster camera-like court
         run: cargo run -p virtual-phone-lab -- optical-synthetic
 
       - name: Synthetic vibration trace court

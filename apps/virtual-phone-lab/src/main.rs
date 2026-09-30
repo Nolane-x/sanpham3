@@ -358,35 +358,66 @@ fn optical_synthetic() -> Result<(), String> {
         1, 0, 1, 1, 0, 0, 1, 0,
         0, 1, 1, 0, 1, 0, 0, 1,
     ];
-    let config = signal_frontier::OpticalRepetitionConfig::robust_default();
-    let encoded = signal_frontier::encode_optical_repetition(
+    let repetition =
+        signal_frontier::OpticalRepetitionConfig::robust_default();
+    let grid = signal_frontier::OpticalGridConfig::camera_baseline();
+    let perspective =
+        signal_frontier::OpticalPerspective::mild_keystone();
+
+    let symbols = signal_frontier::encode_optical_repetition(
         &bits,
-        config,
+        repetition,
     )
     .map_err(|error| format!("{error:?}"))?;
-    let impaired = signal_frontier::apply_optical_impairment(
-        &encoded,
-        signal_frontier::OpticalImpairment {
-            drop_every: Some(7),
-            flip_every: Some(11),
-        },
-    );
+    let rendered = signal_frontier::render_optical_cells(
+        &symbols,
+        grid,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let warped = signal_frontier::warp_optical_perspective(
+        &rendered,
+        perspective,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let blurred = signal_frontier::apply_optical_box_blur(
+        &warped,
+        1,
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let photographed = signal_frontier::apply_optical_photometric(
+        &blurred,
+        signal_frontier::OpticalPhotometric::phone_camera_baseline(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let sampled = signal_frontier::decode_optical_cells(
+        &photographed,
+        symbols.len(),
+        grid,
+        Some(perspective),
+    )
+    .map_err(|error| format!("{error:?}"))?;
     let decoded = signal_frontier::decode_optical_repetition(
-        &impaired,
-        config,
+        &sampled,
+        repetition,
     )
     .map_err(|error| format!("{error:?}"))?;
     let errors = signal_frontier::bit_error_count(&bits, &decoded);
+    let erasures = sampled.iter().filter(|symbol| symbol.is_none()).count();
 
     println!(
-        "OPTICAL_SYNTHETIC bits={} symbols={} errors={}",
+        "OPTICAL_SYNTHETIC bits={} symbols={} frame={}x{} erasures={} errors={} perspective=true blur_radius=1 exposure_gamma=true",
         bits.len(),
-        impaired.len(),
+        symbols.len(),
+        photographed.width,
+        photographed.height,
+        erasures,
         errors,
     );
 
     if errors != 0 {
-        return Err("synthetic optical payload did not roundtrip".to_owned());
+        return Err(
+            "synthetic optical raster payload did not roundtrip".to_owned(),
+        );
     }
     Ok(())
 }
