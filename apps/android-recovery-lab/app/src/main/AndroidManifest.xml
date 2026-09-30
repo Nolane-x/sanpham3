@@ -55,6 +55,9 @@
             android:name=".GattCourtActivity"
             android:exported="false" />
         <activity
+            android:name=".NfcCourtActivity"
+            android:exported="false" />
+        <activity
             android:name=".HotspotCourtActivity"
             android:exported="false" />
         <activity
