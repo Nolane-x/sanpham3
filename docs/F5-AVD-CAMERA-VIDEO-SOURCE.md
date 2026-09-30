@@ -39,6 +39,7 @@ only reads the Y4M captured back through Camera2.
 - `encode_optical_repetition()`;
 - `render_optical_cells()`;
 - 1x project raster scale so the emulator camera's orientation/crop path does not discard symbols;
+- portrait 480x640 source canvas, aligned with the emulator back camera's 90-degree sensor orientation;
 - centered low-intensity canvas;
 - 30 fps mono Y4M.
 
@@ -49,7 +50,7 @@ cargo run -p signal-trace-replay-cli -- \
   optical-y4m-fixture \
   a53cc35a \
   source.y4m \
-  640 480 120
+  480 640 120
 ```
 
 The CI workflow converts this deterministic Y4M into a lossless H.264/yuv420p
@@ -147,3 +148,10 @@ It does not prove:
 - physical energy.
 
 Those remain physical F6/F7 evidence requirements.
+
+
+The CI source is intentionally portrait 480x640 while Camera2 requests a
+640x480 sensor stream. The emulator back camera reports a 90-degree sensor
+orientation. After the activity rotates sensor luma into logical orientation,
+the serialized capture returns to 480x640, matching the source geometry and
+avoiding the center-crop observed with a landscape source.
