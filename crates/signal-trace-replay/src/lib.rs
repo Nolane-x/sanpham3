@@ -488,6 +488,7 @@ pub fn replay_optical_y4m_registered_scaled(
                 &source,
                 symbol_count,
                 grid,
+                repetition,
             )?,
         );
     }
@@ -561,8 +562,16 @@ fn decode_optical_cells_best_quarter_turn(
     source: &OpticalGrayFrame,
     symbol_count: usize,
     grid: OpticalGridConfig,
+    repetition: OpticalRepetitionConfig,
 ) -> Result<Vec<Option<u8>>, ReplayError> {
-    let mut best: Option<(usize, f32, Vec<Option<u8>>)> = None;
+    repetition.validate()?;
+
+    let mut best: Option<(
+        usize,
+        usize,
+        f32,
+        Vec<Option<u8>>,
+    )> = None;
     let mut last_error = None;
 
     for quarter_turns in 0_u8..4 {
@@ -584,9 +593,19 @@ fn decode_optical_cells_best_quarter_turn(
                 .iter()
                 .filter(|value| value.is_some())
                 .count();
+            let disagreements =
+                optical_repetition_disagreements(
+                    &decoded,
+                    repetition,
+                );
             let balance =
                 (info.scale_x / info.scale_y).ln().abs();
-            Ok((resolved, balance, decoded))
+            Ok((
+                disagreements,
+                resolved,
+                balance,
+                decoded,
+            ))
         });
 
         match attempt {
@@ -594,9 +613,12 @@ fn decode_optical_cells_best_quarter_turn(
                 let replace = best
                     .as_ref()
                     .is_none_or(|current| {
-                        candidate.0 > current.0
+                        candidate.0 < current.0
                             || (candidate.0 == current.0
-                                && candidate.1 < current.1)
+                                && candidate.1 > current.1)
+                            || (candidate.0 == current.0
+                                && candidate.1 == current.1
+                                && candidate.2 < current.2)
                     });
                 if replace {
                     best = Some(candidate);
@@ -606,7 +628,7 @@ fn decode_optical_cells_best_quarter_turn(
         }
     }
 
-    best.map(|(_, _, decoded)| decoded)
+    best.map(|(_, _, _, decoded)| decoded)
         .ok_or_else(|| {
             last_error.unwrap_or(
                 ReplayError::OpticalRegistrationFailed(
@@ -614,6 +636,26 @@ fn decode_optical_cells_best_quarter_turn(
                 ),
             )
         })
+}
+
+fn optical_repetition_disagreements(
+    symbols: &[Option<u8>],
+    repetition: OpticalRepetitionConfig,
+) -> usize {
+    symbols
+        .chunks(repetition.repeats_per_bit)
+        .map(|chunk| {
+            let zeros = chunk
+                .iter()
+                .filter(|value| matches!(value, Some(0)))
+                .count();
+            let ones = chunk
+                .iter()
+                .filter(|value| matches!(value, Some(1)))
+                .count();
+            zeros.min(ones)
+        })
+        .sum()
 }
 
 fn y4m_line<'a>(
