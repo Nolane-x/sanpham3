@@ -1,0 +1,9 @@
+[package]
+name = "signal-trace-replay-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sha2 = "0.11"
+signal-frontier = { path = "../../crates/signal-frontier" }
+signal-trace-replay = { path = "../../crates/signal-trace-replay" }
