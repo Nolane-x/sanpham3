@@ -1113,24 +1113,46 @@ pub fn register_optical_translation_scale(
         (quiet_pixels as f32 * scale_x).round() as usize;
     let scaled_quiet_y =
         (quiet_pixels as f32 * scale_y).round() as usize;
-    if min_x < scaled_quiet_x || min_y < scaled_quiet_y {
+
+    // Inclusive active-pixel bounds plus independent scale rounding can move
+    // an otherwise complete quiet-zone crop by one source pixel. Permit only
+    // a tiny two-pixel edge clamp; anything larger remains a hard failure so
+    // real camera truncation cannot be hidden as "rounding".
+    const EDGE_ROUNDING_TOLERANCE: usize = 2;
+
+    let left_clip = scaled_quiet_x.saturating_sub(min_x);
+    let top_clip = scaled_quiet_y.saturating_sub(min_y);
+    if left_clip > EDGE_ROUNDING_TOLERANCE
+        || top_clip > EDGE_ROUNDING_TOLERANCE
+    {
         return Err(ReplayError::OpticalRegistrationFailed(
             "scaled grid is too close to source-frame edge",
         ));
     }
 
-    let source_origin_x = min_x - scaled_quiet_x;
-    let source_origin_y = min_y - scaled_quiet_y;
-    let source_width =
+    let source_origin_x = min_x.saturating_sub(scaled_quiet_x);
+    let source_origin_y = min_y.saturating_sub(scaled_quiet_y);
+    let nominal_source_width =
         (target_width as f32 * scale_x).round() as usize;
-    let source_height =
+    let nominal_source_height =
         (target_height as f32 * scale_y).round() as usize;
 
-    if source_width == 0 || source_height == 0 {
+    if nominal_source_width == 0 || nominal_source_height == 0 {
         return Err(ReplayError::OpticalRegistrationFailed(
             "scaled crop dimensions are zero",
         ));
     }
+
+    let mut source_width = nominal_source_width
+        .checked_sub(left_clip)
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "left edge clamp exceeds scaled crop width",
+        ))?;
+    let mut source_height = nominal_source_height
+        .checked_sub(top_clip)
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "top edge clamp exceeds scaled crop height",
+        ))?;
 
     let source_end_x = source_origin_x
         .checked_add(source_width)
@@ -1143,11 +1165,35 @@ pub fn register_optical_translation_scale(
             "scaled crop y overflow",
         ))?;
 
-    if source_end_x > frame.width || source_end_y > frame.height {
+    let right_clip = source_end_x.saturating_sub(frame.width);
+    let bottom_clip = source_end_y.saturating_sub(frame.height);
+    if right_clip > EDGE_ROUNDING_TOLERANCE
+        || bottom_clip > EDGE_ROUNDING_TOLERANCE
+    {
         return Err(ReplayError::OpticalRegistrationFailed(
             "scaled crop exceeds source frame",
         ));
     }
+
+    source_width = source_width
+        .checked_sub(right_clip)
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "right edge clamp exceeds scaled crop width",
+        ))?;
+    source_height = source_height
+        .checked_sub(bottom_clip)
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "bottom edge clamp exceeds scaled crop height",
+        ))?;
+
+    if source_width == 0 || source_height == 0 {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "edge-clamped crop dimensions are zero",
+        ));
+    }
+
+    let source_end_x = source_origin_x + source_width;
+    let source_end_y = source_origin_y + source_height;
 
     let mut pixels =
         Vec::with_capacity(target_width.saturating_mul(target_height));
@@ -1548,6 +1594,60 @@ mod tests {
             height,
             pixels,
         }
+    }
+
+    #[test]
+    fn optical_scale_registration_tolerates_one_pixel_rounding_clip() {
+        use signal_frontier::{
+            decode_optical_cells, decode_optical_repetition,
+            encode_optical_repetition, render_optical_cells,
+        };
+
+        let bits = vec![
+            1, 0, 1, 1, 0, 0, 1, 0,
+            0, 1, 1, 0, 1, 0, 0, 1,
+        ];
+        let repetition = OpticalRepetitionConfig::robust_default();
+        let grid = OpticalGridConfig::camera_baseline();
+        let symbols =
+            encode_optical_repetition(&bits, repetition).unwrap();
+        let frame = render_optical_cells(&symbols, grid).unwrap();
+
+        let mut pixels =
+            Vec::with_capacity((frame.width - 1) * frame.height);
+        for y in 0..frame.height {
+            let start = y * frame.width + 1;
+            pixels.extend_from_slice(
+                &frame.pixels[start..start + frame.width - 1],
+            );
+        }
+        let clipped = OpticalGrayFrame {
+            width: frame.width - 1,
+            height: frame.height,
+            pixels,
+        };
+
+        let (registered, info) =
+            register_optical_translation_scale(
+                &clipped,
+                symbols.len(),
+                grid,
+            )
+            .unwrap();
+
+        assert_eq!(info.source_origin_x, 0);
+        assert_eq!(info.source_width, clipped.width);
+
+        let decoded = decode_optical_cells(
+            &registered,
+            symbols.len(),
+            grid,
+            None,
+        )
+        .unwrap();
+        let logical =
+            decode_optical_repetition(&decoded, repetition).unwrap();
+        assert_eq!(bit_error_count(&bits, &logical), 0);
     }
 
     #[test]
