@@ -329,7 +329,7 @@ class GattCourtActivity : Activity() {
 
                     is AndroidBleGattServerEvent.BenchmarkProbe -> {
                         if (event.sequence == 0L ||
-                            event.sequence == benchmarkRounds - 1L
+                            event.sequence == (benchmarkRounds - 1).toLong()
                         ) {
                             appendLog(
                                 "GATT_BENCHMARK_PROBE peer_node=" +
@@ -339,7 +339,7 @@ class GattCourtActivity : Activity() {
                             )
                         }
 
-                        if (event.sequence == benchmarkRounds - 1L) {
+                        if (event.sequence == (benchmarkRounds - 1).toLong()) {
                             val pair = latestServerPair
                             val challenge = pair?.challenge
                                 ?.let(LabCodec::hex)
