@@ -12,8 +12,10 @@ function Usage {
   Write-Host "usage:"
   Write-Host "  pwsh scripts/android-physical-campaign.ps1 prepare <serial_a> <serial_b> <package> [apk] [evidence_dir]"
   Write-Host "  pwsh scripts/android-physical-campaign.ps1 launch <serial> <package> <gatt|rfcomm|nfc|hotspot> [evidence_dir]"
+  Write-Host "  pwsh scripts/android-physical-campaign.ps1 trace <serial> <package> <audio|accelerometer> [duration_ms] [evidence_dir]"
   Write-Host "  pwsh scripts/android-physical-campaign.ps1 collect <serial_a> <serial_b> <package> [evidence_dir]"
   Write-Host "  pwsh scripts/android-physical-campaign.ps1 summarize <evidence_dir>"
+  Write-Host "  pwsh scripts/android-physical-campaign.ps1 readiness <evidence_dir>"
   Write-Host "  pwsh scripts/android-physical-campaign.ps1 --self-test"
 }
 
@@ -202,6 +204,177 @@ function Summarize([string]$Out) {
   if ($LASTEXITCODE -ne 0) { throw "JSON summary failed" }
 }
 
+function Readiness([string]$Out) {
+  python scripts/physical-gate-readiness.py $Out |
+    Set-Content -Path (Join-Path $Out "gate-readiness.txt") -Encoding utf8
+  if ($LASTEXITCODE -ne 0) { throw "gate readiness text report failed" }
+
+  python scripts/physical-gate-readiness.py --json $Out |
+    Set-Content -Path (Join-Path $Out "gate-readiness.json") -Encoding utf8
+  if ($LASTEXITCODE -ne 0) { throw "gate readiness JSON report failed" }
+}
+
+function AdbExecOutToFile([string]$Serial,[string[]]$Args,[string]$Path) {
+  $psi = [System.Diagnostics.ProcessStartInfo]::new()
+  $psi.FileName = $Adb
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.ArgumentList.Add("-s")
+  $psi.ArgumentList.Add($Serial)
+  foreach ($arg in $Args) { $psi.ArgumentList.Add($arg) }
+
+  $process = [System.Diagnostics.Process]::new()
+  $process.StartInfo = $psi
+  [void]$process.Start()
+
+  $stream = [System.IO.File]::Open(
+    $Path,
+    [System.IO.FileMode]::Create,
+    [System.IO.FileAccess]::Write,
+    [System.IO.FileShare]::None
+  )
+  try {
+    $process.StandardOutput.BaseStream.CopyTo($stream)
+  } finally {
+    $stream.Dispose()
+  }
+
+  $stderr = $process.StandardError.ReadToEnd()
+  $process.WaitForExit()
+  if ($process.ExitCode -ne 0) {
+    throw "adb exec-out failed serial=$Serial stderr=$stderr"
+  }
+}
+
+function TraceCapture([string]$Serial,[string]$Package,[string]$Mode,[int]$DurationMs,[string]$Out) {
+  if ($Mode -ne "audio" -and $Mode -ne "accelerometer") {
+    throw "trace mode must be audio or accelerometer"
+  }
+  if ($DurationMs -lt 250 -or $DurationMs -gt 30000) {
+    throw "duration_ms must be in 250..30000"
+  }
+
+  Online $Serial
+  PhysicalCandidate $Serial
+  if (-not (PackageInstalled $Serial $Package)) {
+    throw "$Package is not installed on $Serial"
+  }
+
+  New-Item -ItemType Directory -Force -Path $Out | Out-Null
+  $traceOut = Join-Path $Out ("recorded-trace-" + (SafeName $Serial) + "-" + $Mode)
+  New-Item -ItemType Directory -Force -Path $traceOut | Out-Null
+
+  $expected = if ($env:SP3_TRACE_EXPECTED_HEX) { $env:SP3_TRACE_EXPECTED_HEX } else { "" }
+  $startSample = if ($env:SP3_TRACE_START_SAMPLE) { [int]$env:SP3_TRACE_START_SAMPLE } else { 0 }
+  if ($expected -and $expected -notmatch '^[0-9a-fA-F]+$') {
+    throw "SP3_TRACE_EXPECTED_HEX must be hexadecimal"
+  }
+  if ($expected -and ($expected.Length % 2 -ne 0)) {
+    throw "SP3_TRACE_EXPECTED_HEX must contain an even number of digits"
+  }
+  if ($expected -and -not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    throw "cargo executable is required for exact trace replay"
+  }
+
+  if ($Mode -eq "audio") {
+    GrantDeclared $Serial $Package "android.permission.RECORD_AUDIO"
+    $sourceFile = "files/recorded-traces/latest-audio.wav"
+    $captureFile = Join-Path $traceOut "capture.wav"
+  } else {
+    $sourceFile = "files/recorded-traces/latest-accelerometer.csv"
+    $captureFile = Join-Path $traceOut "capture.csv"
+  }
+
+  & $Adb -s $Serial logcat -c *> $null
+  & $Adb -s $Serial shell am start -W -n "$Package/.RecordedTraceCaptureActivity" --es dev.nolane.sanpham3.recoverylab.TRACE_CAPTURE_MODE $Mode --ei dev.nolane.sanpham3.recoverylab.TRACE_CAPTURE_DURATION_MS $DurationMs |
+    Set-Content -Path (Join-Path $traceOut "am-start.txt") -Encoding utf8
+  if ($LASTEXITCODE -ne 0) { throw "failed to start recorded trace activity" }
+
+  $timeout = if ($env:SP3_TRACE_TIMEOUT) { [int]$env:SP3_TRACE_TIMEOUT } else { [int]($DurationMs / 1000) + 30 }
+  $passLine = ""
+  for ($i = 0; $i -lt $timeout; $i++) {
+    $lines = & $Adb -s $Serial logcat -d -v brief -s "SP3TraceCapture:I" "*:S"
+    $passLine = $lines | Where-Object { $_ -like "*RECORDED_TRACE_PASS*" -and $_ -like "*mode=$Mode*" } | Select-Object -Last 1
+    if ($passLine) { break }
+    $failed = $lines | Where-Object { $_ -like "*RECORDED_TRACE_FAIL*" }
+    if ($failed) { break }
+    Start-Sleep -Seconds 1
+  }
+
+  (& $Adb -s $Serial logcat -d -v threadtime -s "SP3TraceCapture:I" "*:S") |
+    Set-Content -Path (Join-Path $traceOut "trace-logcat.txt") -Encoding utf8
+  (& $Adb -s $Serial shell getprop) |
+    Set-Content -Path (Join-Path $traceOut "getprop.txt") -Encoding utf8
+  (& $Adb -s $Serial shell dumpsys sensorservice) |
+    Set-Content -Path (Join-Path $traceOut "sensorservice.txt") -Encoding utf8
+  (& $Adb -s $Serial shell dumpsys media.audio_flinger) |
+    Set-Content -Path (Join-Path $traceOut "audio-flinger.txt") -Encoding utf8
+
+  if (-not $passLine) { throw "recorded trace capture did not PASS" }
+  if (("$passLine") -notlike "*evidence_level=ANDROID_RUNTIME_CAPTURE*") {
+    throw "recorded trace PASS has unexpected evidence level"
+  }
+
+  AdbExecOutToFile $Serial @("exec-out","run-as",$Package,"cat",$sourceFile) $captureFile
+  if ((Get-Item $captureFile).Length -le 0) {
+    throw "recorded trace capture file is empty"
+  }
+
+  if ($expected) {
+    $replayPath = Join-Path $traceOut "replay.txt"
+    if ($Mode -eq "audio") {
+      $replay = & cargo run -p signal-trace-replay-cli -- acoustic-wav $captureFile $expected 0 $startSample 2>&1
+    } else {
+      $replay = & cargo run -p signal-trace-replay-cli -- vibration-csv $captureFile $expected 5 $startSample 2>&1
+    }
+    $replay | Set-Content -Path $replayPath -Encoding utf8
+    if ($LASTEXITCODE -ne 0) { throw "trace replay failed" }
+    if (($replay -join [Environment]::NewLine) -notmatch 'bit_errors=0') {
+      throw "trace replay did not achieve zero BER"
+    }
+  }
+
+  $expectedMetadata = if ($expected) { $expected } else { "none" }
+  $git = "unknown"
+  try { $git = (git rev-parse HEAD 2>$null).Trim() } catch {}
+  $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  $qemu = Prop $Serial "ro.kernel.qemu"
+  $api = Prop $Serial "ro.build.version.sdk"
+
+  @(
+    "timestamp_utc=$timestamp",
+    "git_commit=$git",
+    "serial=$Serial",
+    "qemu=$qemu",
+    "api=$api",
+    "package=$Package",
+    "mode=$Mode",
+    "duration_ms=$DurationMs",
+    "expected_hex=$expectedMetadata",
+    "start_sample=$startSample",
+    "capture_pass=$passLine",
+    "evidence_level=ANDROID_RUNTIME_CAPTURE"
+  ) | Set-Content -Path (Join-Path $traceOut "metadata.txt") -Encoding utf8
+
+  @(
+    "campaign_id=$(CampaignId)",
+    "timestamp_utc=$timestamp",
+    "serial=$Serial",
+    "qemu=$qemu",
+    "mode=$Mode",
+    "trace_dir=$traceOut",
+    "result=PASS",
+    "evidence_level=CANDIDATE_PHYSICAL_TRACE",
+    "note=Physical-candidate wrapper only; replay metadata remains authoritative."
+  ) | Set-Content -Path (Join-Path $Out ("trace-" + (SafeName $Serial) + "-" + $Mode + "-physical.txt")) -Encoding utf8
+
+  Readiness $Out
+  HashEvidence $Out
+  Write-Host "PHYSICAL_TRACE_CAMPAIGN_PASS serial=$Serial mode=$Mode evidence=$traceOut"
+}
+
+
 function SelfTest {
   if ((SafeName "a b/c") -ne "a_b_c") { throw "SafeName self-test failed" }
   if ((Activity "gatt") -ne ".GattCourtActivity") { throw "gatt route failed" }
@@ -264,6 +437,13 @@ switch ($Command) {
     Write-Host "PHYSICAL_COURT_LAUNCHED serial=$serial carrier=$carrier component=$activity"
     Write-Host "Operator must complete the real physical interaction in the app."
   }
+  "trace" {
+    if ($Rest.Count -lt 3 -or $Rest.Count -gt 5) { Usage; exit 2 }
+    $serial=$Rest[0]; $pkg=$Rest[1]; $mode=$Rest[2]
+    $duration=if ($Rest.Count -ge 4) { [int]$Rest[3] } else { 4000 }
+    $out=if ($Rest.Count -ge 5) { $Rest[4] } else { DefaultEvidence }
+    TraceCapture $serial $pkg $mode $duration $out
+  }
   "collect" {
     if ($Rest.Count -lt 3 -or $Rest.Count -gt 4) { Usage; exit 2 }
     $a=$Rest[0]; $b=$Rest[1]; $pkg=$Rest[2]
@@ -274,12 +454,17 @@ switch ($Command) {
     PullEvidence $a "device-a" $pkg $out
     PullEvidence $b "device-b" $pkg $out
     Summarize $out
+    Readiness $out
     HashEvidence $out
     Write-Host "PHYSICAL_CAMPAIGN_COLLECTED campaign=$(CampaignId) evidence=$out"
   }
   "summarize" {
     if ($Rest.Count -ne 1) { Usage; exit 2 }
     Summarize $Rest[0]
+  }
+  "readiness" {
+    if ($Rest.Count -ne 1) { Usage; exit 2 }
+    Readiness $Rest[0]
   }
   default {
     Usage
