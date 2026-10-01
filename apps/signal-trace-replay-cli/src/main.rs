@@ -1,6 +1,7 @@
 use sha2::{Digest, Sha256};
 use signal_frontier::{
-    bit_error_count, AcousticFskConfig, OpticalGridConfig,
+    bit_error_count, encode_optical_repetition, render_optical_cells,
+    AcousticFskConfig, OpticalGrayFrame, OpticalGridConfig,
     OpticalRepetitionConfig, VibrationOokConfig,
 };
 use signal_trace_replay::{
@@ -28,6 +29,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "optical-pgm-auto" => optical_pgm_auto(&args[2..]),
         "optical-pgm-auto-scale" => optical_pgm_auto_scale(&args[2..]),
         "optical-y4m-auto-scale" => optical_y4m_auto_scale(&args[2..]),
+        "optical-y4m-fixture" => optical_y4m_fixture(&args[2..]),
         _ => Err(usage().into()),
     }
 }
@@ -266,7 +268,7 @@ fn optical_pgm_auto_scale(
     let errors = bit_error_count(&expected, &decoded);
 
     println!(
-        "F3_OPTICAL_AUTO_SCALE_REPLAY evidence_level=UNCLASSIFIED_REPLAY frames={} frame_sha256={} registration=translation_uniform_scale values={} expected_bits={} decoded_bits={} bit_errors={}",
+        "F3_OPTICAL_AUTO_SCALE_REPLAY evidence_level=UNCLASSIFIED_REPLAY frames={} frame_sha256={} registration=quarter_turn_axis_scale values={} expected_bits={} decoded_bits={} bit_errors={}",
         frames.len(),
         hashes.join(","),
         registrations.join(","),
@@ -348,6 +350,128 @@ fn optical_y4m_auto_scale(
     Ok(())
 }
 
+fn optical_y4m_fixture(
+    args: &[String],
+) -> Result<(), Box<dyn Error>> {
+    if !(2..=7).contains(&args.len()) {
+        return Err(usage().into());
+    }
+
+    let bits = hex_to_bits(&args[0])?;
+    let output = &args[1];
+    let canvas_width =
+        parse_optional_usize(args.get(2), 640, "width")?;
+    let canvas_height =
+        parse_optional_usize(args.get(3), 480, "height")?;
+    let frame_count =
+        parse_optional_usize(args.get(4), 90, "frame_count")?;
+    if canvas_width == 0 || canvas_height == 0 || frame_count == 0 {
+        return Err("fixture dimensions/frame_count must be positive".into());
+    }
+
+    let repetition = OpticalRepetitionConfig::robust_default();
+    let grid = OpticalGridConfig::camera_baseline();
+    let symbols = encode_optical_repetition(&bits, repetition)
+        .map_err(|error| format!(
+            "optical repetition encode failed: {error:?}",
+        ))?;
+    let raster = render_optical_cells(&symbols, grid)
+        .map_err(|error| format!(
+            "optical raster render failed: {error:?}",
+        ))?;
+
+    if raster.width > canvas_width || raster.height > canvas_height {
+        return Err(format!(
+            "optical raster {}x{} does not fit canvas {}x{}",
+            raster.width,
+            raster.height,
+            canvas_width,
+            canvas_height,
+        )
+        .into());
+    }
+
+    let centered_x = (canvas_width - raster.width) / 2;
+    let centered_y = (canvas_height - raster.height) / 2;
+    let offset_x =
+        parse_optional_usize(args.get(5), centered_x, "offset_x")?;
+    let offset_y =
+        parse_optional_usize(args.get(6), centered_y, "offset_y")?;
+
+    let canvas = embed_optical_frame(
+        &raster,
+        canvas_width,
+        canvas_height,
+        offset_x,
+        offset_y,
+    )?;
+
+    let mut y4m = format!(
+        "YUV4MPEG2 W{} H{} F30:1 Ip Cmono\n",
+        canvas_width,
+        canvas_height,
+    )
+    .into_bytes();
+    let luma = canvas
+        .pixels
+        .iter()
+        .map(|value| {
+            (value.clamp(0.0, 1.0) * 255.0).round() as u8
+        })
+        .collect::<Vec<_>>();
+
+    for _ in 0..frame_count {
+        y4m.extend_from_slice(b"FRAME\n");
+        y4m.extend_from_slice(&luma);
+    }
+
+    fs::write(output, &y4m)?;
+    println!(
+        "F5_CAMERA_FIXTURE_READY output={} sha256={} width={} height={} frames={} payload_bits={} symbols={} raster={}x{} offset={}:{}",
+        output,
+        sha256_hex(&y4m),
+        canvas_width,
+        canvas_height,
+        frame_count,
+        bits.len(),
+        symbols.len(),
+        raster.width,
+        raster.height,
+        offset_x,
+        offset_y,
+    );
+    Ok(())
+}
+
+fn embed_optical_frame(
+    frame: &OpticalGrayFrame,
+    canvas_width: usize,
+    canvas_height: usize,
+    offset_x: usize,
+    offset_y: usize,
+) -> Result<OpticalGrayFrame, Box<dyn Error>> {
+    if offset_x + frame.width > canvas_width
+        || offset_y + frame.height > canvas_height
+    {
+        return Err("optical raster exceeds fixture canvas".into());
+    }
+
+    let mut canvas = OpticalGrayFrame {
+        width: canvas_width,
+        height: canvas_height,
+        pixels: vec![0.02; canvas_width * canvas_height],
+    };
+
+    for y in 0..frame.height {
+        let src = y * frame.width;
+        let dst = (offset_y + y) * canvas_width + offset_x;
+        canvas.pixels[dst..dst + frame.width]
+            .copy_from_slice(&frame.pixels[src..src + frame.width]);
+    }
+
+    Ok(canvas)
+}
+
 fn parse_optional_usize(
     value: Option<&String>,
     default: usize,
@@ -394,13 +518,15 @@ fn usage() -> String {
         "  signal-trace-replay-cli optical-pgm-auto <expected_hex> <frame1.pgm> [frame2.pgm ...]",
         "  signal-trace-replay-cli optical-pgm-auto-scale <expected_hex> <frame1.pgm> [frame2.pgm ...]",
         "  signal-trace-replay-cli optical-y4m-auto-scale <expected_hex> <capture.y4m> [start_frame] [frame_count]",
+        "  signal-trace-replay-cli optical-y4m-fixture <expected_hex> <output.y4m> [width] [height] [frame_count] [offset_x] [offset_y]",
         "",
         "All commands use the current F3 reference decoder profiles.",
         "Input provenance is always printed as UNCLASSIFIED_REPLAY.",
         "optical-pgm requires crop/resize to the known court geometry.",
         "optical-pgm-auto may discover translation inside a larger same-scale grayscale canvas.",
-        "optical-pgm-auto-scale additionally estimates bounded uniform scale and resamples to the reference grid.",
-        "optical-y4m-auto-scale extracts luma frames from Y4M video and applies the same registration/replay path.",
+        "optical-pgm-auto-scale estimates bounded X/Y scale independently and resamples to the reference grid.",
+        "optical-y4m-auto-scale extracts luma frames from Y4M video, tries quarter-turn orientation, then applies bounded X/Y registration.",
+        "optical-y4m-fixture emits a deterministic raster and supports explicit offsets for camera-source courts.",
         "A physical court must separately prove how each capture was produced.",
     ]
     .join("\n")

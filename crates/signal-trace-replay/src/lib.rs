@@ -483,24 +483,249 @@ pub fn replay_optical_y4m_registered_scaled(
     let mut decoded_frames = Vec::with_capacity(frame_count);
     for index in start_frame..end {
         let source = video.frame_as_optical(index)?;
-        let (registered, _) =
-            register_optical_translation_scale(
+        decoded_frames.push(
+            decode_optical_cells_best_quarter_turn(
                 &source,
                 symbol_count,
                 grid,
-            )?;
-        decoded_frames.push(
-            decode_optical_cells(
-                &registered,
-                symbol_count,
-                grid,
-                None,
+                repetition,
             )?,
         );
     }
 
     let voted = vote_optical_symbols(&decoded_frames)?;
     Ok(decode_optical_repetition(&voted, repetition)?)
+}
+
+fn rotate_optical_frame_quarter_turns(
+    frame: &OpticalGrayFrame,
+    quarter_turns_clockwise: u8,
+) -> OpticalGrayFrame {
+    match quarter_turns_clockwise % 4 {
+        0 => frame.clone(),
+        1 => {
+            let mut pixels = vec![0.0_f32; frame.pixels.len()];
+            let width = frame.height;
+            let height = frame.width;
+            for y in 0..frame.height {
+                for x in 0..frame.width {
+                    let dst_x = frame.height - 1 - y;
+                    let dst_y = x;
+                    pixels[dst_y * width + dst_x] =
+                        frame.pixels[y * frame.width + x];
+                }
+            }
+            OpticalGrayFrame {
+                width,
+                height,
+                pixels,
+            }
+        }
+        2 => {
+            let mut pixels = vec![0.0_f32; frame.pixels.len()];
+            for y in 0..frame.height {
+                for x in 0..frame.width {
+                    let dst_x = frame.width - 1 - x;
+                    let dst_y = frame.height - 1 - y;
+                    pixels[dst_y * frame.width + dst_x] =
+                        frame.pixels[y * frame.width + x];
+                }
+            }
+            OpticalGrayFrame {
+                width: frame.width,
+                height: frame.height,
+                pixels,
+            }
+        }
+        _ => {
+            let mut pixels = vec![0.0_f32; frame.pixels.len()];
+            let width = frame.height;
+            let height = frame.width;
+            for y in 0..frame.height {
+                for x in 0..frame.width {
+                    let dst_x = y;
+                    let dst_y = frame.width - 1 - x;
+                    pixels[dst_y * width + dst_x] =
+                        frame.pixels[y * frame.width + x];
+                }
+            }
+            OpticalGrayFrame {
+                width,
+                height,
+                pixels,
+            }
+        }
+    }
+}
+
+struct OpticalQuarterTurnCandidate {
+    marker_score: f32,
+    balance: f32,
+    disagreements: usize,
+    resolved: usize,
+    decoded: Vec<Option<u8>>,
+}
+
+fn decode_optical_cells_best_quarter_turn(
+    source: &OpticalGrayFrame,
+    symbol_count: usize,
+    grid: OpticalGridConfig,
+    repetition: OpticalRepetitionConfig,
+) -> Result<Vec<Option<u8>>, ReplayError> {
+    repetition.validate()?;
+
+    let mut best: Option<OpticalQuarterTurnCandidate> = None;
+    let mut last_error = None;
+
+    for quarter_turns in 0_u8..4 {
+        let rotated =
+            rotate_optical_frame_quarter_turns(source, quarter_turns);
+        let attempt = register_optical_translation_scale(
+            &rotated,
+            symbol_count,
+            grid,
+        )
+        .and_then(|(registered, info)| {
+            let decoded = decode_optical_cells(
+                &registered,
+                symbol_count,
+                grid,
+                None,
+            )?;
+            let resolved = decoded
+                .iter()
+                .filter(|value| value.is_some())
+                .count();
+            let disagreements =
+                optical_repetition_disagreements(
+                    &decoded,
+                    repetition,
+                );
+            let balance =
+                (info.scale_x / info.scale_y).ln().abs();
+            let marker_score =
+                optical_orientation_marker_score(
+                    &registered,
+                    grid,
+                )?;
+            Ok(OpticalQuarterTurnCandidate {
+                marker_score,
+                balance,
+                disagreements,
+                resolved,
+                decoded,
+            })
+        });
+
+        match attempt {
+            Ok(candidate) => {
+                let replace = best
+                    .as_ref()
+                    .is_none_or(|current| {
+                        let marker_delta =
+                            candidate.marker_score -
+                                current.marker_score;
+                        if marker_delta.abs() > 0.01 {
+                            marker_delta > 0.0
+                        } else if
+                            (candidate.balance - current.balance).abs() >
+                                0.02
+                        {
+                            candidate.balance < current.balance
+                        } else if
+                            candidate.disagreements !=
+                                current.disagreements
+                        {
+                            candidate.disagreements <
+                                current.disagreements
+                        } else {
+                            candidate.resolved > current.resolved
+                        }
+                    });
+                if replace {
+                    best = Some(candidate);
+                }
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    best.map(|candidate| candidate.decoded)
+        .ok_or_else(|| {
+            last_error.unwrap_or(
+                ReplayError::OpticalRegistrationFailed(
+                    "all quarter-turn registrations failed",
+                ),
+            )
+        })
+}
+
+fn optical_orientation_marker_score(
+    frame: &OpticalGrayFrame,
+    grid: OpticalGridConfig,
+) -> Result<f32, ReplayError> {
+    if frame.width == 0
+        || frame.height == 0
+        || frame.pixels.len() != frame.width.saturating_mul(frame.height)
+    {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "registered frame dimensions are invalid",
+        ));
+    }
+    grid.validate()?;
+
+    let cell = grid.cell_pixels;
+    if frame.width < cell || frame.height < cell {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "registered frame is too small for orientation finder",
+        ));
+    }
+
+    let mean_block = |x0: usize, y0: usize| -> f32 {
+        let mut sum = 0.0_f32;
+        for y in y0..y0 + cell {
+            let start = y * frame.width + x0;
+            sum += frame.pixels[start..start + cell]
+                .iter()
+                .sum::<f32>();
+        }
+        sum / (cell * cell) as f32
+    };
+
+    let top_left = mean_block(0, 0);
+    let top_right = mean_block(frame.width - cell, 0);
+    let bottom_left = mean_block(0, frame.height - cell);
+    let bottom_right = mean_block(
+        frame.width - cell,
+        frame.height - cell,
+    );
+
+    Ok(
+        top_left
+            - top_right
+                .max(bottom_left)
+                .max(bottom_right),
+    )
+}
+
+fn optical_repetition_disagreements(
+    symbols: &[Option<u8>],
+    repetition: OpticalRepetitionConfig,
+) -> usize {
+    symbols
+        .chunks(repetition.repeats_per_bit)
+        .map(|chunk| {
+            let zeros = chunk
+                .iter()
+                .filter(|value| matches!(value, Some(0)))
+                .count();
+            let ones = chunk
+                .iter()
+                .filter(|value| matches!(value, Some(1)))
+                .count();
+            zeros.min(ones)
+        })
+        .sum()
 }
 
 fn y4m_line<'a>(
@@ -788,6 +1013,150 @@ pub struct OpticalScaleRegistration {
     pub scale_y: f32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct OpticalScaleBboxCandidate {
+    score: f32,
+    threshold: usize,
+    min_x: usize,
+    min_y: usize,
+    max_x: usize,
+    max_y: usize,
+    scale_x: f32,
+    scale_y: f32,
+}
+
+fn optical_scale_active_bbox(
+    frame: &OpticalGrayFrame,
+    symbol_count: usize,
+    cell_pixels: usize,
+    data_width: usize,
+    data_height: usize,
+) -> Result<(usize, usize, usize, usize, f32, f32), ReplayError> {
+    const LEVELS: usize = 256;
+
+    let mut counts = [0_usize; LEVELS];
+    let mut min_x_by_level = [usize::MAX; LEVELS];
+    let mut min_y_by_level = [usize::MAX; LEVELS];
+    let mut max_x_by_level = [0_usize; LEVELS];
+    let mut max_y_by_level = [0_usize; LEVELS];
+
+    for y in 0..frame.height {
+        let row_start = y * frame.width;
+        for x in 0..frame.width {
+            let level = (frame.pixels[row_start + x]
+                .clamp(0.0, 1.0)
+                * 255.0)
+                .round() as usize;
+            counts[level] += 1;
+            min_x_by_level[level] =
+                min_x_by_level[level].min(x);
+            min_y_by_level[level] =
+                min_y_by_level[level].min(y);
+            max_x_by_level[level] =
+                max_x_by_level[level].max(x);
+            max_y_by_level[level] =
+                max_y_by_level[level].max(y);
+        }
+    }
+
+    let expected_cell_area = symbol_count
+        .checked_mul(cell_pixels)
+        .and_then(|value| value.checked_mul(cell_pixels))
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "expected active optical area overflow",
+        ))? as f32;
+
+    let mut cumulative_count = 0_usize;
+    let mut cumulative_min_x = usize::MAX;
+    let mut cumulative_min_y = usize::MAX;
+    let mut cumulative_max_x = 0_usize;
+    let mut cumulative_max_y = 0_usize;
+
+    let mut best: Option<OpticalScaleBboxCandidate> = None;
+
+    for threshold in (1..LEVELS).rev() {
+        if counts[threshold] > 0 {
+            cumulative_count += counts[threshold];
+            cumulative_min_x =
+                cumulative_min_x.min(min_x_by_level[threshold]);
+            cumulative_min_y =
+                cumulative_min_y.min(min_y_by_level[threshold]);
+            cumulative_max_x =
+                cumulative_max_x.max(max_x_by_level[threshold]);
+            cumulative_max_y =
+                cumulative_max_y.max(max_y_by_level[threshold]);
+        }
+
+        if cumulative_count == 0
+            || cumulative_min_x == usize::MAX
+            || cumulative_min_y == usize::MAX
+        {
+            continue;
+        }
+
+        let observed_width =
+            cumulative_max_x - cumulative_min_x + 1;
+        let observed_height =
+            cumulative_max_y - cumulative_min_y + 1;
+        let scale_x =
+            observed_width as f32 / data_width as f32;
+        let scale_y =
+            observed_height as f32 / data_height as f32;
+
+        if !(0.50..=3.00).contains(&scale_x)
+            || !(0.50..=3.00).contains(&scale_y)
+        {
+            continue;
+        }
+
+        let expected_active_area =
+            expected_cell_area * scale_x * scale_y;
+        if expected_active_area <= 0.0 {
+            continue;
+        }
+
+        let coverage =
+            cumulative_count as f32 / expected_active_area;
+        let balance =
+            (scale_x / scale_y).ln().abs();
+        let score = balance + (coverage - 1.0).abs();
+
+        let replace = best.as_ref().is_none_or(|current| {
+            score < current.score - 1.0e-6
+                || ((score - current.score).abs() <= 1.0e-6
+                    && threshold < current.threshold)
+        });
+
+        if replace {
+            best = Some(OpticalScaleBboxCandidate {
+                score,
+                threshold,
+                min_x: cumulative_min_x,
+                min_y: cumulative_min_y,
+                max_x: cumulative_max_x,
+                max_y: cumulative_max_y,
+                scale_x,
+                scale_y,
+            });
+        }
+    }
+
+    let Some(best) = best else {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "no activation threshold produced bounded optical geometry",
+        ));
+    };
+
+    Ok((
+        best.min_x,
+        best.min_y,
+        best.max_x,
+        best.max_y,
+        best.scale_x,
+        best.scale_y,
+    ))
+}
+
 pub fn register_optical_translation_scale(
     frame: &OpticalGrayFrame,
     symbol_count: usize,
@@ -839,74 +1208,68 @@ pub fn register_optical_translation_scale(
             "target height overflow",
         ))?;
 
-    let background = (grid.zero_level * 0.25).clamp(0.0, 1.0);
-    let activation_threshold =
-        background + (grid.zero_level - background) * 0.50;
+    let (
+        min_x,
+        min_y,
+        _max_x,
+        _max_y,
+        scale_x,
+        scale_y,
+    ) = optical_scale_active_bbox(
+        frame,
+        symbol_count,
+        grid.cell_pixels,
+        data_width,
+        data_height,
+    )?;
 
-    let mut min_x = usize::MAX;
-    let mut min_y = usize::MAX;
-    let mut max_x = 0_usize;
-    let mut max_y = 0_usize;
-    let mut found = false;
+    // Camera pipelines can resize/crop the luma plane differently on the two
+    // axes. Keep X/Y scale independent while preserving the same bounded
+    // research range enforced above.
+    let scaled_quiet_x =
+        (quiet_pixels as f32 * scale_x).round() as usize;
+    let scaled_quiet_y =
+        (quiet_pixels as f32 * scale_y).round() as usize;
 
-    for y in 0..frame.height {
-        let row_start = y * frame.width;
-        for x in 0..frame.width {
-            if frame.pixels[row_start + x] >= activation_threshold {
-                min_x = min_x.min(x);
-                min_y = min_y.min(y);
-                max_x = max_x.max(x);
-                max_y = max_y.max(y);
-                found = true;
-            }
-        }
-    }
+    // Inclusive active-pixel bounds plus independent scale rounding can move
+    // an otherwise complete quiet-zone crop by one source pixel. Permit only
+    // a tiny two-pixel edge clamp; anything larger remains a hard failure so
+    // real camera truncation cannot be hidden as "rounding".
+    const EDGE_ROUNDING_TOLERANCE: usize = 2;
 
-    if !found {
-        return Err(ReplayError::OpticalRegistrationFailed(
-            "no active optical cells found",
-        ));
-    }
-
-    let observed_data_width = max_x - min_x + 1;
-    let observed_data_height = max_y - min_y + 1;
-    let scale_x = observed_data_width as f32 / data_width as f32;
-    let scale_y = observed_data_height as f32 / data_height as f32;
-
-    if !(0.50..=3.00).contains(&scale_x)
-        || !(0.50..=3.00).contains(&scale_y)
+    let left_clip = scaled_quiet_x.saturating_sub(min_x);
+    let top_clip = scaled_quiet_y.saturating_sub(min_y);
+    if left_clip > EDGE_ROUNDING_TOLERANCE
+        || top_clip > EDGE_ROUNDING_TOLERANCE
     {
-        return Err(ReplayError::OpticalRegistrationFailed(
-            "detected scale is outside research bounds",
-        ));
-    }
-
-    let anisotropy =
-        (scale_x - scale_y).abs() / scale_x.max(scale_y);
-    if anisotropy > 0.12 {
-        return Err(ReplayError::OpticalRegistrationFailed(
-            "non-uniform scale exceeds baseline tolerance",
-        ));
-    }
-
-    let scale = (scale_x + scale_y) * 0.5;
-    let scaled_quiet = (quiet_pixels as f32 * scale).round() as usize;
-    if min_x < scaled_quiet || min_y < scaled_quiet {
         return Err(ReplayError::OpticalRegistrationFailed(
             "scaled grid is too close to source-frame edge",
         ));
     }
 
-    let source_origin_x = min_x - scaled_quiet;
-    let source_origin_y = min_y - scaled_quiet;
-    let source_width = (target_width as f32 * scale).round() as usize;
-    let source_height = (target_height as f32 * scale).round() as usize;
+    let source_origin_x = min_x.saturating_sub(scaled_quiet_x);
+    let source_origin_y = min_y.saturating_sub(scaled_quiet_y);
+    let nominal_source_width =
+        (target_width as f32 * scale_x).round() as usize;
+    let nominal_source_height =
+        (target_height as f32 * scale_y).round() as usize;
 
-    if source_width == 0 || source_height == 0 {
+    if nominal_source_width == 0 || nominal_source_height == 0 {
         return Err(ReplayError::OpticalRegistrationFailed(
             "scaled crop dimensions are zero",
         ));
     }
+
+    let mut source_width = nominal_source_width
+        .checked_sub(left_clip)
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "left edge clamp exceeds scaled crop width",
+        ))?;
+    let mut source_height = nominal_source_height
+        .checked_sub(top_clip)
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "top edge clamp exceeds scaled crop height",
+        ))?;
 
     let source_end_x = source_origin_x
         .checked_add(source_width)
@@ -919,11 +1282,35 @@ pub fn register_optical_translation_scale(
             "scaled crop y overflow",
         ))?;
 
-    if source_end_x > frame.width || source_end_y > frame.height {
+    let right_clip = source_end_x.saturating_sub(frame.width);
+    let bottom_clip = source_end_y.saturating_sub(frame.height);
+    if right_clip > EDGE_ROUNDING_TOLERANCE
+        || bottom_clip > EDGE_ROUNDING_TOLERANCE
+    {
         return Err(ReplayError::OpticalRegistrationFailed(
             "scaled crop exceeds source frame",
         ));
     }
+
+    source_width = source_width
+        .checked_sub(right_clip)
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "right edge clamp exceeds scaled crop width",
+        ))?;
+    source_height = source_height
+        .checked_sub(bottom_clip)
+        .ok_or(ReplayError::OpticalRegistrationFailed(
+            "bottom edge clamp exceeds scaled crop height",
+        ))?;
+
+    if source_width == 0 || source_height == 0 {
+        return Err(ReplayError::OpticalRegistrationFailed(
+            "edge-clamped crop dimensions are zero",
+        ));
+    }
+
+    let source_end_x = source_origin_x + source_width;
+    let source_end_y = source_origin_y + source_height;
 
     let mut pixels =
         Vec::with_capacity(target_width.saturating_mul(target_height));
@@ -1324,6 +1711,236 @@ mod tests {
             height,
             pixels,
         }
+    }
+
+    #[test]
+    fn optical_scale_registration_ignores_low_level_camera_halo() {
+        use signal_frontier::{
+            decode_optical_cells, decode_optical_repetition,
+            encode_optical_repetition, render_optical_cells,
+        };
+
+        let bits = vec![
+            1, 0, 1, 1, 0, 0, 1, 0,
+            0, 1, 1, 0, 1, 0, 0, 1,
+        ];
+        let repetition = OpticalRepetitionConfig::robust_default();
+        let grid = OpticalGridConfig::camera_baseline();
+        let symbols =
+            encode_optical_repetition(&bits, repetition).unwrap();
+        let base = render_optical_cells(&symbols, grid).unwrap();
+
+        let mut camera_like = base.clone();
+        for value in &mut camera_like.pixels {
+            *value = if *value > 0.50 {
+                0.82
+            } else if *value > 0.15 {
+                0.21
+            } else if *value > 0.07 {
+                0.13
+            } else {
+                0.07
+            };
+        }
+
+        let mut source = embed_optical_frame(
+            &camera_like,
+            camera_like.width + 80,
+            camera_like.height + 80,
+            40,
+            40,
+        );
+
+        // This halo is above the historical fixed activation threshold but
+        // below the logical-zero cluster. Geometry+coverage selection must
+        // reject it as data.
+        for y in 20..source.height - 20 {
+            source.pixels[y * source.width + 20] = 0.13;
+        }
+
+        let (registered, info) =
+            register_optical_translation_scale(
+                &source,
+                symbols.len(),
+                grid,
+            )
+            .unwrap();
+
+        assert!((info.scale_x - 1.0).abs() < 0.02);
+        assert!((info.scale_y - 1.0).abs() < 0.02);
+
+        let decoded = decode_optical_cells(
+            &registered,
+            symbols.len(),
+            grid,
+            None,
+        )
+        .unwrap();
+        let logical =
+            decode_optical_repetition(&decoded, repetition).unwrap();
+        assert_eq!(bit_error_count(&bits, &logical), 0);
+    }
+
+    #[test]
+    fn optical_scale_registration_tolerates_one_pixel_rounding_clip() {
+        use signal_frontier::{
+            decode_optical_cells, decode_optical_repetition,
+            encode_optical_repetition, render_optical_cells,
+        };
+
+        let bits = vec![
+            1, 0, 1, 1, 0, 0, 1, 0,
+            0, 1, 1, 0, 1, 0, 0, 1,
+        ];
+        let repetition = OpticalRepetitionConfig::robust_default();
+        let grid = OpticalGridConfig::camera_baseline();
+        let symbols =
+            encode_optical_repetition(&bits, repetition).unwrap();
+        let frame = render_optical_cells(&symbols, grid).unwrap();
+
+        let mut pixels =
+            Vec::with_capacity((frame.width - 1) * frame.height);
+        for y in 0..frame.height {
+            let start = y * frame.width + 1;
+            pixels.extend_from_slice(
+                &frame.pixels[start..start + frame.width - 1],
+            );
+        }
+        let clipped = OpticalGrayFrame {
+            width: frame.width - 1,
+            height: frame.height,
+            pixels,
+        };
+
+        let (registered, info) =
+            register_optical_translation_scale(
+                &clipped,
+                symbols.len(),
+                grid,
+            )
+            .unwrap();
+
+        assert_eq!(info.source_origin_x, 0);
+        assert_eq!(info.source_width, clipped.width);
+
+        let decoded = decode_optical_cells(
+            &registered,
+            symbols.len(),
+            grid,
+            None,
+        )
+        .unwrap();
+        let logical =
+            decode_optical_repetition(&decoded, repetition).unwrap();
+        assert_eq!(bit_error_count(&bits, &logical), 0);
+    }
+
+    #[test]
+    fn optical_scale_registration_supports_bounded_axis_scaling() {
+        use signal_frontier::{
+            decode_optical_cells, decode_optical_repetition,
+            encode_optical_repetition, render_optical_cells,
+        };
+
+        let bits = vec![
+            1, 0, 1, 1, 0, 0, 1, 0,
+            1, 1, 0, 1, 0, 1, 0, 0,
+        ];
+        let repetition = OpticalRepetitionConfig::robust_default();
+        let grid = OpticalGridConfig::camera_baseline();
+        let symbols =
+            encode_optical_repetition(&bits, repetition).unwrap();
+        let frame = render_optical_cells(&symbols, grid).unwrap();
+
+        let width = frame.width * 3 / 2;
+        let height = frame.height * 2;
+        let mut scaled = OpticalGrayFrame {
+            width,
+            height,
+            pixels: vec![0.0; width * height],
+        };
+        for y in 0..height {
+            let source_y = (y * frame.height / height)
+                .min(frame.height - 1);
+            for x in 0..width {
+                let source_x = (x * frame.width / width)
+                    .min(frame.width - 1);
+                scaled.pixels[y * width + x] =
+                    frame.pixels[source_y * frame.width + source_x];
+            }
+        }
+
+        let source = embed_optical_frame(
+            &scaled,
+            scaled.width + 96,
+            scaled.height + 88,
+            41,
+            33,
+        );
+
+        let (registered, info) =
+            register_optical_translation_scale(
+                &source,
+                symbols.len(),
+                grid,
+            )
+            .unwrap();
+
+        assert!((info.scale_x - 1.5).abs() < 0.04);
+        assert!((info.scale_y - 2.0).abs() < 0.04);
+
+        let decoded = decode_optical_cells(
+            &registered,
+            symbols.len(),
+            grid,
+            None,
+        )
+        .unwrap();
+        let logical =
+            decode_optical_repetition(&decoded, repetition).unwrap();
+        assert_eq!(bit_error_count(&bits, &logical), 0);
+    }
+
+    #[test]
+    fn optical_y4m_replay_recovers_quarter_turn_camera_rotation() {
+        use signal_frontier::{
+            encode_optical_repetition, render_optical_cells,
+        };
+
+        let bits = vec![
+            1, 0, 1, 1, 0, 0, 1, 0,
+            0, 1, 1, 0, 1, 0, 0, 1,
+        ];
+        let repetition = OpticalRepetitionConfig::robust_default();
+        let grid = OpticalGridConfig::camera_baseline();
+        let symbols =
+            encode_optical_repetition(&bits, repetition).unwrap();
+        let base = render_optical_cells(&symbols, grid).unwrap();
+        let rotated = rotate_optical_frame_quarter_turns(&base, 1);
+        let canvas = embed_optical_frame(
+            &rotated,
+            rotated.width + 120,
+            rotated.height + 100,
+            47,
+            39,
+        );
+        let video = y4m_from_frames(
+            canvas.width,
+            canvas.height,
+            &[canvas],
+        );
+
+        let decoded = replay_optical_y4m_registered_scaled(
+            &video,
+            symbols.len(),
+            grid,
+            repetition,
+            0,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(bit_error_count(&bits, &decoded), 0);
     }
 
     #[test]

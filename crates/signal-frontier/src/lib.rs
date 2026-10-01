@@ -898,6 +898,20 @@ pub fn render_optical_cells(
         pixels: vec![background; width.saturating_mul(height)],
     };
 
+    // Asymmetric orientation finder inside the quiet zone.
+    //
+    // The level stays below the logical-zero activation threshold used by
+    // registration, so it cannot expand the detected data bounding box.
+    // It only gives camera/video replay a stable quarter-turn cue.
+    let orientation_marker =
+        background + (config.zero_level - background) * 0.35;
+    let marker_size = config.cell_pixels;
+    for y in 0..marker_size {
+        let start = y * width;
+        frame.pixels[start..start + marker_size]
+            .fill(orientation_marker);
+    }
+
     for (index, &symbol) in symbols.iter().enumerate() {
         if symbol > 1 {
             return Err(SignalError::InvalidBit(symbol));
