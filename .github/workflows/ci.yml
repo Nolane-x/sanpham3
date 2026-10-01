@@ -22,6 +22,7 @@ jobs:
       - run: cargo test --workspace
       - run: python scripts/summarize-physical-evidence.py --self-test
       - run: python scripts/physical-gate-readiness.py --self-test
+      - run: python scripts/write-physical-observation.py --self-test
       - run: bash -n scripts/android-physical-campaign.sh
       - run: bash scripts/android-physical-campaign.sh --self-test
       - if: runner.os == 'Windows'
