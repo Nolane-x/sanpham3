@@ -303,3 +303,18 @@ This harness does not close:
 
 Those gates close only after checked-in or externally archived captures with
 reproducible provenance pass the replay court.
+
+
+## Automatic start-sample search
+
+For two-device recordings where playback does not begin at sample zero, use:
+
+```bash
+signal-trace-replay-cli acoustic-wav-search <capture.wav> <expected_hex> [channel]
+signal-trace-replay-cli vibration-csv-search <capture.csv> <expected_hex> [value_column]
+```
+
+Both commands report the discovered `start_sample` and final BER.
+
+The search is deterministic and never converts a non-zero BER result into a
+PASS.
