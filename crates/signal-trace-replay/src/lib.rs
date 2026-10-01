@@ -1,6 +1,7 @@
 use signal_frontier::{
-    decode_fsk, decode_optical_cells, decode_optical_repetition,
-    decode_vibration_ook, AcousticFskConfig, DecodeResult,
+    bit_error_count, decode_fsk, decode_optical_cells,
+    decode_optical_repetition, decode_vibration_ook,
+    AcousticFskConfig, DecodeResult,
     OpticalGrayFrame, OpticalGridConfig, OpticalPerspective,
     OpticalRepetitionConfig, SignalError, VibrationOokConfig,
 };
@@ -1558,6 +1559,179 @@ pub fn replay_vibration_csv_window(
     Ok(decode_vibration_ook(window, config)?)
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcousticAlignmentResult {
+    pub start_sample: usize,
+    pub decoded: DecodeResult,
+    pub bit_errors: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VibrationAlignmentResult {
+    pub start_sample: usize,
+    pub decoded: Vec<u8>,
+    pub bit_errors: usize,
+}
+
+pub fn search_acoustic_wav_alignment(
+    wav_bytes: &[u8],
+    channel_index: usize,
+    config: AcousticFskConfig,
+    expected: &[u8],
+) -> Result<AcousticAlignmentResult, ReplayError> {
+    if expected.is_empty() {
+        return Err(ReplayError::EmptyTrace);
+    }
+
+    let wav = parse_pcm16_wav(wav_bytes)?;
+    if wav.sample_rate_hz != config.sample_rate_hz {
+        return Err(ReplayError::SampleRateMismatch {
+            expected: config.sample_rate_hz,
+            actual: wav.sample_rate_hz,
+        });
+    }
+
+    let samples = wav.channel_f32(channel_index)?;
+    let samples_per_bit = config.samples_per_bit()?;
+    let needed = expected
+        .len()
+        .checked_mul(samples_per_bit)
+        .ok_or(ReplayError::WindowOutsideTrace)?;
+    if samples.len() < needed {
+        return Err(ReplayError::WindowOutsideTrace);
+    }
+
+    let max_start = samples.len() - needed;
+    let coarse_step = (samples_per_bit / 16).max(1);
+    let probe_bits = expected.len().min(16);
+    let probe_samples = probe_bits
+        .checked_mul(samples_per_bit)
+        .ok_or(ReplayError::WindowOutsideTrace)?;
+
+    let mut best_coarse: Option<(usize, usize, f32)> = None;
+    let mut start = 0_usize;
+    loop {
+        let decoded = decode_fsk(
+            &samples[start..start + probe_samples],
+            config,
+        )?;
+        let errors =
+            bit_error_count(&expected[..probe_bits], &decoded.bits);
+        let candidate =
+            (start, errors, decoded.minimum_confidence);
+        let replace = best_coarse
+            .as_ref()
+            .is_none_or(|current| {
+                candidate.1 < current.1
+                    || (candidate.1 == current.1
+                        && candidate.2 > current.2)
+                    || (candidate.1 == current.1
+                        && (candidate.2 - current.2).abs()
+                            <= f32::EPSILON
+                        && candidate.0 < current.0)
+            });
+        if replace {
+            best_coarse = Some(candidate);
+        }
+
+        if start == max_start {
+            break;
+        }
+        start = (start + coarse_step).min(max_start);
+    }
+
+    let coarse_start = best_coarse
+        .ok_or(ReplayError::WindowOutsideTrace)?
+        .0;
+    let refine_start = coarse_start.saturating_sub(coarse_step);
+    let refine_end =
+        coarse_start.saturating_add(coarse_step).min(max_start);
+
+    let mut best: Option<AcousticAlignmentResult> = None;
+    for start_sample in refine_start..=refine_end {
+        let decoded = decode_fsk(
+            &samples[start_sample..start_sample + needed],
+            config,
+        )?;
+        let errors = bit_error_count(expected, &decoded.bits);
+        let candidate = AcousticAlignmentResult {
+            start_sample,
+            decoded,
+            bit_errors: errors,
+        };
+        let replace = best
+            .as_ref()
+            .is_none_or(|current| {
+                candidate.bit_errors < current.bit_errors
+                    || (candidate.bit_errors == current.bit_errors
+                        && candidate.decoded.minimum_confidence
+                            > current.decoded.minimum_confidence)
+                    || (candidate.bit_errors == current.bit_errors
+                        && (candidate.decoded.minimum_confidence
+                            - current.decoded.minimum_confidence)
+                            .abs()
+                            <= f32::EPSILON
+                        && candidate.start_sample
+                            < current.start_sample)
+            });
+        if replace {
+            best = Some(candidate);
+        }
+    }
+
+    best.ok_or(ReplayError::WindowOutsideTrace)
+}
+
+pub fn search_vibration_csv_alignment(
+    csv_text: &str,
+    value_column: usize,
+    config: VibrationOokConfig,
+    expected: &[u8],
+) -> Result<VibrationAlignmentResult, ReplayError> {
+    if expected.is_empty() {
+        return Err(ReplayError::EmptyTrace);
+    }
+
+    let trace = parse_scalar_csv_column(csv_text, value_column)?;
+    let samples_per_bit = config.samples_per_bit()?;
+    let needed = expected
+        .len()
+        .checked_mul(samples_per_bit)
+        .ok_or(ReplayError::WindowOutsideTrace)?;
+    if trace.values.len() < needed {
+        return Err(ReplayError::WindowOutsideTrace);
+    }
+
+    let max_start = trace.values.len() - needed;
+    let mut best: Option<VibrationAlignmentResult> = None;
+
+    for start_sample in 0..=max_start {
+        let decoded = decode_vibration_ook(
+            &trace.values[start_sample..start_sample + needed],
+            config,
+        )?;
+        let errors = bit_error_count(expected, &decoded);
+        let candidate = VibrationAlignmentResult {
+            start_sample,
+            decoded,
+            bit_errors: errors,
+        };
+        let replace = best
+            .as_ref()
+            .is_none_or(|current| {
+                candidate.bit_errors < current.bit_errors
+                    || (candidate.bit_errors == current.bit_errors
+                        && candidate.start_sample
+                            < current.start_sample)
+            });
+        if replace {
+            best = Some(candidate);
+        }
+    }
+
+    best.ok_or(ReplayError::WindowOutsideTrace)
+}
+
 fn read_u16_le(bytes: &[u8], offset: usize) -> Result<u16, ReplayError> {
     let slice = bytes
         .get(offset..offset + 2)
@@ -2310,6 +2484,64 @@ mod tests {
         .unwrap();
 
         assert_eq!(bit_error_count(&bits, &decoded), 0);
+    }
+
+    #[test]
+    fn acoustic_alignment_search_finds_embedded_reference_payload() {
+        let bits = vec![
+            1, 0, 1, 1, 0, 0, 1, 0,
+            0, 1, 1, 0, 1, 0, 0, 1,
+        ];
+        let config = AcousticFskConfig::near_ultrasonic_50bps();
+        let encoded = encode_fsk(&bits, config).unwrap();
+        let prefix = vec![0.0_f32; 4_321];
+        let suffix = vec![0.0_f32; 1_337];
+        let mut samples = prefix.clone();
+        samples.extend_from_slice(&encoded);
+        samples.extend_from_slice(&suffix);
+        let wav = pcm16_wav(config.sample_rate_hz, &samples);
+
+        let result = search_acoustic_wav_alignment(
+            &wav,
+            0,
+            config,
+            &bits,
+        )
+        .unwrap();
+
+        assert_eq!(result.bit_errors, 0);
+        assert!(
+            result.start_sample.abs_diff(prefix.len())
+                <= config.samples_per_bit().unwrap() / 16,
+        );
+    }
+
+    #[test]
+    fn vibration_alignment_search_finds_embedded_reference_payload() {
+        let bits = vec![1, 0, 1, 0, 1, 1, 0, 0];
+        let config = VibrationOokConfig::surface_2_5bps();
+        let encoded = encode_vibration_ook(&bits, config).unwrap();
+        let prefix = vec![0.0_f32; 37];
+        let suffix = vec![0.0_f32; 23];
+        let mut samples = prefix.clone();
+        samples.extend_from_slice(&encoded);
+        samples.extend_from_slice(&suffix);
+
+        let mut csv = String::from("index,value\n");
+        for (index, sample) in samples.iter().enumerate() {
+            csv.push_str(&format!("{index},{sample}\n"));
+        }
+
+        let result = search_vibration_csv_alignment(
+            &csv,
+            1,
+            config,
+            &bits,
+        )
+        .unwrap();
+
+        assert_eq!(result.bit_errors, 0);
+        assert_eq!(result.start_sample, prefix.len());
     }
 
     #[test]
