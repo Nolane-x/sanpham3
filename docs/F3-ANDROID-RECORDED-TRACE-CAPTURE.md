@@ -143,3 +143,24 @@ To close either gate, the evidence bundle must additionally establish:
 
 An emulator capture remains useful Android-framework evidence, but cannot be
 promoted to physical evidence.
+
+
+## Physical emitter companion
+
+The capture activity now has a matching two-device source path in
+`PhysicalSignalEmitterActivity`.
+
+Use:
+
+```bash
+scripts/android-recorded-signal-court.sh ...
+```
+
+for a coordinated physical candidate run. The script starts capture first,
+starts the deterministic source with a pre-delay, then uses automatic replay
+alignment and requires zero BER.
+
+See `docs/F3-ANDROID-PHYSICAL-SIGNAL-COURT.md`.
+
+The original single-device capture script remains useful for collecting raw
+traces independently.
