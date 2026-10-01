@@ -180,6 +180,14 @@ class MainActivity : Activity() {
         root.addView(button("Start BLE G8 client") {
             startBleClient()
         })
+        root.addView(button("Open physical signal emitter") {
+            startActivity(
+                Intent(
+                    this,
+                    PhysicalSignalEmitterActivity::class.java,
+                ),
+            )
+        })
         root.addView(button("Open RFCOMM physical G8 court") {
             startActivity(Intent(this, RfcommCourtActivity::class.java))
         })
