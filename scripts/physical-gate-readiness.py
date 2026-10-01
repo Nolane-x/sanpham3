@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import tempfile
 from pathlib import Path
 from typing import Iterable
@@ -153,11 +154,55 @@ def fail_records(
     ]
 
 
+def field_value_valid(key: str, value: str | None) -> bool:
+    if value is None:
+        return False
+    value = value.strip()
+    if not value:
+        return False
+
+    if key == "concurrent_internet":
+        return value.lower() in {"true", "false"}
+
+    numeric_keys = {
+        "max_transceive_length",
+        "benchmark_rounds",
+        "benchmark_payload_bytes",
+        "benchmark_elapsed_ns",
+        "round_trip_useful_bps",
+        "g8_plus_benchmark_total_ms",
+        "benchmark_rtt_median_ns",
+        "benchmark_rtt_p95_ns",
+        "benchmark_one_way_useful_bps",
+        "hotspot_startup_ms",
+        "network_join_ms",
+        "g8_ms",
+        "setup_latency_ms",
+        "range_m",
+        "energy_joules",
+    }
+    if key in numeric_keys:
+        try:
+            parsed = float(value)
+        except ValueError:
+            return False
+        if not math.isfinite(parsed):
+            return False
+        if key in {"network_join_ms", "g8_ms", "setup_latency_ms"}:
+            return parsed >= 0.0
+        return parsed > 0.0
+
+    return True
+
+
 def record_has_fields(
     records: list[dict[str, str]],
     required: set[str],
 ) -> bool:
-    return any(required.issubset(record.keys()) for record in records)
+    return any(
+        all(field_value_valid(key, record.get(key)) for key in required)
+        for record in records
+    )
 
 
 def observation_present(
@@ -440,6 +485,12 @@ def self_test() -> None:
         )
         (trace / "replay.txt").write_text(
             "F3_ACOUSTIC_REPLAY bit_errors=0\n",
+            encoding="utf-8",
+        )
+
+        (root / "invalid-energy.txt").write_text(
+            "carrier=rfcomm\nrole=observation\nresult=PASS\n"
+            "energy_joules=\nenergy_method=meter\n",
             encoding="utf-8",
         )
 
