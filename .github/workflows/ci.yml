@@ -21,3 +21,5 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: python scripts/summarize-physical-evidence.py --self-test
+      - run: bash -n scripts/android-physical-campaign.sh
+      - run: bash scripts/android-physical-campaign.sh --self-test
