@@ -103,6 +103,55 @@ It deliberately does not:
 
 The operator performs the real physical interaction in the app.
 
+## Capture acoustic/vibration traces inside the campaign
+
+Bash:
+
+```bash
+scripts/android-physical-campaign.sh \
+  trace \
+  <serial> \
+  dev.nolane.sanpham3.recoverylab \
+  <audio|accelerometer> \
+  [duration_ms] \
+  [evidence_dir]
+```
+
+Native Windows:
+
+```powershell
+pwsh scripts/android-physical-campaign.ps1 \
+  trace \
+  <serial> \
+  dev.nolane.sanpham3.recoverylab \
+  <audio|accelerometer> \
+  [duration_ms] \
+  [evidence_dir]
+```
+
+The campaign wrapper:
+
+- rejects QEMU/emulator targets by default;
+- invokes the existing recorded-trace capture court;
+- stores WAV/CSV evidence under the same campaign root;
+- preserves `ANDROID_RUNTIME_CAPTURE` on the original trace metadata;
+- adds only a `CANDIDATE_PHYSICAL_TRACE` wrapper identifying the non-QEMU
+  target;
+- runs exact replay automatically when
+  `SP3_TRACE_EXPECTED_HEX` is supplied;
+- refreshes the readiness report and SHA-256 manifest.
+
+Optional replay controls:
+
+```text
+SP3_TRACE_EXPECTED_HEX=<known project payload>
+SP3_TRACE_START_SAMPLE=<sample offset, default 0>
+SP3_TRACE_TIMEOUT=<poll timeout seconds>
+```
+
+The wrapper does not turn an arbitrary microphone/sensor recording into a
+physical frontier PASS.
+
 ## Collect evidence
 
 After completing one or more courts:
@@ -123,8 +172,9 @@ Collection:
 3. falls back to `run-as` for the debug app when direct external-files pull
    is unavailable;
 4. runs `scripts/summarize-physical-evidence.py`;
-5. writes text and JSON aggregate summaries;
-6. creates a recursive `SHA256SUMS` manifest.
+5. runs `scripts/physical-gate-readiness.py`;
+6. writes text/JSON aggregate summaries and gate-readiness reports;
+7. creates a recursive `SHA256SUMS` manifest.
 
 ## Repeated-run workflow
 
@@ -146,6 +196,35 @@ Then:
 The existing physical evidence aggregator groups records by carrier/role and
 reports PASS/FAIL count, success rate and timing/throughput statistics present
 in valid PASS records.
+
+## Gate-readiness report
+
+Run independently:
+
+```bash
+scripts/android-physical-campaign.sh readiness <evidence_dir>
+```
+
+or:
+
+```powershell
+pwsh scripts/android-physical-campaign.ps1 readiness <evidence_dir>
+```
+
+The report checks candidate prerequisites for the ten remaining physical gates,
+including:
+
+- two distinct non-QEMU devices;
+- required client/server/reader/HCE PASS roles;
+- timing/throughput fields emitted by the carrier court;
+- repeated outcome evidence where failure rate is required;
+- zero-BER recorded acoustic/vibration replay;
+- external range/energy/concurrent-Internet observations where the ledger
+  requires them.
+
+See `docs/PHYSICAL-GATE-READINESS.md`.
+
+The report never edits or closes the frontier ledger.
 
 ## Provenance boundary
 
