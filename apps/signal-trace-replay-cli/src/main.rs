@@ -11,6 +11,7 @@ use signal_trace_replay::{
     replay_optical_pgm_sequence, replay_optical_pgm_sequence_registered,
     replay_optical_pgm_sequence_registered_scaled,
     replay_optical_y4m_registered_scaled, replay_vibration_csv_window,
+    search_acoustic_wav_alignment, search_vibration_csv_alignment,
 };
 use std::env;
 use std::error::Error;
@@ -24,7 +25,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match args[1].as_str() {
         "acoustic-wav" => acoustic_wav(&args[2..]),
+        "acoustic-wav-search" => acoustic_wav_search(&args[2..]),
         "vibration-csv" => vibration_csv(&args[2..]),
+        "vibration-csv-search" => vibration_csv_search(&args[2..]),
         "optical-pgm" => optical_pgm(&args[2..]),
         "optical-pgm-auto" => optical_pgm_auto(&args[2..]),
         "optical-pgm-auto-scale" => optical_pgm_auto_scale(&args[2..]),
@@ -114,6 +117,99 @@ fn vibration_csv(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     if errors != 0 {
         return Err(format!("vibration replay has {errors} bit errors").into());
+    }
+    Ok(())
+}
+
+fn acoustic_wav_search(
+    args: &[String],
+) -> Result<(), Box<dyn Error>> {
+    if !(2..=3).contains(&args.len()) {
+        return Err(usage().into());
+    }
+
+    let path = &args[0];
+    let expected = hex_to_bits(&args[1])?;
+    let channel =
+        parse_optional_usize(args.get(2), 0, "channel")?;
+    let bytes = fs::read(path)?;
+    let wav = parse_pcm16_wav(&bytes)?;
+    let config = AcousticFskConfig::near_ultrasonic_50bps();
+    let result = search_acoustic_wav_alignment(
+        &bytes,
+        channel,
+        config,
+        &expected,
+    )?;
+
+    println!(
+        "F3_ACOUSTIC_REPLAY_SEARCH input={} evidence_level=UNCLASSIFIED_REPLAY sha256={} sample_rate_hz={} channels={} channel={} start_sample={} expected_bits={} decoded_bits={} bit_errors={} min_confidence={:.4}",
+        path,
+        sha256_hex(&bytes),
+        wav.sample_rate_hz,
+        wav.channels,
+        channel,
+        result.start_sample,
+        expected.len(),
+        result.decoded.bits.len(),
+        result.bit_errors,
+        result.decoded.minimum_confidence,
+    );
+
+    if result.bit_errors != 0 {
+        return Err(
+            format!(
+                "acoustic replay search has {} bit errors",
+                result.bit_errors,
+            )
+            .into(),
+        );
+    }
+    Ok(())
+}
+
+fn vibration_csv_search(
+    args: &[String],
+) -> Result<(), Box<dyn Error>> {
+    if !(2..=3).contains(&args.len()) {
+        return Err(usage().into());
+    }
+
+    let path = &args[0];
+    let expected = hex_to_bits(&args[1])?;
+    let value_column =
+        parse_optional_usize(args.get(2), 1, "value_column")?;
+    let bytes = fs::read(path)?;
+    let text = std::str::from_utf8(&bytes)?;
+    let parsed = parse_scalar_csv_column(text, value_column)?;
+    let config = VibrationOokConfig::surface_2_5bps();
+    let result = search_vibration_csv_alignment(
+        text,
+        value_column,
+        config,
+        &expected,
+    )?;
+
+    println!(
+        "F3_VIBRATION_REPLAY_SEARCH input={} evidence_level=UNCLASSIFIED_REPLAY sha256={} parsed_samples={} value_column={} start_sample={} expected_bits={} decoded_bits={} bit_errors={}",
+        path,
+        sha256_hex(&bytes),
+        parsed.values.len(),
+        value_column,
+        result.start_sample,
+        expected.len(),
+        result.decoded.len(),
+        result.bit_errors,
+    );
+
+    if result.bit_errors != 0 {
+        return Err(
+            format!(
+                "vibration replay search has {} bit errors",
+                result.bit_errors,
+            )
+            .into(),
+        );
     }
     Ok(())
 }
@@ -513,7 +609,9 @@ fn usage() -> String {
     [
         "usage:",
         "  signal-trace-replay-cli acoustic-wav <capture.wav> <expected_hex> [channel] [start_sample]",
+        "  signal-trace-replay-cli acoustic-wav-search <capture.wav> <expected_hex> [channel]",
         "  signal-trace-replay-cli vibration-csv <capture.csv> <expected_hex> [value_column] [start_sample]",
+        "  signal-trace-replay-cli vibration-csv-search <capture.csv> <expected_hex> [value_column]",
         "  signal-trace-replay-cli optical-pgm <expected_hex> <frame1.pgm> [frame2.pgm ...]",
         "  signal-trace-replay-cli optical-pgm-auto <expected_hex> <frame1.pgm> [frame2.pgm ...]",
         "  signal-trace-replay-cli optical-pgm-auto-scale <expected_hex> <frame1.pgm> [frame2.pgm ...]",
