@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission
         android:name="android.permission.NEARBY_WIFI_DEVICES"
@@ -31,6 +32,11 @@
         android:allowBackup="false"
         android:label="SP3 Recovery Lab"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <activity
+            android:name=".PhysicalSignalEmitterActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true" />
         <activity
             android:name=".RecordedTraceCaptureActivity"
             android:exported="true"
