@@ -69,3 +69,16 @@ The deterministic self-test checks:
 - success-rate calculation;
 - median and nearest-rank p95;
 - invalid-record skipping.
+
+
+## Two-device Android campaign
+
+`scripts/android-physical-campaign.sh` prepares two real Android devices,
+launches the Recovery Lab carrier courts and collects their evidence into one
+campaign directory before this aggregator runs.
+
+The campaign harness rejects qemu/emulator devices by default and records both
+device fingerprints/builds.
+
+It still does not promote evidence automatically. Physical interaction and the
+carrier-specific PASS conditions remain authoritative.
