@@ -1,0 +1,37 @@
+name: f3-physical-signal-court
+
+on:
+  push:
+    paths:
+      - "crates/signal-trace-replay/**"
+      - "apps/signal-trace-replay-cli/**"
+      - "apps/android-recovery-lab/**"
+      - "scripts/android-recorded-signal-court.sh"
+      - "docs/F3-ANDROID-PHYSICAL-SIGNAL-COURT.md"
+      - "docs/F3-ANDROID-RECORDED-TRACE-CAPTURE.md"
+      - "docs/F3-SIGNAL-TRACE-REPLAY.md"
+      - ".github/workflows/f3-physical-signal-court.yml"
+  pull_request:
+    paths:
+      - "crates/signal-trace-replay/**"
+      - "apps/signal-trace-replay-cli/**"
+      - "apps/android-recovery-lab/**"
+      - "scripts/android-recorded-signal-court.sh"
+      - "docs/F3-ANDROID-PHYSICAL-SIGNAL-COURT.md"
+      - "docs/F3-ANDROID-RECORDED-TRACE-CAPTURE.md"
+      - "docs/F3-SIGNAL-TRACE-REPLAY.md"
+      - ".github/workflows/f3-physical-signal-court.yml"
+
+jobs:
+  host-replay:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: bash -n scripts/android-recorded-signal-court.sh
+      - run: cargo clippy -p signal-trace-replay -p signal-trace-replay-cli --all-targets -- -D warnings
+      - run: cargo test -p signal-trace-replay
+      - run: cargo build -p signal-trace-replay-cli
