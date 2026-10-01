@@ -68,23 +68,22 @@ MEASUREMENT_REQUIREMENTS = {
 
 PHYSICAL_EXTRA_REQUIREMENTS = {
     "nfc_hce": {
-        "energy": {"energy_joules", "energy_method"},
         "failure_rate": set(),
     },
     "ble_gatt": {
+        "setup_latency": {"setup_latency_ms"},
         "energy": {"energy_joules", "energy_method"},
         "failure_rate": set(),
     },
     "rfcomm": {
+        "setup_latency": {"setup_latency_ms"},
         "range": {"range_m"},
         "energy": {"energy_joules", "energy_method"},
         "failure_rate": set(),
     },
     "local_only_hotspot": {
-        "range": {"range_m"},
-        "energy": {"energy_joules", "energy_method"},
         "concurrent_internet": {"concurrent_internet"},
-        "failure_rate": set(),
+        "energy": {"energy_joules", "energy_method"},
     },
 }
 
@@ -283,16 +282,15 @@ def carrier_readiness(
             {},
         ).items():
             if name == "failure_rate":
-                total_fail = sum(
-                    role_status[role]["fail_records"]
-                    for role in required_roles
-                )
-                total_pass = sum(
+                # A single successful pair cannot characterize reliability.
+                # Require at least two recorded outcomes for every required
+                # role before calling failure-rate evidence present.
+                present = all(
                     role_status[role]["pass_records"]
+                    + role_status[role]["fail_records"]
+                    >= 2
                     for role in required_roles
                 )
-                # Repetition evidence needs more than a single successful pair.
-                present = total_pass + total_fail >= 4
             else:
                 present = observation_present(
                     records,
