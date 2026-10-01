@@ -48,6 +48,35 @@ Physical closure still requires the original court bundle and its provenance.
 The aggregator is only for repeated-run statistics such as failure rate,
 latency and useful throughput after valid physical evidence has been captured.
 
+## Gate-readiness is a separate layer
+
+`scripts/summarize-physical-evidence.py` answers:
+
+- how many PASS/FAIL records exist;
+- success rate;
+- distribution of numeric timing/throughput metrics.
+
+It intentionally does not decide whether a frontier gate is evidence-complete.
+
+Use:
+
+```bash
+python scripts/physical-gate-readiness.py <campaign-dir>
+```
+
+for that second, conservative check.
+
+The readiness layer additionally verifies:
+
+- physical-candidate device metadata;
+- required role pairs;
+- transport-specific measurement fields;
+- repeated outcomes for failure-rate claims;
+- zero-BER recorded trace replay;
+- external physical observations such as range, energy or concurrent Internet.
+
+Neither layer edits the frontier ledger.
+
 ## Energy and range
 
 Energy, distance/range and concurrent-Internet observations are not synthesized.
