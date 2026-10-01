@@ -10,6 +10,7 @@ usage:
   scripts/android-physical-campaign.sh collect <serial_a> <serial_b> <package> [evidence_dir]
   scripts/android-physical-campaign.sh summarize <evidence_dir>
   scripts/android-physical-campaign.sh readiness <evidence_dir>
+  scripts/android-physical-campaign.sh observe <evidence_dir> <carrier> <method> [observation options...]
   scripts/android-physical-campaign.sh --self-test
 
 Environment:
@@ -424,6 +425,27 @@ cmd_trace() {
   echo "PHYSICAL_TRACE_CAMPAIGN_PASS serial=$serial mode=$mode evidence=$trace_out"
 }
 
+cmd_observe() {
+  [[ $# -ge 4 ]] || { usage; exit 2; }
+
+  local out="$2"
+  local carrier="$3"
+  local method="$4"
+  shift 4
+
+  mkdir -p "$out"
+  python scripts/write-physical-observation.py \
+    "$out" \
+    --carrier "$carrier" \
+    --method "$method" \
+    "$@"
+
+  readiness_evidence "$out"
+  hash_evidence "$out"
+
+  echo "PHYSICAL_OBSERVATION_CAMPAIGN_UPDATED carrier=$carrier evidence=$out"
+}
+
 cmd_collect() {
   [[ $# -ge 4 && $# -le 5 ]] || { usage; exit 2; }
   local serial_a="$2"
@@ -484,6 +506,7 @@ main() {
       [[ $# -eq 2 ]] || { usage; exit 2; }
       readiness_evidence "$2"
       ;;
+    observe) cmd_observe "$@" ;;
     *) usage; exit 2 ;;
   esac
 }

@@ -197,6 +197,41 @@ The existing physical evidence aggregator groups records by carrier/role and
 reports PASS/FAIL count, success rate and timing/throughput statistics present
 in valid PASS records.
 
+## Record external physical observations
+
+Use the validated writer through the campaign wrapper when a remaining gate
+needs range, setup latency, external energy or concurrent-Internet evidence.
+
+Bash:
+
+```bash
+scripts/android-physical-campaign.sh \
+  observe <evidence_dir> <carrier> <method> [observation options...]
+```
+
+PowerShell:
+
+```powershell
+pwsh scripts/android-physical-campaign.ps1 \
+  observe <evidence_dir> <carrier> <method> [observation options...]
+```
+
+Example:
+
+```bash
+scripts/android-physical-campaign.sh \
+  observe evidence/android-physical-campaign-run1 \
+  rfcomm external-meter \
+  --range-m 4.2 \
+  --energy-joules 1.25 \
+  --energy-method usb-power-meter
+```
+
+The command validates the observation, regenerates gate readiness and re-hashes
+the campaign.
+
+See `docs/PHYSICAL-OBSERVATION-WRITER.md`.
+
 ## Gate-readiness report
 
 Run independently:

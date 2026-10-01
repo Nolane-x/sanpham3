@@ -16,6 +16,7 @@ function Usage {
   Write-Host "  pwsh scripts/android-physical-campaign.ps1 collect <serial_a> <serial_b> <package> [evidence_dir]"
   Write-Host "  pwsh scripts/android-physical-campaign.ps1 summarize <evidence_dir>"
   Write-Host "  pwsh scripts/android-physical-campaign.ps1 readiness <evidence_dir>"
+  Write-Host "  pwsh scripts/android-physical-campaign.ps1 observe <evidence_dir> <carrier> <method> [observation options...]"
   Write-Host "  pwsh scripts/android-physical-campaign.ps1 --self-test"
 }
 
@@ -443,6 +444,20 @@ switch ($Command) {
     $duration=if ($Rest.Count -ge 4) { [int]$Rest[3] } else { 4000 }
     $out=if ($Rest.Count -ge 5) { $Rest[4] } else { DefaultEvidence }
     TraceCapture $serial $pkg $mode $duration $out
+  }
+  "observe" {
+    if ($Rest.Count -lt 3) { Usage; exit 2 }
+    $out=$Rest[0]; $carrier=$Rest[1]; $method=$Rest[2]
+    $extra=@()
+    if ($Rest.Count -gt 3) {
+      $extra=$Rest[3..($Rest.Count - 1)]
+    }
+    New-Item -ItemType Directory -Force -Path $out | Out-Null
+    & python scripts/write-physical-observation.py $out --carrier $carrier --method $method @extra
+    if ($LASTEXITCODE -ne 0) { throw "physical observation writer failed" }
+    Readiness $out
+    HashEvidence $out
+    Write-Host "PHYSICAL_OBSERVATION_CAMPAIGN_UPDATED carrier=$carrier evidence=$out"
   }
   "collect" {
     if ($Rest.Count -lt 3 -or $Rest.Count -gt 4) { Usage; exit 2 }

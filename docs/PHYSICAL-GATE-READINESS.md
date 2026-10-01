@@ -180,6 +180,16 @@ benchmark.
 
 They may be added as ordinary key-value evidence records.
 
+Prefer the validated writer:
+
+```bash
+python scripts/write-physical-observation.py --help
+```
+
+or the campaign `observe` command. See
+`docs/PHYSICAL-OBSERVATION-WRITER.md`.
+
+
 Every such file should include:
 
 ```text
