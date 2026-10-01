@@ -2,6 +2,16 @@
 
 This harness standardizes real two-device Recovery Lab campaigns.
 
+Both entry points implement the same campaign model:
+
+```text
+scripts/android-physical-campaign.sh
+scripts/android-physical-campaign.ps1
+```
+
+Use the Bash entry point on Linux/macOS/WSL/Git Bash and the PowerShell entry
+point on native Windows.
+
 It does **not** automate the physical interaction itself and it does not promote
 evidence to `PHYSICAL_DEVICE` on its own.
 
@@ -47,6 +57,23 @@ SP3_ADB_BIN=<adb>
 
 `SP3_ALLOW_NON_PHYSICAL=1` exists for harness testing only. Evidence produced
 from such a device is still not physical evidence.
+
+
+
+### Native Windows equivalent
+
+```powershell
+pwsh scripts/android-physical-campaign.ps1 \
+  prepare \
+  <serial_a> \
+  <serial_b> \
+  dev.nolane.sanpham3.recoverylab \
+  [recovery-lab.apk] \
+  [evidence_dir]
+```
+
+`launch`, `collect` and `summarize` use the same arguments as the Bash
+entry point.
 
 ## Open a court
 
@@ -156,6 +183,10 @@ folder just because it was reachable through ADB.
 ```bash
 bash -n scripts/android-physical-campaign.sh
 scripts/android-physical-campaign.sh --self-test
+```
+
+```powershell
+pwsh scripts/android-physical-campaign.ps1 --self-test
 ```
 
 The self-test validates carrier/activity routing and filename sanitization only.
