@@ -23,3 +23,6 @@ jobs:
       - run: python scripts/summarize-physical-evidence.py --self-test
       - run: bash -n scripts/android-physical-campaign.sh
       - run: bash scripts/android-physical-campaign.sh --self-test
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/android-physical-campaign.ps1 --self-test
