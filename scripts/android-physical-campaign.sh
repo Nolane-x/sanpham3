@@ -6,8 +6,10 @@ usage() {
 usage:
   scripts/android-physical-campaign.sh prepare <serial_a> <serial_b> <package> [apk] [evidence_dir]
   scripts/android-physical-campaign.sh launch <serial> <package> <gatt|rfcomm|nfc|hotspot> [evidence_dir]
+  scripts/android-physical-campaign.sh trace <serial> <package> <audio|accelerometer> [duration_ms] [evidence_dir]
   scripts/android-physical-campaign.sh collect <serial_a> <serial_b> <package> [evidence_dir]
   scripts/android-physical-campaign.sh summarize <evidence_dir>
+  scripts/android-physical-campaign.sh readiness <evidence_dir>
   scripts/android-physical-campaign.sh --self-test
 
 Environment:
@@ -320,6 +322,14 @@ summarize_evidence() {
   python scripts/summarize-physical-evidence.py "$out"     | tee "$out/physical-summary.txt"
   python scripts/summarize-physical-evidence.py --json "$out"     >"$out/physical-summary.json"
 }
+readiness_evidence() {
+  local out="$1"
+  python scripts/physical-gate-readiness.py "$out" \
+    | tee "$out/gate-readiness.txt"
+  python scripts/physical-gate-readiness.py --json "$out" \
+    >"$out/gate-readiness.json"
+}
+
 
 cmd_prepare() {
   [[ $# -ge 4 && $# -le 6 ]] || { usage; exit 2; }
@@ -366,6 +376,54 @@ cmd_launch() {
   launch_court "$serial" "$package" "$carrier" "$out"
 }
 
+cmd_trace() {
+  [[ $# -ge 4 && $# -le 6 ]] || { usage; exit 2; }
+
+  local serial="$2"
+  local package="$3"
+  local mode="$4"
+  local duration_ms="${5:-4000}"
+  local out="${6:-$(default_evidence_dir)}"
+  local trace_out="$out/recorded-trace-$(safe_name "$serial")-$mode"
+
+  [[ "$mode" == "audio" || "$mode" == "accelerometer" ]] || {
+    echo "trace mode must be audio or accelerometer" >&2
+    exit 2
+  }
+
+  require_online_device "$serial"
+  require_physical_candidate "$serial"
+  package_installed "$serial" "$package" || {
+    echo "$package is not installed on $serial" >&2
+    exit 1
+  }
+
+  mkdir -p "$out"
+  bash scripts/android-recorded-trace-capture.sh \
+    "$serial" \
+    "$package" \
+    "$mode" \
+    "$duration_ms" \
+    "$trace_out"
+
+  {
+    echo "campaign_id=$(campaign_id)"
+    echo "timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "serial=$serial"
+    echo "qemu=$(device_prop "$serial" ro.kernel.qemu)"
+    echo "mode=$mode"
+    echo "trace_dir=$trace_out"
+    echo "result=PASS"
+    echo "evidence_level=CANDIDATE_PHYSICAL_TRACE"
+    echo "note=Physical-candidate wrapper only; replay metadata remains authoritative."
+  } >"$out/trace-$(safe_name "$serial")-$mode-physical.txt"
+
+  readiness_evidence "$out"
+  hash_evidence "$out"
+
+  echo "PHYSICAL_TRACE_CAMPAIGN_PASS serial=$serial mode=$mode evidence=$trace_out"
+}
+
 cmd_collect() {
   [[ $# -ge 4 && $# -le 5 ]] || { usage; exit 2; }
   local serial_a="$2"
@@ -377,6 +435,7 @@ cmd_collect() {
   collect_device "$serial_a" device-a "$package" "$out"
   collect_device "$serial_b" device-b "$package" "$out"
   summarize_evidence "$out"
+  readiness_evidence "$out"
   hash_evidence "$out"
 
   echo "PHYSICAL_CAMPAIGN_COLLECTED campaign=$(campaign_id) evidence=$out"
@@ -389,6 +448,7 @@ self_test() {
   [[ "$(component_for_carrier rfcomm)" == ".RfcommCourtActivity" ]]
   [[ "$(component_for_carrier nfc)" == ".NfcCourtActivity" ]]
   [[ "$(component_for_carrier hotspot)" == ".HotspotCourtActivity" ]]
+  [[ "$(safe_name 'audio trace')" == "audio_trace" ]]
   if component_for_carrier invalid >/dev/null 2>&1; then
     echo "invalid carrier unexpectedly accepted" >&2
     exit 1
@@ -414,10 +474,15 @@ main() {
   case "$1" in
     prepare) cmd_prepare "$@" ;;
     launch) cmd_launch "$@" ;;
+    trace) cmd_trace "$@" ;;
     collect) cmd_collect "$@" ;;
     summarize)
       [[ $# -eq 2 ]] || { usage; exit 2; }
       summarize_evidence "$2"
+      ;;
+    readiness)
+      [[ $# -eq 2 ]] || { usage; exit 2; }
+      readiness_evidence "$2"
       ;;
     *) usage; exit 2 ;;
   esac
