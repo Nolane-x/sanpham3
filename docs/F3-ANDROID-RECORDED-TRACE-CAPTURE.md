@@ -122,6 +122,37 @@ bit_errors=0
 If no expected payload is provided, the tool acts only as a capture/evidence
 collector and does not invent a decoder PASS.
 
+## Physical campaign integration
+
+When the target is intended to be a real-device candidate, prefer the unified
+campaign wrapper.
+
+Bash:
+
+```bash
+scripts/android-physical-campaign.sh \
+  trace <serial> dev.nolane.sanpham3.recoverylab audio 4000 <campaign-dir>
+```
+
+PowerShell:
+
+```powershell
+pwsh scripts/android-physical-campaign.ps1 \
+  trace <serial> dev.nolane.sanpham3.recoverylab accelerometer 4000 <campaign-dir>
+```
+
+The wrapper first applies the physical-campaign QEMU refusal, then invokes this
+capture court, keeps the original `ANDROID_RUNTIME_CAPTURE` trace metadata,
+and adds a separate `CANDIDATE_PHYSICAL_TRACE` wrapper with the device's QEMU
+state.
+
+When `SP3_TRACE_EXPECTED_HEX` is present, exact replay remains mandatory and
+the campaign readiness report only marks the trace candidate ready when
+`bit_errors=0`.
+
+This separation prevents a non-QEMU wrapper from rewriting the provenance of the
+actual AudioRecord/sensor capture.
+
 ## Physical promotion
 
 This tooling alone does **not** close:
