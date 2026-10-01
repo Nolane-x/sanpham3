@@ -178,16 +178,26 @@ Future:
 
 - [x] automated app scenario driver baseline
 - [x] automated permission revoke/restore baseline
-- [ ] emulator Wi-Fi Direct pair court
+- [x] emulator Wi-Fi Direct pair court
 - [x] exact-Network probe court across two AVDs
-- [ ] camera video-source optical replay
+- [x] camera video-source optical replay
 - [x] failure/restart/Doze scenario driver/state-machine baseline
 
-The current F5 baseline now includes dual-AVD lifecycle/permission drivers and
-a real two-AVD exact-Network probe court. The exact-Network court exercises the
-Android recovery-lab path that binds DNS/HTTPS probes to the selected
-`Network` object rather than treating default routing as equivalent evidence.
-Wi-Fi Direct pairing and camera video-source replay remain open.
+The current F5 baseline now includes dual-AVD lifecycle/permission drivers,
+a real two-AVD exact-Network probe court, an authenticated dual-AVD Wi-Fi
+Direct group/pair court and a Camera2 video-source optical replay court.
+
+The Wi-Fi Direct court requires real framework group formation, client
+discovery/join, TCP over the group-owner address, authenticated Rust
+`AndroidPeerSession` node IDs and the encrypted G8 challenge/ACK exchange.
+
+The Camera2 court injects a deterministic optical video source into the Android
+Emulator camera, captures through Camera2 `YUV_420_888`, persists the captured
+Y4M and replays that captured evidence through the Rust optical decoder with
+zero BER.
+
+These close Android AVD/framework evidence only. They do not promote physical
+radio/camera interoperability, range, goodput, failure-rate or energy claims.
 
 ## F6 — new app-only prototype carriers
 
